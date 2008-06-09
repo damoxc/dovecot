@@ -7,6 +7,8 @@
 #include "imap-search.h"
 #include "mail-search.h"
 
+#include <stdlib.h>
+
 const char *all_macro[] = {
 	"FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", NULL
 };
@@ -66,6 +68,64 @@ fetch_parse_args(struct imap_fetch_context *ctx, const struct imap_arg *arg)
 	return TRUE;
 }
 
+static bool
+fetch_parse_modifier(struct imap_fetch_context *ctx,
+		     const char *name, const struct imap_arg **args)
+{
+	unsigned long long num;
+
+	if (strcmp(name, "CHANGEDSINCE") == 0) {
+		if ((*args)->type != IMAP_ARG_ATOM) {
+			client_send_command_error(ctx->cmd,
+				"Invalid CHANGEDSINCE modseq.");
+			return FALSE;
+		}
+		num = strtoull(imap_arg_string(*args), NULL, 10);
+		*args += 1;
+		return imap_fetch_add_unchanged_since(ctx, num);
+	}
+	if (strcmp(name, "VANISHED") == 0 && ctx->cmd->uid) {
+		if ((ctx->client->enabled_features &
+		     MAILBOX_FEATURE_QRESYNC) == 0) {
+			client_send_command_error(ctx->cmd,
+						  "QRESYNC not enabled");
+			return FALSE;
+		}
+		ctx->send_vanished = TRUE;
+		return TRUE;
+	}
+
+	client_send_command_error(ctx->cmd, "Unknown FETCH modifier");
+	return FALSE;
+}
+
+static bool
+fetch_parse_modifiers(struct imap_fetch_context *ctx,
+		      const struct imap_arg *args)
+{
+	const char *name;
+
+	while (args->type != IMAP_ARG_EOL) {
+		if (args->type != IMAP_ARG_ATOM) {
+			client_send_command_error(ctx->cmd,
+				"FETCH modifiers contain non-atoms.");
+			return FALSE;
+		}
+		name = t_str_ucase(IMAP_ARG_STR(args));
+		args++;
+		if (!fetch_parse_modifier(ctx, name, &args))
+			return FALSE;
+	}
+	if (ctx->send_vanished &&
+	    (ctx->search_args->args->next == NULL ||
+	     ctx->search_args->args->next->type != SEARCH_MODSEQ)) {
+		client_send_command_error(ctx->cmd,
+			"VANISHED used without CHANGEDSINCE");
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static bool cmd_fetch_finish(struct imap_fetch_context *ctx)
 {
 	struct client_command_context *cmd = ctx->cmd;
@@ -102,23 +162,20 @@ static bool cmd_fetch_finish(struct imap_fetch_context *ctx)
 static bool cmd_fetch_continue(struct client_command_context *cmd)
 {
         struct imap_fetch_context *ctx = cmd->context;
-	int ret;
 
-	if ((ret = imap_fetch(ctx)) == 0) {
+	if (imap_fetch_more(ctx) == 0) {
 		/* unfinished */
 		return FALSE;
 	}
-	if (ret < 0)
-		ctx->failed = TRUE;
-
 	return cmd_fetch_finish(ctx);
 }
 
 bool cmd_fetch(struct client_command_context *cmd)
 {
+	struct client *client = cmd->client;
 	struct imap_fetch_context *ctx;
 	const struct imap_arg *args;
-	struct mail_search_arg *search_arg;
+	struct mail_search_args *search_args;
 	const char *messageset;
 	int ret;
 
@@ -128,37 +185,42 @@ bool cmd_fetch(struct client_command_context *cmd)
 	if (!client_verify_open_mailbox(cmd))
 		return TRUE;
 
+	/* <messageset> <field(s)> [(modifiers)] */
 	messageset = imap_arg_string(&args[0]);
 	if (messageset == NULL ||
-	    (args[1].type != IMAP_ARG_LIST && args[1].type != IMAP_ARG_ATOM)) {
+	    (args[1].type != IMAP_ARG_LIST && args[1].type != IMAP_ARG_ATOM) ||
+	    (args[2].type != IMAP_ARG_EOL && args[2].type != IMAP_ARG_LIST)) {
 		client_send_command_error(cmd, "Invalid arguments.");
 		return TRUE;
 	}
 
-	search_arg = imap_search_get_arg(cmd, messageset, cmd->uid);
-	if (search_arg == NULL)
-		return TRUE;
+	/* UID FETCH VANISHED needs the uidset, so convert it to
+	   sequence set later */
+	ret = imap_search_get_anyset(cmd, messageset, cmd->uid, &search_args);
+	if (ret <= 0)
+		return ret < 0;
 
-	ctx = imap_fetch_init(cmd);
+	ctx = imap_fetch_init(cmd, client->mailbox);
 	if (ctx == NULL)
 		return TRUE;
+	ctx->search_args = search_args;
 
-	if (!fetch_parse_args(ctx, &args[1])) {
+	if (!fetch_parse_args(ctx, &args[1]) ||
+	    (args[2].type == IMAP_ARG_LIST &&
+	     !fetch_parse_modifiers(ctx, IMAP_ARG_LIST_ARGS(&args[2])))) {
 		imap_fetch_deinit(ctx);
 		return TRUE;
 	}
 
-	imap_fetch_begin(ctx, search_arg);
-	if ((ret = imap_fetch(ctx)) == 0) {
-		/* unfinished */
-		cmd->state = CLIENT_COMMAND_STATE_WAIT_OUTPUT;
+	if (imap_fetch_begin(ctx) == 0) {
+		if (imap_fetch_more(ctx) == 0) {
+			/* unfinished */
+			cmd->state = CLIENT_COMMAND_STATE_WAIT_OUTPUT;
 
-		cmd->func = cmd_fetch_continue;
-		cmd->context = ctx;
-		return FALSE;
+			cmd->func = cmd_fetch_continue;
+			cmd->context = ctx;
+			return FALSE;
+		}
 	}
-	if (ret < 0)
-		ctx->failed = TRUE;
-
 	return cmd_fetch_finish(ctx);
 }

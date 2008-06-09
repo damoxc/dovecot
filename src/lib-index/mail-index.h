@@ -103,8 +103,8 @@ struct mail_keywords {
 };
 
 enum mail_index_transaction_flags {
-	/* If transaction is marked as hidden, the changes won't be listed
-	   when the view is synchronized. */
+	/* If transaction is marked as hidden, the changes are marked with
+	   hidden=TRUE when the view is synchronized. */
 	MAIL_INDEX_TRANSACTION_FLAG_HIDE		= 0x01,
 	/* External transactions describe changes to mailbox that have already
 	   happened. */
@@ -162,6 +162,9 @@ struct mail_index_view_sync_rec {
 	/* keyword appends and removes are packed into one and same
 	   MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD */
 	enum mail_index_sync_type type;
+
+	/* TRUE if this was a hidden transaction. */
+	unsigned int hidden:1;
 };
 
 struct mail_index;
@@ -187,6 +190,8 @@ void mail_index_close(struct mail_index *index);
 
 /* Move the index into memory. Returns 0 if ok, -1 if error occurred. */
 int mail_index_move_to_memory(struct mail_index *index);
+/* Returns TRUE if index is currently in memory. */
+bool mail_index_is_in_memory(struct mail_index *index);
 
 struct mail_cache *mail_index_get_cache(struct mail_index *index);
 

@@ -1,13 +1,14 @@
 /* Copyright (c) 2002-2008 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
+#include "array.h"
 #include "istream.h"
 #include "ostream.h"
 #include "str.h"
 #include "var-expand.h"
 #include "message-size.h"
 #include "mail-storage.h"
-#include "mail-search.h"
+#include "mail-search-build.h"
 #include "capability.h"
 #include "commands.h"
 
@@ -182,10 +183,24 @@ static int cmd_noop(struct client *client, const char *args ATTR_UNUSED)
 	return 1;
 }
 
+static struct mail_search_args *
+pop3_search_build(struct client *client, uint32_t seq)
+{
+	struct mail_search_args *search_args;
+
+	search_args = mail_search_build_init();
+	if (seq == 0) {
+		mail_search_build_add_seqset(search_args,
+					     1, client->messages_count);
+	} else {
+		mail_search_build_add_seqset(search_args, seq, seq);
+	}
+	return search_args;
+}
+
 static bool expunge_mails(struct client *client)
 {
-	struct mail_search_arg search_arg;
-        struct mail_search_seqset seqset;
+	struct mail_search_args *search_args;
 	struct mail_search_context *ctx;
 	struct mail *mail;
 	uint32_t idx;
@@ -198,14 +213,10 @@ static bool expunge_mails(struct client *client)
 		return TRUE;
 	}
 
-	memset(&seqset, 0, sizeof(seqset));
-	memset(&search_arg, 0, sizeof(search_arg));
-	seqset.seq1 = 1;
-	seqset.seq2 = client->messages_count;
-	search_arg.type = SEARCH_SEQSET;
-	search_arg.value.seqset = &seqset;
+	search_args = pop3_search_build(client, 0);
+	ctx = mailbox_search_init(client->trans, search_args, NULL);
+	mail_search_args_unref(&search_args);
 
-	ctx = mailbox_search_init(client->trans, NULL, &search_arg, NULL);
 	mail = mail_alloc(client->trans, 0, NULL);
 	while (mailbox_search_next(ctx, mail) > 0) {
 		idx = mail->seq - 1;
@@ -253,9 +264,6 @@ struct fetch_context {
 	struct mail *mail;
 	struct istream *stream;
 	uoff_t body_lines;
-
-	struct mail_search_arg search_arg;
-        struct mail_search_seqset seqset;
 
 	unsigned char last;
 	bool cr_skipped, in_body;
@@ -368,15 +376,14 @@ static void fetch_callback(struct client *client)
 static void fetch(struct client *client, unsigned int msgnum, uoff_t body_lines)
 {
         struct fetch_context *ctx;
+	struct mail_search_args *search_args;
+
+	search_args = pop3_search_build(client, msgnum+1);
 
 	ctx = i_new(struct fetch_context, 1);
+	ctx->search_ctx = mailbox_search_init(client->trans, search_args, NULL);
+	mail_search_args_unref(&search_args);
 
-	ctx->seqset.seq1 = ctx->seqset.seq2 = msgnum+1;
-	ctx->search_arg.type = SEARCH_SEQSET;
-	ctx->search_arg.value.seqset = &ctx->seqset;
-
-	ctx->search_ctx = mailbox_search_init(client->trans, NULL,
-					      &ctx->search_arg, NULL);
 	ctx->mail = mail_alloc(client->trans, MAIL_FETCH_STREAM_HEADER |
 			       MAIL_FETCH_STREAM_BODY, NULL);
 
@@ -431,8 +438,7 @@ static int cmd_rset(struct client *client, const char *args ATTR_UNUSED)
 {
 	struct mail_search_context *search_ctx;
 	struct mail *mail;
-	struct mail_search_arg search_arg;
-        struct mail_search_seqset seqset;
+	struct mail_search_args *search_args;
 
 	client->last_seen = 0;
 
@@ -445,15 +451,11 @@ static int cmd_rset(struct client *client, const char *args ATTR_UNUSED)
 
 	if (enable_last_command) {
 		/* remove all \Seen flags (as specified by RFC 1460) */
-		memset(&seqset, 0, sizeof(seqset));
-		memset(&search_arg, 0, sizeof(search_arg));
-		seqset.seq1 = 1;
-		seqset.seq2 = client->messages_count;
-		search_arg.type = SEARCH_SEQSET;
-		search_arg.value.seqset = &seqset;
+		search_args = pop3_search_build(client, 0);
+		search_ctx = mailbox_search_init(client->trans,
+						 search_args, NULL);
+		mail_search_args_unref(&search_args);
 
-		search_ctx = mailbox_search_init(client->trans, NULL,
-						 &search_arg, NULL);
 		mail = mail_alloc(client->trans, 0, NULL);
 		while (mailbox_search_next(search_ctx, mail) > 0)
 			mail_update_flags(mail, MODIFY_REMOVE, MAIL_SEEN);
@@ -503,7 +505,6 @@ struct cmd_uidl_context {
 	unsigned int message;
 
 	struct mail_search_arg search_arg;
-	struct mail_search_seqset seqset;
 };
 
 static void pop3_get_uid(struct cmd_uidl_context *ctx,
@@ -600,6 +601,7 @@ static bool list_uids_iter(struct client *client, struct cmd_uidl_context *ctx)
 
 	if (ctx->message == 0)
 		client_send_line(client, ".");
+	array_free(&ctx->search_arg.value.seqset);
 	i_free(ctx);
 	return found;
 }
@@ -615,26 +617,21 @@ static struct cmd_uidl_context *
 cmd_uidl_init(struct client *client, unsigned int message)
 {
         struct cmd_uidl_context *ctx;
+	struct mail_search_args *search_args;
 	enum mail_fetch_field wanted_fields;
 
-	ctx = i_new(struct cmd_uidl_context, 1);
+	search_args = pop3_search_build(client, message);
 
-	if (message == 0) {
-		ctx->seqset.seq1 = 1;
-		ctx->seqset.seq2 = client->messages_count;
-	} else {
-		ctx->message = message;
-		ctx->seqset.seq1 = ctx->seqset.seq2 = message;
-	}
-	ctx->search_arg.type = SEARCH_SEQSET;
-	ctx->search_arg.value.seqset = &ctx->seqset;
+	ctx = i_new(struct cmd_uidl_context, 1);
+	ctx->message = message;
 
 	wanted_fields = 0;
 	if ((uidl_keymask & UIDL_MD5) != 0)
 		wanted_fields |= MAIL_FETCH_HEADER_MD5;
 
-	ctx->search_ctx = mailbox_search_init(client->trans, NULL,
-					      &ctx->search_arg, NULL);
+	ctx->search_ctx = mailbox_search_init(client->trans, search_args, NULL);
+	mail_search_args_unref(&search_args);
+
 	ctx->mail = mail_alloc(client->trans, wanted_fields, NULL);
 	if (message == 0) {
 		client->cmd = cmd_uidl_callback;

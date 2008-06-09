@@ -15,7 +15,6 @@
 #include "mail-storage.h"
 #include "commands.h"
 #include "mail-namespace.h"
-#include "imap-thread.h"
 
 #include <stdio.h>
 #include <stdlib.h>

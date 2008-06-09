@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([dovecot],[1.1.rc8],[dovecot@dovecot.org])
+AC_INIT([dovecot],[1.2.UNSTABLE],[dovecot@dovecot.org])
 AC_CONFIG_SRCDIR([src])
 
 AM_INIT_AUTOMAKE
@@ -2147,7 +2147,7 @@ dnl **
 dnl ** capabilities
 dnl **
 
-capability="IMAP4rev1 SASL-IR SORT THREAD=REFERENCES MULTIAPPEND UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE LOGIN-REFERRALS UIDPLUS LIST-EXTENDED I18NLEVEL=1"
+capability="IMAP4rev1 SASL-IR SORT THREAD=REFERENCES MULTIAPPEND UNSELECT LITERAL+ IDLE CHILDREN NAMESPACE LOGIN-REFERRALS UIDPLUS LIST-EXTENDED I18NLEVEL=1 ENABLE CONDSTORE QRESYNC ESEARCH SEARCHRES WITHIN CONTEXT=SEARCH"
 AC_DEFINE_UNQUOTED(CAPABILITY_STRING, "$capability", IMAP capabilities)
 
 CFLAGS="$CFLAGS $EXTRA_CFLAGS"
@@ -2208,6 +2208,7 @@ src/plugins/mbox-snarf/Makefile
 src/plugins/quota/Makefile
 src/plugins/imap-quota/Makefile
 src/plugins/trash/Makefile
+src/plugins/virtual/Makefile
 src/plugins/zlib/Makefile
 stamp.h
 dovecot-config.in])

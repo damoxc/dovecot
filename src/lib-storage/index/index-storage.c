@@ -7,8 +7,10 @@
 #include "imap-parser.h"
 #include "mkdir-parents.h"
 #include "mail-index-private.h"
+#include "mail-index-modseq.h"
 #include "index-storage.h"
 #include "index-mail.h"
+#include "index-thread-private.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -402,6 +404,10 @@ void index_storage_mailbox_open(struct index_mailbox *ibox)
 				ibox, &ibox->view_module_ctx);
 
 	ibox->box.opened = TRUE;
+
+	index_thread_mailbox_index_opened(ibox);
+	if (hook_mailbox_index_opened != NULL)
+		hook_mailbox_index_opened(&ibox->box);
 }
 
 void index_storage_mailbox_init(struct index_mailbox *ibox, const char *name,
@@ -420,6 +426,7 @@ void index_storage_mailbox_init(struct index_mailbox *ibox, const char *name,
 		ibox->box.file_create_gid = (gid_t)-1;
 	}
 
+	p_array_init(&ibox->box.search_results, ibox->box.pool, 16);
 	array_create(&ibox->box.module_contexts,
 		     ibox->box.pool, sizeof(void *), 5);
 
@@ -437,6 +444,18 @@ void index_storage_mailbox_init(struct index_mailbox *ibox, const char *name,
 
 	if ((flags & MAILBOX_OPEN_FAST) == 0)
 		index_storage_mailbox_open(ibox);
+}
+
+int index_storage_mailbox_enable(struct mailbox *box,
+				 enum mailbox_feature feature)
+{
+	struct index_mailbox *ibox = (struct index_mailbox *)box;
+
+	if ((feature & MAILBOX_FEATURE_CONDSTORE) != 0) {
+		box->enabled_features |= MAILBOX_FEATURE_CONDSTORE;
+		mail_index_modseq_enable(ibox->index);
+	}
+	return TRUE;
 }
 
 int index_storage_mailbox_close(struct mailbox *box)

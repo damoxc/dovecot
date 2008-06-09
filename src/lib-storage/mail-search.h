@@ -1,6 +1,7 @@
 #ifndef MAIL_SEARCH_H
 #define MAIL_SEARCH_H
 
+#include "seq-range-array.h"
 #include "mail-types.h"
 
 enum mail_search_arg_type {
@@ -10,6 +11,7 @@ enum mail_search_arg_type {
 	/* sequence sets */
 	SEARCH_ALL,
 	SEARCH_SEQSET,
+	SEARCH_UIDSET,
 
 	/* flags */
 	SEARCH_FLAGS,
@@ -36,12 +38,27 @@ enum mail_search_arg_type {
 	SEARCH_BODY,
 	SEARCH_TEXT,
 	SEARCH_BODY_FAST,
-	SEARCH_TEXT_FAST
+	SEARCH_TEXT_FAST,
+
+	/* extensions */
+	SEARCH_MODSEQ
 };
 
-struct mail_search_seqset {
-	uint32_t seq1, seq2;
-        struct mail_search_seqset *next;
+enum mail_search_arg_flag {
+	/* For (SENT)BEFORE/SINCE/ON searches: Don't drop timezone from
+	   comparisons */
+	MAIL_SEARCH_ARG_FLAG_USE_TZ	= 0x01,
+};
+
+enum mail_search_modseq_type {
+	MAIL_SEARCH_MODSEQ_TYPE_ANY = 0,
+	MAIL_SEARCH_MODSEQ_TYPE_PRIVATE,
+	MAIL_SEARCH_MODSEQ_TYPE_SHARED
+};
+
+struct mail_search_modseq {
+	uint64_t modseq;
+	enum mail_search_modseq_type type;
 };
 
 struct mail_search_arg {
@@ -50,12 +67,14 @@ struct mail_search_arg {
 	enum mail_search_arg_type type;
 	struct {
 		struct mail_search_arg *subargs;
-                struct mail_search_seqset *seqset;
+		ARRAY_TYPE(seq_range) seqset;
 		const char *str;
 		time_t time;
 		uoff_t size;
 		enum mail_flags flags;
 		struct mail_keywords *keywords;
+		struct mail_search_modseq *modseq;
+		enum mail_search_arg_flag search_flags;
 	} value;
 
         void *context;
@@ -66,6 +85,14 @@ struct mail_search_arg {
 	int result; /* -1 = unknown, 0 = unmatched, 1 = matched */
 };
 
+struct mail_search_args {
+	int refcount;
+	pool_t pool;
+	struct mailbox *box;
+	struct mail_search_arg *args;
+	const char *charset;
+};
+
 #define ARG_SET_RESULT(arg, res) \
 	STMT_START { \
 		(arg)->result = !(arg)->not ? (res) : \
@@ -74,6 +101,19 @@ struct mail_search_arg {
 
 typedef void mail_search_foreach_callback_t(struct mail_search_arg *arg,
 					    void *context);
+
+/* Allocate keywords for search arguments. If change_uidsets is TRUE,
+   change uidsets to seqsets. */
+void mail_search_args_init(struct mail_search_args *args,
+			   struct mailbox *box, bool change_uidsets,
+			   const ARRAY_TYPE(seq_range) *search_saved_uidset);
+/* Free keywords. The args can initialized afterwards again if needed. */
+void mail_search_args_deinit(struct mail_search_args *args);
+/* Convert sequence sets in args to UIDs. */
+void mail_search_args_seq2uid(struct mail_search_args *args);
+
+void mail_search_args_ref(struct mail_search_args *args);
+void mail_search_args_unref(struct mail_search_args **args);
 
 /* Reset the results in search arguments. match_always is reset only if
    full_reset is TRUE. */

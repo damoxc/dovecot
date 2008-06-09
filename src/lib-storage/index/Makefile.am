@@ -21,6 +21,10 @@ libstorage_index_a_SOURCES = \
 	index-storage.c \
 	index-sync.c \
 	index-sync-changes.c \
+	index-sync-search.c \
+	index-thread.c \
+	index-thread-finish.c \
+	index-thread-links.c \
 	index-transaction.c
 
 headers = \
@@ -28,7 +32,9 @@ headers = \
 	index-sort.h \
 	index-sort-private.h \
 	index-storage.h \
-	index-sync-changes.h
+	index-sync-changes.h \
+	index-sync-private.h \
+	index-thread-private.h
 
 if INSTALL_HEADERS
   pkginc_libdir=$(pkgincludedir)/src/lib-storage/index

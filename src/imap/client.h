@@ -4,6 +4,10 @@
 #include "commands.h"
 
 #define CLIENT_COMMAND_QUEUE_MAX_SIZE 4
+/* Maximum number of CONTEXT=SEARCH UPDATEs. Clients probably won't need more
+   than a few, so this is mainly to avoid more or less accidental pointless
+   resource usage. */
+#define CLIENT_MAX_SEARCH_UPDATES 10
 
 struct client;
 struct mail_storage;
@@ -18,6 +22,12 @@ struct mailbox_keywords {
 	   This relies on keywords not being removed while mailbox is
 	   selected. */
 	unsigned int announce_count;
+};
+
+struct imap_search_update {
+	char *tag;
+	struct mail_search_result *result;
+	bool return_uids;
 };
 
 enum client_command_state {
@@ -53,6 +63,7 @@ struct client_command_context {
 	unsigned int uid:1; /* used UID command */
 	unsigned int cancel:1; /* command is wanted to be cancelled */
 	unsigned int param_error:1;
+	unsigned int search_save_result:1; /* search result is being updated */
 	unsigned int temp_executed:1; /* temporary execution state tracking */
 };
 
@@ -69,6 +80,7 @@ struct client {
 	unsigned int select_counter; /* increased when mailbox is changed */
 	unsigned int sync_counter;
 	uint32_t messages_count, recent_count, uidvalidity;
+	enum mailbox_feature enabled_features;
 
 	time_t last_input, last_output;
 	unsigned int bad_counter;
@@ -77,8 +89,14 @@ struct client {
 	struct imap_parser *free_parser;
 	/* command_pool is cleared when the command queue gets empty */
 	pool_t command_pool;
+	/* New commands are always prepended to the queue */
 	struct client_command_context *command_queue;
 	unsigned int command_queue_size;
+
+	/* SEARCHRES extension: Last saved SEARCH result */
+	ARRAY_TYPE(seq_range) search_saved_uidset;
+	/* SEARCH=CONTEXT extension: Searches that get updated */
+	ARRAY_DEFINE(search_updates, struct imap_search_update);
 
 	/* client input/output is locked by this command */
 	struct client_command_context *input_lock;
@@ -87,10 +105,12 @@ struct client {
 	/* syncing marks this TRUE when it sees \Deleted flags. this is by
 	   EXPUNGE for Outlook-workaround. */
 	unsigned int sync_seen_deletes:1;
+	unsigned int sync_seen_expunges:1;
 	unsigned int disconnected:1;
 	unsigned int destroyed:1;
 	unsigned int handling_input:1;
 	unsigned int syncing:1;
+	unsigned int changing_mailbox:1;
 	unsigned int input_skip_line:1; /* skip all the data until we've
 					   found a new line */
 };
@@ -123,6 +143,17 @@ bool client_read_args(struct client_command_context *cmd, unsigned int count,
    store the arguments. */
 bool client_read_string_args(struct client_command_context *cmd,
 			     unsigned int count, ...);
+
+/* SEARCHRES extension: Call if $ is being used/updated, returns TRUE if we
+   have to wait for an existing SEARCH SAVE to finish. */
+bool client_handle_search_save_ambiguity(struct client_command_context *cmd);
+
+void client_enable(struct client *client, enum mailbox_feature features);
+
+struct imap_search_update *
+client_search_update_lookup(struct client *client, const char *tag,
+			    unsigned int *idx_r);
+void client_search_updates_free(struct client *client);
 
 void clients_init(void);
 void clients_deinit(void);

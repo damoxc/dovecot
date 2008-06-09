@@ -14,8 +14,10 @@ libstorage_a_SOURCES = \
 	mail-error.c \
 	mail-namespace.c \
 	mail-search.c \
+	mail-search-build.c \
 	mail-storage.c \
 	mailbox-list.c \
+	mailbox-search-result.c \
 	mailbox-tree.c
 
 headers = \
@@ -23,10 +25,13 @@ headers = \
 	mail-error.h \
 	mail-namespace.h \
 	mail-search.h \
+	mail-search-build.h \
+	mail-thread.h \
 	mail-storage.h \
 	mail-storage-private.h \
 	mailbox-list.h \
 	mailbox-list-private.h \
+	mailbox-search-result-private.h \
 	mailbox-tree.h
 
 if INSTALL_HEADERS

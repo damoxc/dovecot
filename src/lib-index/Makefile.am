@@ -12,11 +12,13 @@ libindex_a_SOURCES = \
 	mail-cache-lookup.c \
 	mail-cache-transaction.c \
 	mail-cache-sync-update.c \
+        mail-hash.c \
         mail-index.c \
         mail-index-dummy-view.c \
         mail-index-fsck.c \
         mail-index-lock.c \
         mail-index-map.c \
+        mail-index-modseq.c \
         mail-index-transaction.c \
         mail-index-transaction-view.c \
         mail-index-sync.c \
@@ -36,7 +38,9 @@ libindex_a_SOURCES = \
 headers = \
 	mail-cache.h \
 	mail-cache-private.h \
+        mail-hash.h \
 	mail-index.h \
+        mail-index-modseq.h \
 	mail-index-private.h \
 	mail-index-sync-private.h \
 	mail-index-transaction-private.h \
