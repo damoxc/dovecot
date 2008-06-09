@@ -8,6 +8,7 @@
 #include "read-full.h"
 #include "mail-index-private.h"
 #include "mail-index-sync-private.h"
+#include "mail-index-modseq.h"
 #include "mail-transaction-log-private.h"
 
 static void mail_index_map_init_extbufs(struct mail_index_map *map,
@@ -178,10 +179,23 @@ int mail_index_map_ext_hdr_check(const struct mail_index_header *hdr,
 	}
 
 	if (ext_hdr->record_size > 0 &&
-	    ((ext_hdr->record_offset % ext_hdr->record_align) != 0 ||
-	     (hdr->record_size % ext_hdr->record_align) != 0)) {
-		*error_r = t_strdup_printf("Record field alignmentation %u "
+	    (ext_hdr->record_offset % ext_hdr->record_align) != 0) {
+		*error_r = t_strdup_printf("Record field alignment %u "
 					   "not used", ext_hdr->record_align);
+		return -1;
+	}
+	/* if we get here from extension introduction, record_offset=0 and
+	   hdr->record_size hasn't been updated yet */
+	if (ext_hdr->record_offset != 0 &&
+	    (hdr->record_size % ext_hdr->record_align) != 0) {
+		*error_r = t_strdup_printf("Record size not aligned by %u "
+					   "as required by extension",
+					   ext_hdr->record_align);
+		return -1;
+	}
+	if (ext_hdr->hdr_size > MAIL_INDEX_EXT_HEADER_MAX_SIZE) {
+		*error_r = t_strdup_printf("Headersize too large (%u)",
+					   ext_hdr->hdr_size);
 		return -1;
 	}
 	return 0;
@@ -930,6 +944,8 @@ static void mail_index_record_map_free(struct mail_index_map *map,
 		rec_map->mmap_base = NULL;
 	}
 	array_free(&rec_map->maps);
+	if (rec_map->modseq != NULL)
+		mail_index_map_modseq_free(rec_map->modseq);
 	i_free(rec_map);
 }
 
@@ -993,7 +1009,8 @@ static void mail_index_map_copy_header(struct mail_index_map *dest,
 {
 	/* use src->hdr copy directly, because if we got here
 	   from syncing it has the latest changes. */
-	dest->hdr = src->hdr;
+	if (src != dest)
+		dest->hdr = src->hdr;
 	if (dest->hdr_copy_buf != NULL) {
 		if (src == dest)
 			return;

@@ -31,7 +31,6 @@ struct imap_thread_context {
 
 	struct mail_search_context *search;
 	struct mail_search_arg tmp_search_arg;
-	struct mail_search_seqset seqset;
 
 	unsigned int id_is_uid:1;
 };
@@ -187,13 +186,12 @@ static bool
 imap_thread_try_use_hash(struct imap_thread_context *ctx,
 			 struct mail_hash *hash,
 			 const struct mailbox_status *status, bool reset,
-			 struct mail_search_arg **search_args_p)
+			 struct mail_search_args *search_args)
 {
-	struct mail_search_arg *search_args = *search_args_p;
 	struct mailbox *box = ctx->cmd->client->mailbox;
 	const struct mail_hash_header *hdr;
 	struct mail_hash_transaction *hash_trans;
-	uint32_t last_seq, last_uid;
+	uint32_t last_seq, last_uid, seq1, seq2;
 	bool can_use = TRUE, shared_lock = FALSE;
 	int try, ret;
 
@@ -203,19 +201,26 @@ imap_thread_try_use_hash(struct imap_thread_context *ctx,
 	/* Each search condition requires their own separate thread index.
 	   Pretty much all the clients use only "search all" threading, so
 	   we don't need to worry about anything else. */
-	if (search_args->next != NULL) {
+	if (search_args->args->next != NULL) {
 		/* too difficult to figure out if we could optimize this.
 		   we most likely couldn't. */
 		return FALSE;
-	} else if (search_args->type == SEARCH_ALL) {
+	} else if (search_args->args->type == SEARCH_ALL) {
 		/* optimize */
-	} else if (search_args->type == SEARCH_SEQSET &&
-		   search_args->value.seqset->seq1 == 1) {
-		/* If we're searching 1..n, we might be able to optimize
-		   this. This is at least useful for testing incremental
-		   index updates if nothing else. :) */
-		last_seq = search_args->value.seqset->seq2;
-		last_uid = 0;
+	} else if (search_args->args->type == SEARCH_SEQSET) {
+		const struct seq_range *range;
+		unsigned int count;
+
+		range = array_get(&search_args->args->value.seqset, &count);
+		if (count == 1 && range[0].seq1 == 1) {
+			/* If we're searching 1..n, we might be able to
+			   optimize this. This is at least useful for testing
+			   incremental index updates if nothing else. :) */
+			last_seq = range[0].seq2;
+			last_uid = 0;
+		} else {
+			return FALSE;
+		}
 	} else {
 		return FALSE;
 	}
@@ -257,29 +262,30 @@ again:
 		mail_hash_reset(hash_trans);
 	} else if (hdr->message_count > 0) {
 		/* non-empty hash. add only the new messages in there. */
-		mailbox_get_uids(box, 1, hdr->last_uid,
-				 &ctx->seqset.seq1, &ctx->seqset.seq2);
+		mailbox_get_seq_range(box, 1, hdr->last_uid, &seq1, &seq2);
 
-		if (ctx->seqset.seq2 != hdr->message_count ||
+		if (seq2 != hdr->message_count ||
 		    hdr->uid_validity != status->uidvalidity) {
 			/* some messages have been expunged. have to rebuild. */
 			mail_hash_reset(hash_trans);
 		} else {
 			/* after all these checks, this is the only case we
 			   can actually optimize. */
-			ctx->tmp_search_arg.type = SEARCH_SEQSET;
-			if (ctx->seqset.seq2 == last_seq) {
+			struct mail_search_arg *arg = &ctx->tmp_search_arg;
+
+			arg->type = SEARCH_SEQSET;
+			p_array_init(&arg->value.seqset, ctx->cmd->pool, 1);
+			if (seq2 == last_seq) {
 				/* no need to update the index,
 				   search nothing */
-				ctx->tmp_search_arg.value.seqset = NULL;
 				shared_lock = TRUE;
 			} else {
 				/* search next+1..n */
-				ctx->seqset.seq1 = ctx->seqset.seq2 + 1;
-				ctx->seqset.seq2 = last_seq;
-				ctx->tmp_search_arg.value.seqset = &ctx->seqset;
+				seq_range_array_add_range(&arg->value.seqset,
+							  seq2 + 1, last_seq);
 			}
-			*search_args_p = &ctx->tmp_search_arg;
+			ctx->tmp_search_arg.next = search_args->args;
+			search_args->args = &ctx->tmp_search_arg;
 		}
 	} else {
 		/* empty hash - make sure anyway that it gets reset */
@@ -308,8 +314,7 @@ again:
 static void
 imap_thread_context_init(struct imap_thread_mailbox *tbox,
 			 struct imap_thread_context *ctx,
-			 const char *charset,
-			 struct mail_search_arg *search_args, bool reset)
+			 struct mail_search_args *search_args, bool reset)
 {
 	struct mailbox *box = ctx->cmd->client->mailbox;
 	struct mail_hash *hash = NULL;
@@ -319,7 +324,7 @@ imap_thread_context_init(struct imap_thread_mailbox *tbox,
 
 	mailbox_get_status(box, STATUS_MESSAGES | STATUS_UIDNEXT, &status);
 	if (imap_thread_try_use_hash(ctx, tbox->hash, &status,
-				     reset, &search_args))
+				     reset, search_args))
 		hash = tbox->hash;
 	else {
 		/* fallback to using in-memory hash */
@@ -342,7 +347,7 @@ imap_thread_context_init(struct imap_thread_mailbox *tbox,
 
 	/* initialize searching */
 	ctx->t = mailbox_transaction_begin(box, 0);
-	ctx->search = mailbox_search_init(ctx->t, charset, search_args, NULL);
+	ctx->search = mailbox_search_init(ctx->t, search_args, NULL);
 	ctx->thread_ctx.tmp_mail = mail_alloc(ctx->t, 0, NULL);
 
 	hdr = mail_hash_get_header(ctx->thread_ctx.hash_trans);
@@ -430,8 +435,8 @@ static int imap_thread_run(struct imap_thread_context *ctx)
 	return 0;
 }
 
-int imap_thread(struct client_command_context *cmd, const char *charset,
-		struct mail_search_arg *args, enum mail_thread_type type)
+int imap_thread(struct client_command_context *cmd,
+		struct mail_search_args *args, enum mail_thread_type type)
 {
 	struct imap_thread_mailbox *tbox =
 		IMAP_THREAD_CONTEXT(cmd->client->mailbox);
@@ -448,7 +453,7 @@ int imap_thread(struct client_command_context *cmd, const char *charset,
 	for (try = 0; try < 2; try++) {
 		ctx->thread_type = type;
 		ctx->cmd = cmd;
-		imap_thread_context_init(tbox, ctx, charset, args, try == 1);
+		imap_thread_context_init(tbox, ctx, args, try == 1);
 		ret = imap_thread_run(ctx);
 		if (imap_thread_finish(tbox, ctx) < 0)
 			ret = -1;

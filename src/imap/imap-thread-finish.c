@@ -436,7 +436,7 @@ str_add_id(struct thread_finish_context *ctx, string_t *str, uint32_t uid)
 	i_assert(uid != 0);
 
 	if (!ctx->id_is_uid) {
-		mailbox_get_uids(ctx->box, uid, uid, &uid, &uid);
+		mailbox_get_seq_range(ctx->box, uid, uid, &uid, &uid);
 		if (uid == 0) {
 			mail_hash_transaction_set_corrupted(ctx->hash_trans,
 				t_strdup_printf("Found expunged UID %u", uid));

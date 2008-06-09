@@ -40,11 +40,13 @@ imap_DEPENDENCIES = $(libs)
 cmds = \
 	cmd-append.c \
 	cmd-capability.c \
+	cmd-cancelupdate.c \
 	cmd-check.c \
 	cmd-close.c \
 	cmd-copy.c \
 	cmd-create.c \
 	cmd-delete.c \
+	cmd-enable.c \
 	cmd-examine.c \
 	cmd-expunge.c \
 	cmd-fetch.c \
@@ -75,7 +77,6 @@ imap_SOURCES = \
 	imap-expunge.c \
 	imap-fetch.c \
 	imap-fetch-body.c \
-	imap-messageset.c \
 	imap-search.c \
 	imap-sort.c \
 	imap-status.c \
@@ -94,7 +95,6 @@ headers = \
 	common.h \
 	imap-expunge.h \
 	imap-fetch.h \
-	imap-messageset.h \
 	imap-search.h \
 	imap-sort.h \
 	imap-status.h \

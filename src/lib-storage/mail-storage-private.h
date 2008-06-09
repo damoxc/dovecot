@@ -75,6 +75,7 @@ struct mailbox_vfuncs {
 	bool (*is_readonly)(struct mailbox *box);
 	bool (*allow_new_keywords)(struct mailbox *box);
 
+	int (*enable)(struct mailbox *box, enum mailbox_feature features);
 	int (*close)(struct mailbox *box);
 
 	void (*get_status)(struct mailbox *box, enum mailbox_status_items items,
@@ -122,8 +123,14 @@ struct mailbox_vfuncs {
 			       bool skip_invalid);
 	void (*keywords_free)(struct mail_keywords *keywords);
 
-	void (*get_uids)(struct mailbox *box, uint32_t uid1, uint32_t uid2,
-			 uint32_t *seq1_r, uint32_t *seq2_r);
+	void (*get_seq_range)(struct mailbox *box, uint32_t uid1, uint32_t uid2,
+			      uint32_t *seq1_r, uint32_t *seq2_r);
+	void (*get_uid_range)(struct mailbox *box,
+			      const ARRAY_TYPE(seq_range) *seqs,
+			      ARRAY_TYPE(seq_range) *uids);
+	bool (*get_expunged_uids)(struct mailbox *box, uint64_t modseq,
+				  const ARRAY_TYPE(seq_range) *uids,
+				  ARRAY_TYPE(seq_range) *expunged_uids);
 
 	struct mail *
 		(*mail_alloc)(struct mailbox_transaction_context *t,
@@ -137,7 +144,7 @@ struct mailbox_vfuncs {
 
 	struct mail_search_context *
 	(*search_init)(struct mailbox_transaction_context *t,
-		       const char *charset, struct mail_search_arg *args,
+		       struct mail_search_args *args,
 		       const enum mail_sort_type *sort_program);
 	int (*search_deinit)(struct mail_search_context *ctx);
 	int (*search_next_nonblock)(struct mail_search_context *ctx,
@@ -177,6 +184,7 @@ struct mailbox {
 	pool_t pool;
 
 	unsigned int transaction_count;
+	enum mailbox_feature enabled_features;
 
 	/* User's private flags if this is a shared mailbox */
 	enum mail_flags private_flags_mask;
@@ -189,6 +197,9 @@ struct mailbox {
 	unsigned int notify_min_interval;
 	mailbox_notify_callback_t *notify_callback;
 	void *notify_context;
+
+	/* Saved search results */
+	ARRAY_DEFINE(search_results, struct mail_search_result *);
 
 	/* Module-specific contexts. See mail_storage_module_id. */
 	ARRAY_DEFINE(module_contexts, union mailbox_module_context *);
@@ -210,6 +221,7 @@ struct mail_vfuncs {
 	const char *const *(*get_keywords)(struct mail *mail);
 	const ARRAY_TYPE(keyword_indexes) *
 		(*get_keyword_indexes)(struct mail *mail);
+	uint64_t (*get_modseq)(struct mail *mail);
 
 	int (*get_parts)(struct mail *mail,
 			 const struct message_part **parts_r);
@@ -240,6 +252,8 @@ struct mail_vfuncs {
 	void (*expunge)(struct mail *mail);
 	void (*set_cache_corrupted)(struct mail *mail,
 				    enum mail_fetch_field field);
+
+	struct index_mail *(*get_index_mail)(struct mail *mail);
 };
 
 union mail_module_context {
@@ -267,6 +281,8 @@ union mailbox_transaction_module_context {
 
 struct mailbox_transaction_context {
 	struct mailbox *box;
+	enum mailbox_transaction_flags flags;
+
 	ARRAY_DEFINE(module_contexts,
 		     union mailbox_transaction_module_context *);
 };
@@ -278,9 +294,16 @@ union mail_search_module_context {
 struct mail_search_context {
 	struct mailbox_transaction_context *transaction;
 
-	char *charset;
-	struct mail_search_arg *args;
+	struct mail_search_args *args;
 	struct mail_search_sort_program *sort_program;
+
+	/* if non-NULL, specifies that a search resulting is being updated.
+	   this can be used as a search optimization: if searched message
+	   already exists in search result, it's not necessary to check if
+	   static data matches. */
+	struct mail_search_result *update_result;
+	/* add matches to these search results */
+	ARRAY_DEFINE(results, struct mail_search_result *);
 
 	uint32_t seq;
 	ARRAY_DEFINE(module_contexts, union mail_search_module_context *);

@@ -2,17 +2,13 @@
 
 #include "lib.h"
 #include "array.h"
-#include "ioloop.h"
 #include "str.h"
 #include "mkdir-parents.h"
-#include "unlink-directory.h"
 #include "index-mail.h"
 #include "mail-copy.h"
 #include "cydir-sync.h"
 #include "cydir-storage.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -272,9 +268,8 @@ cydir_delete_nonrecursive(struct mailbox_list *list, const char *path,
 		if (unlink(str_c(full_path)) == 0)
 			unlinked_something = TRUE;
 		else if (errno != ENOENT && errno != EISDIR && errno != EPERM) {
-			mailbox_list_set_critical(list,
-				"unlink_directory(%s) failed: %m",
-				str_c(full_path));
+			mailbox_list_set_critical(list, "unlink(%s) failed: %m",
+						  str_c(full_path));
 		}
 	}
 
@@ -420,6 +415,7 @@ struct mailbox cydir_mailbox = {
 	{
 		index_storage_is_readonly,
 		index_storage_allow_new_keywords,
+		index_storage_mailbox_enable,
 		index_storage_mailbox_close,
 		index_storage_get_status,
 		NULL,
@@ -434,7 +430,9 @@ struct mailbox cydir_mailbox = {
 		index_transaction_rollback,
 		index_keywords_create,
 		index_keywords_free,
-		index_storage_get_uids,
+		index_storage_get_seq_range,
+		index_storage_get_uid_range,
+		index_storage_get_expunged_uids,
 		index_mail_alloc,
 		index_header_lookup_init,
 		index_header_lookup_deinit,

@@ -1,12 +1,18 @@
- - quota warnings for fs quota
- - dbox doesn't fsync?
- - maildir save: should we fsync new/cur dir after rename()s?
- - seq_range_array_add_range() optimization
+ - dbox:
+   - "metadata changed unexpectedly" with alt paths - why?
+    - check that metadata is always correct and whitespace contains only
+      whitespace
+    - "File unexpectedly lost" doesn't get fixed by itself
+    - doesn't call fsync
+ - do something about From_-lines splitting mails with mboxes
  - lucene: handle replacement chars?
  - squat:
-   - nfs support
+   - wrong indexid
+   - fts_build_init() assertion failed: (last_uid < last_uid_locked)
+   - nfs support (cache flushes, how can write fail with ESTALE?)
    - is locking done right? it reads header without file being locked?
    - split after ~8 bytes?
+   - expunges are delayed until more mails are added
  - test replacement chars (SEARCH / SORT / Squat)
 
  - cache: compress when we can drop temporary fields.
@@ -45,12 +51,6 @@
  - mbox
    - UID renumbering doesn't really work after all?
    - still problems with CRLF mboxes..
-
- - Mailbox list indexes
-   - Should probably check dovecot.index.log stamp/size too so that non-zero
-     recent counters get reset
-   - Why are updates so slow?
-   - Support for FS layout
 
  - mail_log: log appends. support from and subject fields
  - proxy: If remote server disconnects on login:

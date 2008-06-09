@@ -33,6 +33,7 @@ struct imap_fetch_context {
 	struct mailbox *box;
 
 	struct mailbox_transaction_context *trans;
+	struct mail_search_args *search_args;
 	struct mail_search_context *search_ctx;
 	struct mail *mail;
 
@@ -52,6 +53,9 @@ struct imap_fetch_context {
 	bool skip_cr;
 	int (*cont_handler)(struct imap_fetch_context *ctx);
 
+	const ARRAY_TYPE(uint32_t) *qresync_sample_seqset;
+	const ARRAY_TYPE(uint32_t) *qresync_sample_uidset;
+
 	ARRAY_TYPE(keywords) tmp_keywords;
 	unsigned int select_counter;
 
@@ -66,6 +70,7 @@ struct imap_fetch_context {
 	unsigned int line_partial:1;
 	unsigned int line_finished:1;
 	unsigned int partial_fetch:1;
+	unsigned int send_vanished:1;
 	unsigned int failed:1;
 };
 
@@ -90,14 +95,17 @@ void imap_fetch_add_handler(struct imap_fetch_context *ctx,
 		(imap_fetch_handler_t *)handler, context)
 #endif
 
-struct imap_fetch_context *imap_fetch_init(struct client_command_context *cmd);
+struct imap_fetch_context *
+imap_fetch_init(struct client_command_context *cmd, struct mailbox *box);
 int imap_fetch_deinit(struct imap_fetch_context *ctx);
 bool imap_fetch_init_handler(struct imap_fetch_context *ctx, const char *name,
 			     const struct imap_arg **args);
 
-void imap_fetch_begin(struct imap_fetch_context *ctx,
-		      struct mail_search_arg *search_arg);
-int imap_fetch(struct imap_fetch_context *ctx);
+bool imap_fetch_add_unchanged_since(struct imap_fetch_context *ctx,
+				    uint64_t modseq);
+
+int imap_fetch_begin(struct imap_fetch_context *ctx);
+int imap_fetch_more(struct imap_fetch_context *ctx);
 
 bool fetch_body_section_init(struct imap_fetch_context *ctx, const char *name,
 			     const struct imap_arg **args);

@@ -972,6 +972,7 @@ struct mailbox mbox_mailbox = {
 	{
 		index_storage_is_readonly,
 		index_storage_allow_new_keywords,
+		index_storage_mailbox_enable,
 		mbox_storage_mailbox_close,
 		index_storage_get_status,
 		NULL,
@@ -986,7 +987,9 @@ struct mailbox mbox_mailbox = {
 		index_transaction_rollback,
 		index_keywords_create,
 		index_keywords_free,
-		index_storage_get_uids,
+		index_storage_get_seq_range,
+		index_storage_get_uid_range,
+		index_storage_get_expunged_uids,
 		index_mail_alloc,
 		index_header_lookup_init,
 		index_header_lookup_deinit,

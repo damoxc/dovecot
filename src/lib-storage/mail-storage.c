@@ -10,6 +10,7 @@
 #include "mail-storage-private.h"
 #include "mail-namespace.h"
 #include "mail-search.h"
+#include "mailbox-search-result-private.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -463,6 +464,16 @@ struct mailbox *mailbox_open(struct mail_storage *storage, const char *name,
 	return box;
 }
 
+int mailbox_enable(struct mailbox *box, enum mailbox_feature features)
+{
+	return box->v.enable(box, features);
+}
+
+enum mailbox_feature mailbox_get_enabled_features(struct mailbox *box)
+{
+	return box->enabled_features;
+}
+
 int mailbox_close(struct mailbox **_box)
 {
 	struct mailbox *box = *_box;
@@ -532,9 +543,11 @@ int mailbox_sync(struct mailbox *box, enum mailbox_sync_flags flags,
 	struct mailbox_sync_context *ctx;
         struct mailbox_sync_rec sync_rec;
 
-	/* we don't care about mailbox's current state, so we might as well
-	   fix inconsistency state */
-	flags |= MAILBOX_SYNC_FLAG_FIX_INCONSISTENT;
+	if (array_count(&box->search_results) == 0) {
+		/* we don't care about mailbox's current state, so we might
+		   as well fix inconsistency state */
+		flags |= MAILBOX_SYNC_FLAG_FIX_INCONSISTENT;
+	}
 
 	ctx = mailbox_sync_init(box, flags);
 	while (mailbox_sync_next(ctx, &sync_rec))
@@ -592,10 +605,24 @@ void mailbox_keywords_free(struct mailbox *box,
 	box->v.keywords_free(keywords);
 }
 
-void mailbox_get_uids(struct mailbox *box, uint32_t uid1, uint32_t uid2,
-		      uint32_t *seq1_r, uint32_t *seq2_r)
+void mailbox_get_seq_range(struct mailbox *box, uint32_t uid1, uint32_t uid2,
+			   uint32_t *seq1_r, uint32_t *seq2_r)
 {
-	box->v.get_uids(box, uid1, uid2, seq1_r, seq2_r);
+	box->v.get_seq_range(box, uid1, uid2, seq1_r, seq2_r);
+}
+
+void mailbox_get_uid_range(struct mailbox *box,
+			   const ARRAY_TYPE(seq_range) *seqs,
+			   ARRAY_TYPE(seq_range) *uids)
+{
+	box->v.get_uid_range(box, seqs, uids);
+}
+
+bool mailbox_get_expunged_uids(struct mailbox *box, uint64_t modseq,
+			       const ARRAY_TYPE(seq_range) *uids,
+			       ARRAY_TYPE(seq_range) *expunged_uids)
+{
+	return box->v.get_expunged_uids(box, modseq, uids, expunged_uids);
 }
 
 struct mailbox_header_lookup_ctx *
@@ -614,19 +641,25 @@ void mailbox_header_lookup_deinit(struct mailbox_header_lookup_ctx **_ctx)
 
 struct mail_search_context *
 mailbox_search_init(struct mailbox_transaction_context *t,
-		    const char *charset, struct mail_search_arg *args,
+		    struct mail_search_args *args,
 		    const enum mail_sort_type *sort_program)
 {
-	mail_search_args_simplify(args);
-	return t->box->v.search_init(t, charset, args, sort_program);
+	mail_search_args_ref(args);
+	mail_search_args_simplify(args->args);
+	return t->box->v.search_init(t, args, sort_program);
 }
 
 int mailbox_search_deinit(struct mail_search_context **_ctx)
 {
 	struct mail_search_context *ctx = *_ctx;
+	struct mail_search_args *args = ctx->args;
+	int ret;
 
 	*_ctx = NULL;
-	return ctx->transaction->box->v.search_deinit(ctx);
+	mailbox_search_results_initial_done(ctx);
+	ret = ctx->transaction->box->v.search_deinit(ctx);
+	mail_search_args_unref(&args);
+	return ret;
 }
 
 int mailbox_search_next(struct mail_search_context *ctx, struct mail *mail)
@@ -646,16 +679,25 @@ int mailbox_search_next(struct mail_search_context *ctx, struct mail *mail)
 int mailbox_search_next_nonblock(struct mail_search_context *ctx,
 				 struct mail *mail, bool *tryagain_r)
 {
-	return ctx->transaction->box->v.
+	int ret;
+
+	ret = ctx->transaction->box->v.
 		search_next_nonblock(ctx, mail, tryagain_r);
+	if (ret > 0)
+		mailbox_search_results_add(ctx, mail->uid);
+	return ret;
 }
 
 struct mailbox_transaction_context *
 mailbox_transaction_begin(struct mailbox *box,
 			  enum mailbox_transaction_flags flags)
 {
+	struct mailbox_transaction_context *trans;
+
 	box->transaction_count++;
-	return box->v.transaction_begin(box, flags);
+	trans = box->v.transaction_begin(box, flags);
+	trans->flags = flags;
+	return trans;
 }
 
 int mailbox_transaction_commit(struct mailbox_transaction_context **t)

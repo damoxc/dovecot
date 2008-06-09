@@ -268,9 +268,23 @@ maildir_handle_size_caching(struct index_mail *mail, bool quick_check,
 	if ((mail->data.dont_cache_fetch_fields & field) != 0)
 		return;
 
-	if (quick_check && maildir_quick_size_lookup(mail, TRUE, &size) > 0) {
+	if (quick_check && maildir_quick_size_lookup(mail, vsize, &size) > 0) {
 		/* already in filename / uidlist. don't add it anywhere,
-		   including to the uidlist if it's already in filename. */
+		   including to the uidlist if it's already in filename.
+		   do some extra checks here to catch potential cache bugs. */
+		if (vsize && mail->data.virtual_size != size) {
+			mail_cache_set_corrupted(mail->ibox->cache,
+				"Corrupted virtual size: "
+				"%"PRIuUOFF_T" != %"PRIuUOFF_T,
+				mail->data.virtual_size, size);
+			mail->data.virtual_size = size;
+		} else if (!vsize && mail->data.physical_size != size) {
+			mail_cache_set_corrupted(mail->ibox->cache,
+				"Corrupted physical size: "
+				"%"PRIuUOFF_T" != %"PRIuUOFF_T,
+				mail->data.physical_size, size);
+			mail->data.physical_size = size;
+		}
 		mail->data.dont_cache_fetch_fields |= field;
 		return;
 	}
@@ -427,6 +441,7 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_get_flags,
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
+	index_mail_get_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	maildir_mail_get_received_date,
@@ -441,5 +456,6 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_expunge,
-	index_mail_set_cache_corrupted
+	index_mail_set_cache_corrupted,
+	index_mail_get_index_mail
 };

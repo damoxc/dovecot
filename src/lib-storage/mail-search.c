@@ -4,7 +4,194 @@
 #include "array.h"
 #include "buffer.h"
 #include "mail-index.h"
+#include "mail-storage.h"
 #include "mail-search.h"
+
+static void
+mailbox_uidset_change(struct mail_search_arg *arg, struct mailbox *box,
+		      const ARRAY_TYPE(seq_range) *search_saved_uidset)
+{
+	struct seq_range *uids;
+	unsigned int i, count;
+	uint32_t seq1, seq2;
+
+	if (arg->value.str != NULL && strcmp(arg->value.str, "$") == 0) {
+		/* SEARCHRES: Replace with saved uidset */
+		array_clear(&arg->value.seqset);
+		if (search_saved_uidset == NULL ||
+		    !array_is_created(search_saved_uidset))
+			return;
+
+		array_append_array(&arg->value.seqset, search_saved_uidset);
+		return;
+	}
+
+	arg->type = SEARCH_SEQSET;
+
+	/* make a copy of the UIDs */
+	count = array_count(&arg->value.seqset);
+	if (count == 0) {
+		/* empty set, keep it */
+		return;
+	}
+	uids = t_new(struct seq_range, count);
+	memcpy(uids, array_idx(&arg->value.seqset, 0), sizeof(*uids) * count);
+
+	/* put them back to the range as sequences */
+	array_clear(&arg->value.seqset);
+	for (i = 0; i < count; i++) {
+		mailbox_get_seq_range(box, uids[i].seq1, uids[i].seq2,
+				      &seq1, &seq2);
+		if (seq1 != 0) {
+			seq_range_array_add_range(&arg->value.seqset,
+						  seq1, seq2);
+		}
+		if (uids[i].seq2 == (uint32_t)-1) {
+			/* make sure the last message is in the range */
+			mailbox_get_seq_range(box, 1, (uint32_t)-1,
+					      &seq1, &seq2);
+			seq_range_array_add(&arg->value.seqset, 0, seq2);
+		}
+	}
+}
+
+static void
+mail_search_args_init_sub(struct mail_search_arg *args,
+			  struct mailbox *box, bool change_uidsets,
+			  const ARRAY_TYPE(seq_range) *search_saved_uidset)
+{
+	const char *keywords[2];
+
+	for (; args != NULL; args = args->next) {
+		switch (args->type) {
+		case SEARCH_UIDSET:
+			if (change_uidsets) T_BEGIN {
+				mailbox_uidset_change(args, box,
+						      search_saved_uidset);
+			} T_END;
+			break;
+		case SEARCH_MODSEQ:
+			if (args->value.str == NULL)
+				break;
+			/* modseq with keyword */
+		case SEARCH_KEYWORDS:
+			keywords[0] = args->value.str;
+			keywords[1] = NULL;
+
+			i_assert(args->value.keywords == NULL);
+			args->value.keywords =
+				mailbox_keywords_create_valid(box, keywords);
+			break;
+
+		case SEARCH_SUB:
+		case SEARCH_OR:
+			mail_search_args_init_sub(args->value.subargs, box,
+						  change_uidsets,
+						  search_saved_uidset);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+void mail_search_args_init(struct mail_search_args *args,
+			   struct mailbox *box, bool change_uidsets,
+			   const ARRAY_TYPE(seq_range) *search_saved_uidset)
+{
+	args->box = box;
+	mail_search_args_init_sub(args->args, box, change_uidsets,
+				  search_saved_uidset);
+}
+
+static void mail_search_args_deinit_sub(struct mail_search_args *args,
+					struct mail_search_arg *arg)
+{
+	for (; arg != NULL; arg = arg->next) {
+		switch (arg->type) {
+		case SEARCH_MODSEQ:
+		case SEARCH_KEYWORDS:
+			if (arg->value.keywords == NULL)
+				break;
+			mailbox_keywords_free(args->box, &arg->value.keywords);
+			break;
+		case SEARCH_SUB:
+		case SEARCH_OR:
+			mail_search_args_deinit_sub(args, arg->value.subargs);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+void mail_search_args_deinit(struct mail_search_args *args)
+{
+	if (args->refcount > 1)
+		return;
+
+	mail_search_args_deinit_sub(args, args->args);
+}
+
+static void mail_search_args_seq2uid_sub(struct mail_search_args *args,
+					 struct mail_search_arg *arg,
+					 ARRAY_TYPE(seq_range) *uids)
+{
+	for (; arg != NULL; arg = arg->next) {
+		switch (arg->type) {
+		case SEARCH_SEQSET:
+			array_clear(uids);
+			mailbox_get_uid_range(args->box,
+					      &arg->value.seqset, uids);
+
+			/* replace sequences with UIDs in the existing array.
+			   this way it's possible to switch between uidsets and
+			   seqsets constantly without leaking memory */
+			arg->type = SEARCH_UIDSET;
+			array_clear(&arg->value.seqset);
+			array_append_array(&arg->value.seqset, uids);
+			break;
+		case SEARCH_SUB:
+		case SEARCH_OR:
+			mail_search_args_seq2uid_sub(args, arg->value.subargs,
+						     uids);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+void mail_search_args_seq2uid(struct mail_search_args *args)
+{
+	T_BEGIN {
+		ARRAY_TYPE(seq_range) uids;
+
+		t_array_init(&uids, 128);
+		mail_search_args_seq2uid_sub(args, args->args, &uids);
+	} T_END;
+}
+
+void mail_search_args_ref(struct mail_search_args *args)
+{
+	i_assert(args->refcount > 0);
+
+	args->refcount++;
+}
+
+void mail_search_args_unref(struct mail_search_args **_args)
+{
+	struct mail_search_args *args = *_args;
+
+	i_assert(args->refcount > 0);
+
+	*_args = NULL;
+	if (--args->refcount > 0)
+		return;
+
+	mail_search_args_deinit(args);
+	pool_unref(&args->pool);
+}
 
 void mail_search_args_reset(struct mail_search_arg *args, bool full_reset)
 {

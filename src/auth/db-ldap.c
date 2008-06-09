@@ -10,6 +10,7 @@
 #include "hash.h"
 #include "aqueue.h"
 #include "str.h"
+#include "env-util.h"
 #include "var-expand.h"
 #include "settings.h"
 #include "userdb.h"
@@ -97,6 +98,8 @@ static struct setting_def setting_defs[] = {
 	DEF_STR(scope),
 	DEF_STR(base),
 	DEF_INT(ldap_version),
+	DEF_STR(debug_level),
+	DEF_STR(ldaprc_path),
 	DEF_STR(user_attrs),
 	DEF_STR(user_filter),
 	DEF_STR(pass_attrs),
@@ -128,6 +131,8 @@ struct ldap_settings default_ldap_settings = {
 	MEMBER(scope) "subtree",
 	MEMBER(base) NULL,
 	MEMBER(ldap_version) 2,
+	MEMBER(debug_level) "0",
+	MEMBER(ldaprc_path) "",
 	MEMBER(user_attrs) "homeDirectory=home,uidNumber=uid,gidNumber=gid",
 	MEMBER(user_filter) "(&(objectClass=posixAccount)(uid=%u))",
 	MEMBER(pass_attrs) "uid=user,userPassword=password",
@@ -712,14 +717,26 @@ static void db_ldap_set_tls_options(struct ldap_connection *conn)
 static void db_ldap_set_options(struct ldap_connection *conn)
 {
 	unsigned int ldap_version;
+	int value;
 
 	db_ldap_set_opt(conn, LDAP_OPT_DEREF, &conn->set.ldap_deref,
 			"deref", conn->set.deref);
+#ifdef LDAP_OPT_DEBUG_LEVEL
+	value = atoi(conn->set.debug_level);
+	if (value != 0) {
+		db_ldap_set_opt(NULL, LDAP_OPT_DEBUG_LEVEL, &value,
+				"debug_level", conn->set.debug_level);
+	}
+#endif
 
-	/* If SASL binds are used, the protocol version needs to be
-	   at least 3 */
-	ldap_version = conn->set.sasl_bind &&
-		conn->set.ldap_version < 3 ? 3 : conn->set.ldap_version;
+	if (conn->set.ldap_version < 3) {
+		if (conn->set.sasl_bind)
+			i_fatal("LDAP: sasl_bind=yes requires ldap_version=3");
+		if (conn->set.tls)
+			i_fatal("LDAP: tls=yes requires ldap_version=3");
+	}
+
+	ldap_version = conn->set.ldap_version;
 	db_ldap_set_opt(conn, LDAP_OPT_PROTOCOL_VERSION, &ldap_version,
 			"protocol_version", dec2str(ldap_version));
 	db_ldap_set_tls_options(conn);
@@ -756,6 +773,11 @@ int db_ldap_connect(struct ldap_connection *conn)
 #ifdef LDAP_HAVE_START_TLS_S
 		ret = ldap_start_tls_s(conn->ld, NULL, NULL);
 		if (ret != LDAP_SUCCESS) {
+			if (ret == LDAP_OPERATIONS_ERROR &&
+			    strncmp(conn->set.uris, "ldaps:", 6) == 0) {
+				i_fatal("LDAP: Don't use both tls=yes "
+					"and ldaps URI");
+			}
 			i_error("LDAP: ldap_start_tls_s() failed: %s",
 				ldap_err2string(ret));
 			return -1;
@@ -1133,6 +1155,7 @@ static struct ldap_connection *ldap_conn_find(const char *config_path)
 struct ldap_connection *db_ldap_init(const char *config_path)
 {
 	struct ldap_connection *conn;
+	const char *str;
 	pool_t pool;
 
 	/* see if it already exists */
@@ -1170,6 +1193,16 @@ struct ldap_connection *db_ldap_init(const char *config_path)
 			"(ldap_initialize not found)");
 	}
 #endif
+
+	if (*conn->set.ldaprc_path != '\0') {
+		str = getenv("LDAPRC");
+		if (str != NULL && strcmp(str, conn->set.ldaprc_path) != 0) {
+			i_fatal("LDAP: Multiple different ldaprc_path "
+				"settings not allowed (%s and %s)",
+				str, conn->set.ldaprc_path);
+		}
+		env_put(t_strconcat("LDAPRC=", conn->set.ldaprc_path, NULL));
+	}
 
         conn->set.ldap_deref = deref2str(conn->set.deref);
 	conn->set.ldap_scope = scope2str(conn->set.scope);

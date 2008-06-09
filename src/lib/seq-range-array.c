@@ -138,6 +138,22 @@ void seq_range_array_add_range(ARRAY_TYPE(seq_range) *array,
 	}
 }
 
+void seq_range_array_merge(ARRAY_TYPE(seq_range) *dest,
+			   const ARRAY_TYPE(seq_range) *src)
+{
+	const struct seq_range *range;
+	unsigned int i, count;
+
+	if (array_count(dest) == 0) {
+		array_append_array(dest, src);
+		return;
+	}
+
+	range = array_get(src, &count);
+	for (i = 0; i < count; i++)
+		seq_range_array_add_range(dest, range[i].seq1, range[i].seq2);
+}
+
 bool seq_range_array_remove(ARRAY_TYPE(seq_range) *array, uint32_t seq)
 {
 	struct seq_range *data, value;
@@ -294,6 +310,17 @@ bool seq_range_exists(const ARRAY_TYPE(seq_range) *array, uint32_t seq)
 	return seq_range_lookup(array, seq, &idx);
 }
 
+unsigned int seq_range_count(const ARRAY_TYPE(seq_range) *array)
+{
+	const struct seq_range *range;
+	unsigned int i, count, seq_count;
+
+	range = array_get(array, &count);
+	for (i = seq_count = 0; i < count; i++)
+		seq_count += range[i].seq2 - range[i].seq1 + 1;
+	return seq_count;
+}
+
 void seq_range_array_invert(ARRAY_TYPE(seq_range) *array,
 			    uint32_t min_seq, uint32_t max_seq)
 {
@@ -342,4 +369,38 @@ void seq_range_array_invert(ARRAY_TYPE(seq_range) *array,
 		value.seq2 = max_seq;
 		array_append(array, &value, 1);
 	}
+}
+
+void seq_range_array_iter_init(struct seq_range_iter *iter_r,
+			       const ARRAY_TYPE(seq_range) *array)
+{
+	memset(iter_r, 0, sizeof(*iter_r));
+	iter_r->array = array;
+}
+
+bool seq_range_array_iter_nth(struct seq_range_iter *iter, unsigned int n,
+			      uint32_t *seq_r)
+{
+	const struct seq_range *range;
+	unsigned int i, count, diff;
+
+	if (n < iter->prev_n) {
+		/* iterating backwards, don't bother optimizing */
+		iter->prev_n = 0;
+		iter->prev_idx = 0;
+	}
+
+	range = array_get(iter->array, &count);
+	for (i = iter->prev_idx; i < count; i++) {
+		diff = range[i].seq2 - range[i].seq1;
+		if (n <= iter->prev_n + diff) {
+			i_assert(n >= iter->prev_n);
+			*seq_r = range[i].seq1 + (n - iter->prev_n);
+			iter->prev_idx = i;
+			return TRUE;
+		}
+		iter->prev_n += diff + 1;
+	}
+	iter->prev_idx = i;
+	return FALSE;
 }

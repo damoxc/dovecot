@@ -3,6 +3,7 @@
 
 struct message_size;
 
+#include "seq-range-array.h"
 #include "file-lock.h"
 #include "mail-types.h"
 #include "mail-error.h"
@@ -54,7 +55,14 @@ enum mailbox_open_flags {
 	/* Don't create index files for the mailbox */
 	MAILBOX_OPEN_NO_INDEX_FILES	= 0x10,
 	/* Keep mailbox exclusively locked all the time while it's open */
-	MAILBOX_OPEN_KEEP_LOCKED	= 0x20
+	MAILBOX_OPEN_KEEP_LOCKED	= 0x20,
+};
+
+enum mailbox_feature {
+	/* Enable tracking modsequences */
+	MAILBOX_FEATURE_CONDSTORE	= 0x01,
+	/* Enable tracking expunge modsequences */
+	MAILBOX_FEATURE_QRESYNC		= 0x02
 };
 
 enum mailbox_status_items {
@@ -64,7 +72,16 @@ enum mailbox_status_items {
 	STATUS_UIDVALIDITY	= 0x08,
 	STATUS_UNSEEN		= 0x10,
 	STATUS_FIRST_UNSEEN_SEQ	= 0x20,
-	STATUS_KEYWORDS		= 0x40
+	STATUS_KEYWORDS		= 0x40,
+	STATUS_HIGHESTMODSEQ	= 0x80
+};
+
+enum mailbox_search_result_flags {
+	/* Update search results whenever the mailbox view is synced.
+	   Expunged messages are removed even without this flag. */
+	MAILBOX_SEARCH_RESULT_FLAG_UPDATE	= 0x01,
+	/* Queue changes so _sync() can be used. */
+	MAILBOX_SEARCH_RESULT_FLAG_QUEUE_SYNC	= 0x02
 };
 
 enum mail_sort_type {
@@ -119,7 +136,9 @@ enum mailbox_transaction_flags {
 	/* Always assign UIDs to messages when saving/copying. Normally this
 	   is done only if the mailbox is synced, or if dest_mail parameter
 	   was non-NULL to mailbox_save_init() or mailbox_copy() */
-	MAILBOX_TRANSACTION_FLAG_ASSIGN_UIDS	= 0x04
+	MAILBOX_TRANSACTION_FLAG_ASSIGN_UIDS	= 0x04,
+	/* Refresh the index so lookups return latest flags/modseqs */
+	MAILBOX_TRANSACTION_FLAG_REFRESH	= 0x08
 };
 
 enum mailbox_sync_flags {
@@ -135,18 +154,23 @@ enum mailbox_sync_flags {
 	/* Stop auto syncing */
 	MAILBOX_SYNC_AUTO_STOP			= 0x20,
 	/* If mailbox is currently inconsistent, fix it instead of failing. */
-	MAILBOX_SYNC_FLAG_FIX_INCONSISTENT	= 0x40
+	MAILBOX_SYNC_FLAG_FIX_INCONSISTENT	= 0x40,
+	/* Syncing after an EXPUNGE command. This is just an informational
+	   flag for plugins. */
+	MAILBOX_SYNC_FLAG_EXPUNGE		= 0x80
 };
 
 enum mailbox_sync_type {
 	MAILBOX_SYNC_TYPE_EXPUNGE	= 0x01,
-	MAILBOX_SYNC_TYPE_FLAGS		= 0x02
+	MAILBOX_SYNC_TYPE_FLAGS		= 0x02,
+	MAILBOX_SYNC_TYPE_MODSEQ	= 0x04
 };
 
 struct message_part;
 struct mail_namespace;
 struct mail_storage;
-struct mail_search_arg;
+struct mail_search_args;
+struct mail_search_result;
 struct mail_keywords;
 struct mail_save_context;
 struct mailbox;
@@ -161,6 +185,7 @@ struct mailbox_status {
 	uint32_t uidnext;
 
 	uint32_t first_unseen_seq;
+	uint64_t highest_modseq;
 
 	const ARRAY_TYPE(keywords) *keywords;
 };
@@ -267,6 +292,10 @@ struct mailbox *mailbox_open(struct mail_storage *storage, const char *name,
    the mailbox was closed anyway. */
 int mailbox_close(struct mailbox **box);
 
+/* Enable the given feature for the mailbox. */
+int mailbox_enable(struct mailbox *box, enum mailbox_feature features);
+enum mailbox_feature mailbox_get_enabled_features(struct mailbox *box);
+
 /* Returns storage of given mailbox */
 struct mail_storage *mailbox_get_storage(struct mailbox *box);
 
@@ -340,8 +369,19 @@ void mailbox_keywords_free(struct mailbox *box,
 			   struct mail_keywords **keywords);
 
 /* Convert uid range to sequence range. */
-void mailbox_get_uids(struct mailbox *box, uint32_t uid1, uint32_t uid2,
-		      uint32_t *seq1_r, uint32_t *seq2_r);
+void mailbox_get_seq_range(struct mailbox *box, uint32_t uid1, uint32_t uid2,
+			   uint32_t *seq1_r, uint32_t *seq2_r);
+/* Convert sequence range to uid range. If sequences contain
+   (uint32_t)-1 to specify "*", they're preserved. */
+void mailbox_get_uid_range(struct mailbox *box,
+			   const ARRAY_TYPE(seq_range) *seqs,
+			   ARRAY_TYPE(seq_range) *uids);
+/* Get list of UIDs expunged after modseq and within the given range.
+   UIDs that have been expunged after the last mailbox sync aren't returned.
+   Returns TRUE if ok, FALSE if modseq is lower than we can check for. */
+bool mailbox_get_expunged_uids(struct mailbox *box, uint64_t modseq,
+			       const ARRAY_TYPE(seq_range) *uids,
+			       ARRAY_TYPE(seq_range) *expunged_uids);
 
 /* Initialize header lookup for given headers. */
 struct mailbox_header_lookup_ctx *
@@ -353,7 +393,7 @@ void mailbox_header_lookup_deinit(struct mailbox_header_lookup_ctx **ctx);
    returned in the requested order, otherwise from first to last. */
 struct mail_search_context *
 mailbox_search_init(struct mailbox_transaction_context *t,
-		    const char *charset, struct mail_search_arg *args,
+		    struct mail_search_args *args,
 		    const enum mail_sort_type *sort_program);
 /* Deinitialize search request. */
 int mailbox_search_deinit(struct mail_search_context **ctx);
@@ -364,6 +404,23 @@ int mailbox_search_next(struct mail_search_context *ctx, struct mail *mail);
    finished, and TRUE if more results will by calling the function again. */
 int mailbox_search_next_nonblock(struct mail_search_context *ctx,
 				 struct mail *mail, bool *tryagain_r);
+
+/* Remember the search result for future use. This must be called before the
+   first mailbox_search_next*() call. */
+struct mail_search_result *
+mailbox_search_result_save(struct mail_search_context *ctx,
+			   enum mailbox_search_result_flags flags);
+/* Free memory used by search result. */
+void mailbox_search_result_free(struct mail_search_result **result);
+/* Return all messages' UIDs in the search result. */
+const ARRAY_TYPE(seq_range) *
+mailbox_search_result_get(struct mail_search_result *result);
+/* Return messages that have been removed and added since the last sync call.
+   This function must not be called if search result wasn't saved with
+   _QUEUE_SYNC flag. */
+void mailbox_search_result_sync(struct mail_search_result *result,
+				ARRAY_TYPE(seq_range) *removed_uids,
+				ARRAY_TYPE(seq_range) *added_uids);
 
 /* Save a mail into mailbox. timezone_offset specifies the timezone in
    minutes in which received_date was originally given with. To use
@@ -416,6 +473,8 @@ enum mail_flags mail_get_flags(struct mail *mail);
 const char *const *mail_get_keywords(struct mail *mail);
 /* Returns message's keywords */
 const ARRAY_TYPE(keyword_indexes) *mail_get_keyword_indexes(struct mail *mail);
+/* Returns message's modseq */
+uint64_t mail_get_modseq(struct mail *mail);
 
 /* Returns message's MIME parts */
 int mail_get_parts(struct mail *mail, const struct message_part **parts_r);

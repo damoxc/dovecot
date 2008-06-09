@@ -36,6 +36,7 @@ struct squat_trie_build_context {
 	struct squat_uidlist_build_context *uidlist_build_ctx;
 
 	struct file_lock *file_lock;
+	struct dotlock *dotlock;
 
 	uint32_t first_uid;
 	unsigned int compress_nodes:1;
@@ -126,7 +127,7 @@ static void node_free(struct squat_trie *trie, struct squat_node *node)
 
 struct squat_trie *
 squat_trie_init(const char *path, uint32_t uidvalidity,
-		enum file_lock_method lock_method, bool mmap_disable)
+		enum file_lock_method lock_method, enum squat_index_flags flags)
 {
 	struct squat_trie *trie;
 
@@ -136,8 +137,14 @@ squat_trie_init(const char *path, uint32_t uidvalidity,
 	trie->fd = -1;
 	trie->lock_method = lock_method;
 	trie->uidvalidity = uidvalidity;
-	trie->mmap_disable = mmap_disable;
+	trie->flags = flags;
 	squat_trie_normalize_map_build(trie);
+
+	trie->dotlock_set.use_excl_lock =
+		(flags & SQUAT_INDEX_FLAG_DOTLOCK_USE_EXCL) != 0;
+	trie->dotlock_set.nfs_flush = (flags & SQUAT_INDEX_FLAG_NFS_FLUSH) != 0;
+	trie->dotlock_set.timeout = SQUAT_TRIE_LOCK_TIMEOUT;
+	trie->dotlock_set.stale_timeout = SQUAT_TRIE_DOTLOCK_STALE_TIMEOUT;
 	return trie;
 }
 
@@ -254,16 +261,26 @@ void squat_trie_refresh(struct squat_trie *trie)
 }
 
 static int squat_trie_lock(struct squat_trie *trie, int lock_type,
-			   struct file_lock **file_lock_r)
+			   struct file_lock **file_lock_r,
+			   struct dotlock **dotlock_r)
 {
 	int ret;
 
+	*file_lock_r = NULL;
+	*dotlock_r = NULL;
+
 	while (trie->fd != -1) {
-		ret = file_wait_lock(trie->fd, trie->path, lock_type,
-				     trie->lock_method, SQUAT_TRIE_LOCK_TIMEOUT,
-				     file_lock_r);
+		if (trie->lock_method != FILE_LOCK_METHOD_DOTLOCK) {
+			ret = file_wait_lock(trie->fd, trie->path, lock_type,
+					     trie->lock_method,
+					     SQUAT_TRIE_LOCK_TIMEOUT,
+					     file_lock_r);
+		} else {
+			ret = file_dotlock_create(&trie->dotlock_set,
+						  trie->path, 0, dotlock_r);
+		}
 		if (ret == 0) {
-			i_error("file_wait_lock(%s) failed: %m", trie->path);
+			i_error("squat trie %s: Locking timed out", trie->path);
 			return 0;
 		}
 		if (ret < 0)
@@ -275,7 +292,10 @@ static int squat_trie_lock(struct squat_trie *trie, int lock_type,
 		if (ret == 0)
 			return 1;
 
-		file_unlock(file_lock_r);
+		if (*file_lock_r != NULL)
+			file_unlock(file_lock_r);
+		else
+			file_dotlock_delete(dotlock_r);
 		if (ret < 0)
 			return -1;
 
@@ -1261,6 +1281,9 @@ squat_trie_expunge_uidlists(struct squat_trie_build_context *ctx,
 	i_array_init(&root_shifts, array_count(expunged_uids));
 	array_append_array(&root_shifts, expunged_uids);
 
+	if (array_count(expunged_uids) > 0)
+		i_array_init(&iter->cur.shifts, array_count(expunged_uids));
+
 	shifts = root_shifts;
 	do {
 		i_assert(node->uid_list_idx != 0);
@@ -1348,7 +1371,9 @@ squat_trie_renumber_uidlists(struct squat_trie_build_context *ctx,
 	squat_trie_iterate_deinit(iter);
 
 	/* lock the trie before we rename uidlist */
-	if (squat_trie_lock(ctx->trie, F_WRLCK, &ctx->file_lock) <= 0)
+	i_assert(ctx->file_lock == NULL && ctx->dotlock == NULL);
+	if (squat_trie_lock(ctx->trie, F_WRLCK,
+			    &ctx->file_lock, &ctx->dotlock) <= 0)
 		ret = -1;
 	return squat_uidlist_rebuild_finish(rebuild_ctx, ret < 0);
 }
@@ -1381,7 +1406,7 @@ static int squat_trie_map_header(struct squat_trie *trie)
 	}
 	i_assert(trie->fd != -1);
 
-	if (trie->mmap_disable) {
+	if ((trie->flags & SQUAT_INDEX_FLAG_MMAP_DISABLE) != 0) {
 		ret = pread_full(trie->fd, &trie->hdr, sizeof(trie->hdr), 0);
 		if (ret <= 0) {
 			if (ret < 0) {
@@ -1424,19 +1449,24 @@ static int squat_trie_map_header(struct squat_trie *trie)
 static int squat_trie_map(struct squat_trie *trie, bool building)
 {
 	struct file_lock *file_lock = NULL;
+	struct dotlock *dotlock = NULL;
 	bool changed;
 	int ret;
 
 	if (trie->fd != -1) {
-		if (squat_trie_lock(trie, F_RDLCK, &file_lock) <= 0)
+		if (squat_trie_lock(trie, F_RDLCK, &file_lock, &dotlock) <= 0)
 			return -1;
-		if (trie->mmap_disable && trie->file_cache == NULL)
+		if ((trie->flags & SQUAT_INDEX_FLAG_MMAP_DISABLE) != 0 &&
+		    trie->file_cache == NULL)
 			trie->file_cache = file_cache_new(trie->fd);
 	}
 
 	ret = squat_trie_map_header(trie);
 	if (ret == 0) {
-		file_lock_free(&file_lock);
+		if (file_lock != NULL)
+			file_unlock(&file_lock);
+		else
+			file_dotlock_delete(&dotlock);
 		squat_trie_delete(trie);
 		squat_trie_close(trie);
 		squat_trie_header_init(trie);
@@ -1468,6 +1498,8 @@ static int squat_trie_map(struct squat_trie *trie, bool building)
 
 	if (file_lock != NULL)
 		file_unlock(&file_lock);
+	if (dotlock != NULL)
+		file_dotlock_delete(&dotlock);
 	if (ret < 0)
 		return -1;
 
@@ -1513,10 +1545,11 @@ int squat_trie_build_init(struct squat_trie *trie, uint32_t *last_uid_r,
 
 static int squat_trie_write_lock(struct squat_trie_build_context *ctx)
 {
-	if (ctx->file_lock != NULL)
+	if (ctx->file_lock != NULL || ctx->dotlock != NULL)
 		return 0;
 
-	if (squat_trie_lock(ctx->trie, F_WRLCK, &ctx->file_lock) <= 0)
+	if (squat_trie_lock(ctx->trie, F_WRLCK,
+			    &ctx->file_lock, &ctx->dotlock) <= 0)
 		return -1;
 	return 0;
 }
@@ -1540,13 +1573,19 @@ static int squat_trie_write(struct squat_trie_build_context *ctx)
 			i_error("creat(%s) failed: %m", path);
 			return -1;
 		}
-		ret = file_wait_lock(fd, path, F_WRLCK, trie->lock_method,
-				     SQUAT_TRIE_LOCK_TIMEOUT, &file_lock);
-		if (ret <= 0) {
-			if (ret == 0)
-				i_error("file_wait_lock(%s) failed: %m", path);
-			(void)close(fd);
-			return -1;
+		if (trie->lock_method != FILE_LOCK_METHOD_DOTLOCK) {
+			ret = file_wait_lock(fd, path, F_WRLCK,
+					     trie->lock_method,
+					     SQUAT_TRIE_LOCK_TIMEOUT,
+					     &file_lock);
+			if (ret <= 0) {
+				if (ret == 0) {
+					i_error("file_wait_lock(%s) failed: %m",
+						path);
+				}
+				(void)close(fd);
+				return -1;
+			}
 		}
 
 		output = o_stream_create_fd(fd, 0, FALSE);
@@ -1614,7 +1653,8 @@ static int squat_trie_write(struct squat_trie_build_context *ctx)
 	if (ret < 0) {
 		if (unlink(path) < 0 && errno != ENOENT)
 			i_error("unlink(%s) failed: %m", path);
-		file_lock_free(&file_lock);
+		if (file_lock != NULL)
+			file_lock_free(&file_lock);
 	} else {
 		squat_trie_close_fd(trie);
 		trie->fd = fd;
@@ -1659,6 +1699,8 @@ int squat_trie_build_deinit(struct squat_trie_build_context **_ctx,
 		else
 			file_lock_free(&ctx->file_lock);
 	}
+	if (ctx->dotlock != NULL)
+		file_dotlock_delete(&ctx->dotlock);
 	squat_uidlist_build_deinit(&ctx->uidlist_build_ctx);
 
 	i_free(ctx);
@@ -1874,24 +1916,11 @@ squat_trie_lookup_real(struct squat_trie *trie, const char *str,
 	unsigned char *data;
 	uint8_t *char_lengths;
 	unsigned int i, start, bytes, str_bytelen, str_charlen;
+	bool searched = FALSE;
 	int ret = 0;
 
 	array_clear(definite_uids);
 	array_clear(maybe_uids);
-
-	str_bytelen = strlen(str);
-	if (str_bytelen == 0) {
-		/* list all root UIDs */
-		i_array_init(&ctx.tmp_uids, 128);
-		ret = squat_uidlist_get_seqrange(trie->uidlist,
-						 trie->root.uid_list_idx,
-						 &ctx.tmp_uids);
-		squat_trie_filter_type(type, &ctx.tmp_uids,
-				       definite_uids);
-		squat_trie_add_unknown(trie, maybe_uids);
-		array_free(&ctx.tmp_uids);
-		return ret;
-	}
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.trie = trie;
@@ -1902,7 +1931,8 @@ squat_trie_lookup_real(struct squat_trie *trie, const char *str,
 	i_array_init(&ctx.tmp_uids2, 128);
 	ctx.first = TRUE;
 
-	char_lengths = t_malloc0(str_bytelen);
+	str_bytelen = strlen(str);
+	char_lengths = str_bytelen == 0 ? NULL : t_malloc0(str_bytelen);
 	for (i = 0, str_charlen = 0; i < str_bytelen; str_charlen++) {
 		bytes = uni_utf8_char_bytes(str[i]);
 		char_lengths[i] = bytes;
@@ -1921,19 +1951,12 @@ squat_trie_lookup_real(struct squat_trie *trie, const char *str,
 			ret = squat_trie_lookup_partial(&ctx, data + start,
 							char_lengths,
 							i - start);
+			searched = TRUE;
 		}
 		start = i + char_lengths[i];
 	}
 
-	if (start != 0) {
-		/* string has nonindexed characters. finish the search. */
-		array_clear(definite_uids);
-		if (i != start && ret >= 0) {
-			ret = squat_trie_lookup_partial(&ctx, data + start,
-							char_lengths,
-							i - start);
-		}
-	} else {
+	if (start == 0) {
 		if (str_charlen <= trie->hdr.partial_len ||
 		    trie->hdr.full_len > trie->hdr.partial_len) {
 			ret = squat_trie_lookup_data(trie, data, str_bytelen,
@@ -1955,6 +1978,30 @@ squat_trie_lookup_real(struct squat_trie *trie, const char *str,
 							char_lengths,
 							i - start);
 		}
+	} else if (str_bytelen > 0) {
+		/* string has nonindexed characters. finish the search. */
+		array_clear(definite_uids);
+		if (i != start && ret >= 0) {
+			ret = squat_trie_lookup_partial(&ctx, data + start,
+							char_lengths,
+							i - start);
+		} else if (!searched) {
+			/* string has only nonindexed chars,
+			   list all root UIDs as maybes */
+			ret = squat_uidlist_get_seqrange(trie->uidlist,
+							trie->root.uid_list_idx,
+							&ctx.tmp_uids);
+			squat_trie_filter_type(type, &ctx.tmp_uids,
+					       maybe_uids);
+		}
+	} else {
+		/* zero string length - list all root UIDs as definite
+		   answers */
+		ret = squat_uidlist_get_seqrange(trie->uidlist,
+						 trie->root.uid_list_idx,
+						 &ctx.tmp_uids);
+		squat_trie_filter_type(type, &ctx.tmp_uids,
+				       definite_uids);
 	}
 	squat_trie_add_unknown(trie, maybe_uids);
 	array_free(&ctx.tmp_uids);

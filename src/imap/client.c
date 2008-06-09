@@ -133,8 +133,10 @@ void client_destroy(struct client *client, const char *reason)
 	while (client->command_queue != NULL)
 		client_command_cancel(client->command_queue);
 
-	if (client->mailbox != NULL)
+	if (client->mailbox != NULL) {
+		client_search_updates_free(client);
 		mailbox_close(&client->mailbox);
+	}
 	mail_namespaces_deinit(&client->namespaces);
 
 	if (client->free_parser != NULL)
@@ -155,6 +157,10 @@ void client_destroy(struct client *client, const char *reason)
 			i_error("close(client out) failed: %m");
 	}
 
+	if (array_is_created(&client->search_saved_uidset))
+		array_free(&client->search_saved_uidset);
+	if (array_is_created(&client->search_updates))
+		array_free(&client->search_updates);
 	pool_unref(&client->command_pool);
 	i_free(client);
 
@@ -362,6 +368,11 @@ static bool client_command_check_ambiguity(struct client_command_context *cmd)
 	if (client_command_find_with_flags(cmd, flags) == NULL) {
 		if (cmd->client->syncing) {
 			/* don't do anything until syncing is finished */
+			return TRUE;
+		}
+		if (cmd->client->changing_mailbox) {
+			/* don't do anything until mailbox is fully
+			   opened/closed */
 			return TRUE;
 		}
 		return FALSE;
@@ -763,16 +774,96 @@ int client_output(struct client *client)
 			break;
 		}
 	}
-	o_stream_uncork(client->output);
 
 	if (client->output->closed) {
 		client_destroy(client, NULL);
 		return 1;
 	} else {
 		(void)cmd_sync_delayed(client);
+		o_stream_uncork(client->output);
 		client_continue_pending_input(&client);
+		return ret;
 	}
-	return ret;
+}
+
+bool client_handle_search_save_ambiguity(struct client_command_context *cmd)
+{
+	struct client_command_context *old_cmd = cmd->next;
+
+	/* search only commands that were added before this command
+	   (commands are prepended to the queue, so they're after ourself) */
+	for (; old_cmd != NULL; old_cmd = old_cmd->next) {
+		if (old_cmd->search_save_result)
+			break;
+	}
+	if (old_cmd == NULL)
+		return FALSE;
+
+	/* ambiguity, wait until it's over */
+	i_assert(cmd->state == CLIENT_COMMAND_STATE_WAIT_INPUT);
+	cmd->client->input_lock = cmd;
+	cmd->state = CLIENT_COMMAND_STATE_WAIT_UNAMBIGUITY;
+	io_remove(&cmd->client->io);
+	return TRUE;
+}
+
+void client_enable(struct client *client, enum mailbox_feature features)
+{
+	struct mailbox_status status;
+
+	if ((client->enabled_features & features) == features)
+		return;
+
+	client->enabled_features |= features;
+	if (client->mailbox == NULL)
+		return;
+
+	mailbox_enable(client->mailbox, features);
+	if ((features & MAILBOX_FEATURE_CONDSTORE) != 0) {
+		/* CONDSTORE being enabled while mailbox is selected.
+		   Notify client of the latest HIGHESTMODSEQ. */
+		mailbox_get_status(client->mailbox,
+				   STATUS_HIGHESTMODSEQ, &status);
+		client_send_line(client, t_strdup_printf(
+			"* OK [HIGHESTMODSEQ %llu]",
+			(unsigned long long)status.highest_modseq));
+	}
+}
+
+struct imap_search_update *
+client_search_update_lookup(struct client *client, const char *tag,
+			    unsigned int *idx_r)
+{
+	struct imap_search_update *updates;
+	unsigned int i, count;
+
+	if (!array_is_created(&client->search_updates))
+		return NULL;
+
+	updates = array_get_modifiable(&client->search_updates, &count);
+	for (i = 0; i < count; i++) {
+		if (strcmp(updates[i].tag, tag) == 0) {
+			*idx_r = i;
+			return &updates[i];
+		}
+	}
+	return NULL;
+}
+
+void client_search_updates_free(struct client *client)
+{
+	struct imap_search_update *updates;
+	unsigned int i, count;
+
+	if (!array_is_created(&client->search_updates))
+		return;
+
+	updates = array_get_modifiable(&client->search_updates, &count);
+	for (i = 0; i < count; i++) {
+		i_free(updates[i].tag);
+		mailbox_search_result_free(&updates[i].result);
+	}
+	array_clear(&client->search_updates);
 }
 
 void clients_init(void)

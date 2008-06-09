@@ -5,12 +5,16 @@
 #include "buffer.h"
 #include "mail-index-view-private.h"
 #include "mail-index-sync-private.h"
+#include "mail-index-modseq.h"
 #include "mail-transaction-log.h"
 
 struct mail_index_view_sync_ctx {
 	struct mail_index_view *view;
 	enum mail_index_view_sync_flags flags;
 	struct mail_index_sync_map_ctx sync_map_ctx;
+
+	/* After syncing view, map is replaced with sync_new_map. */
+	struct mail_index_map *sync_new_map;
 
 	ARRAY_TYPE(seq_range) expunges;
 	unsigned int finish_min_msg_count;
@@ -23,6 +27,7 @@ struct mail_index_view_sync_ctx {
 	unsigned int sync_map_update:1;
 	unsigned int skipped_expunges:1;
 	unsigned int last_read:1;
+	unsigned int hidden:1;
 };
 
 static int
@@ -270,7 +275,7 @@ int mail_index_view_sync_begin(struct mail_index_view *view,
 	struct mail_index_map *map;
 	ARRAY_TYPE(seq_range) expunges = ARRAY_INIT;
 	unsigned int expunge_count = 0;
-	bool reset, sync_expunges, quick_sync;
+	bool reset, sync_expunges, quick_sync, have_expunges;
 
 	i_assert(!view->syncing);
 	i_assert(view->transactions == 0);
@@ -320,7 +325,9 @@ int mail_index_view_sync_begin(struct mail_index_view *view,
 				     view->index->filepath);
 	}
 
-	if (sync_expunges || !view_sync_have_expunges(view)) {
+	have_expunges = view_sync_have_expunges(view);
+	if (!have_expunges) {
+		/* no expunges, we can just replace the map */
 		if (view->index->map->hdr.messages_count <
 		    ctx->finish_min_msg_count) {
 			mail_index_set_error(view->index,
@@ -332,24 +339,14 @@ int mail_index_view_sync_begin(struct mail_index_view *view,
 			view->inconsistent = TRUE;
 		}
 
-		view->sync_new_map = view->index->map;
-		view->sync_new_map->refcount++;
-
-		/* keep the old mapping without expunges until we're
-		   fully synced */
+		view->index->map->refcount++;
+		mail_index_unmap(&view->map);
+		view->map = view->index->map;
 	} else {
-		/* We need a private copy of the map if we don't want to
-		   sync expunges.
-
-		   If view's map is the head map, it means that it contains
-		   already all the latest changes and there's no need for us
-		   to apply any changes to it. This can only happen if there
-		   hadn't been any expunges. */
-		if (view->map != view->index->map) {
-			/* Using non-head mapping. We have to apply
-			   transactions to it to get latest changes into it. */
-			ctx->sync_map_update = TRUE;
-		}
+		/* expunges seen. create a private map which we update.
+		   if we're syncing expunges the map will finally be replaced
+		   with the head map to remove the expunged messages. */
+		ctx->sync_map_update = TRUE;
 
 		if (view->map->refcount > 1) {
 			map = mail_index_map_clone(view->map);
@@ -357,6 +354,11 @@ int mail_index_view_sync_begin(struct mail_index_view *view,
 			view->map = map;
 		} else {
 			map = view->map;
+		}
+
+		if (sync_expunges) {
+			ctx->sync_new_map = view->index->map;
+			ctx->sync_new_map->refcount++;
 		}
 	}
 
@@ -446,7 +448,7 @@ mail_index_view_sync_get_next_transaction(struct mail_index_view_sync_ctx *ctx)
 	int ret;
 	bool synced_to_map;
 
-	for (;;) {
+	do {
 		/* Get the next transaction from log. */
 		ret = mail_transaction_log_view_next(log_view, &ctx->hdr,
 						     &ctx->data);
@@ -460,43 +462,31 @@ mail_index_view_sync_get_next_transaction(struct mail_index_view_sync_ctx *ctx)
 		}
 
 		hdr = ctx->hdr;
-		if (!mail_index_view_sync_want(ctx, hdr)) {
-			/* This is a visible record that we don't want to
-			   sync. */
-			continue;
-		}
+		/* skip records we've already synced */
+	} while (!mail_index_view_sync_want(ctx, hdr));
 
-		mail_transaction_log_view_get_prev_pos(log_view, &seq, &offset);
+	mail_transaction_log_view_get_prev_pos(log_view, &seq, &offset);
 
-		/* If we started from a map that we didn't create ourself,
-		   some of the transactions may already be synced. at the end
-		   of this view sync we'll update file_seq=0 so that this check
-		   always becomes FALSE for subsequent syncs. */
-		synced_to_map = view->map->hdr.log_file_seq != 0 &&
-			LOG_IS_BEFORE(seq, offset,
-				      view->map->hdr.log_file_seq,
-				      view->map->hdr.log_file_head_offset);
+	/* If we started from a map that we didn't create ourself,
+	   some of the transactions may already be synced. at the end
+	   of this view sync we'll update file_seq=0 so that this check
+	   always becomes FALSE for subsequent syncs. */
+	synced_to_map = view->map->hdr.log_file_seq != 0 &&
+		LOG_IS_BEFORE(seq, offset, view->map->hdr.log_file_seq,
+			      view->map->hdr.log_file_head_offset);
 
-		/* Apply transaction to view's mapping if needed (meaning we
-		   didn't just re-map the view to head mapping). */
-		if (ctx->sync_map_update && !synced_to_map) {
-			i_assert((hdr->type & MAIL_TRANSACTION_EXPUNGE) == 0 ||
-				 (hdr->type & MAIL_TRANSACTION_EXTERNAL) == 0);
-
-			T_BEGIN {
-				ret = mail_index_sync_record(&ctx->sync_map_ctx,
-							     hdr, ctx->data);
-			} T_END;
-			if (ret < 0)
-				return -1;
-		}
-
-		/* skip changes committed by hidden transactions (eg. in IMAP
-		   store +flags.silent command) */
-		if (view_sync_is_hidden(view, seq, offset))
-			continue;
-		break;
+	/* Apply transaction to view's mapping if needed (meaning we
+	   didn't just re-map the view to head mapping). */
+	if (ctx->sync_map_update && !synced_to_map) {
+		if ((hdr->type & MAIL_TRANSACTION_EXPUNGE) == 0) T_BEGIN {
+			ret = mail_index_sync_record(&ctx->sync_map_ctx,
+						     hdr, ctx->data);
+		} T_END;
+		if (ret < 0)
+			return -1;
 	}
+
+	ctx->hidden = view_sync_is_hidden(view, seq, offset);
 	return 1;
 }
 
@@ -596,6 +586,8 @@ mail_index_view_sync_get_rec(struct mail_index_view_sync_ctx *ctx,
 		ctx->hdr = NULL;
 		return FALSE;
 	}
+
+	rec->hidden = ctx->hidden;
 	return TRUE;
 }
 
@@ -664,11 +656,11 @@ int mail_index_view_sync_commit(struct mail_index_view_sync_ctx **_ctx)
 		view->inconsistent = TRUE;
 		ret = -1;
 	}
+	mail_index_modseq_sync_end(&ctx->sync_map_ctx.modseq_ctx);
 
-	if (view->sync_new_map != NULL) {
+	if (ctx->sync_new_map != NULL) {
 		mail_index_unmap(&view->map);
-		view->map = view->sync_new_map;
-		view->sync_new_map = NULL;
+		view->map = ctx->sync_new_map;
 	}
 
 	i_assert(view->map->hdr.messages_count >= ctx->finish_min_msg_count);

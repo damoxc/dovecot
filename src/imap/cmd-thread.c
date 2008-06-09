@@ -10,11 +10,10 @@ bool cmd_thread(struct client_command_context *cmd)
 {
 	struct client *client = cmd->client;
 	enum mail_thread_type threading;
-	struct mail_search_arg *sargs;
+	struct mail_search_args *sargs;
 	const struct imap_arg *args;
-	int args_count;
-	pool_t pool;
-	const char *error, *charset, *str;
+	int ret, args_count;
+	const char *charset, *str;
 
 	args_count = imap_parser_read_args(cmd->parser, 0, 0, &args);
 	if (args_count == -2)
@@ -60,22 +59,19 @@ bool cmd_thread(struct client_command_context *cmd)
 	charset = IMAP_ARG_STR(args);
 	args++;
 
-	pool = pool_alloconly_create("mail_search_args", 2048);
+	ret = imap_search_args_build(cmd, args, charset, &sargs);
+	if (ret <= 0)
+		return ret < 0;
 
-	sargs = imap_search_args_build(pool, client->mailbox, args, &error);
-	if (sargs == NULL) {
-		/* error in search arguments */
-		client_send_tagline(cmd, t_strconcat("NO ", error, NULL));
-	} else if (imap_thread(cmd, charset, sargs, threading) == 0) {
-		pool_unref(&pool);
-		return cmd_sync(cmd, MAILBOX_SYNC_FLAG_FAST |
-				(cmd->uid ? 0 : MAILBOX_SYNC_FLAG_NO_EXPUNGES),
-				0, "OK Thread completed.");
-	} else {
+	ret = imap_thread(cmd, sargs, threading);
+	mail_search_args_unref(&sargs);
+	if (ret < 0) {
 		client_send_storage_error(cmd,
 					  mailbox_get_storage(client->mailbox));
+		return TRUE;
 	}
 
-	pool_unref(&pool);
-	return TRUE;
+	return cmd_sync(cmd, MAILBOX_SYNC_FLAG_FAST |
+			(cmd->uid ? 0 : MAILBOX_SYNC_FLAG_NO_EXPUNGES),
+			0, "OK Thread completed.");
 }

@@ -223,6 +223,7 @@ struct mail_vfuncs dbox_mail_vfuncs = {
 	index_mail_get_flags,
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
+	index_mail_get_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	dbox_mail_get_received_date,
@@ -237,5 +238,6 @@ struct mail_vfuncs dbox_mail_vfuncs = {
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_expunge,
-	index_mail_set_cache_corrupted
+	index_mail_set_cache_corrupted,
+	index_mail_get_index_mail
 };

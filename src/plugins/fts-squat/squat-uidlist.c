@@ -8,12 +8,12 @@
 #include "read-full.h"
 #include "write-full.h"
 #include "ostream.h"
+#include "mmap-util.h"
 #include "squat-trie-private.h"
 #include "squat-uidlist.h"
 
 #include <stdio.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 
 #define UIDLIST_LIST_SIZE 31
 #define UIDLIST_BLOCK_LIST_COUNT 100
@@ -26,8 +26,8 @@
 #define UIDLIST_PACKED_FLAG_BEGINS_WITH_POINTER 2
 
 struct uidlist_list {
-	uint32_t uid_count:31;
-	uint32_t uid_begins_with_pointer:1;
+	unsigned int uid_count:31;
+	unsigned int uid_begins_with_pointer:1;
 	uint32_t uid_list[UIDLIST_LIST_SIZE];
 };
 
@@ -39,6 +39,7 @@ struct squat_uidlist {
 	struct file_cache *file_cache;
 
 	struct file_lock *file_lock;
+	struct dotlock *dotlock;
 	uoff_t locked_file_size;
 
 	void *mmap_base;
@@ -254,9 +255,11 @@ uidlist_write(struct ostream *output, const struct uidlist_list *list,
 				*size_r = (bufp - buf) << 2 | packed_flags;
 				return 0;
 			}
+		} else if (unlikely(output->offset <= uid_list[0])) {
+			i_assert(output->closed);
+			return -1;
 		} else {
 			i_assert(list->uid_count > 1);
-			i_assert(output->offset > uid_list[0]);
 			offset = (output->offset - uid_list[0]) << 1;
 		}
 		uid_list++;
@@ -403,8 +406,6 @@ static int squat_uidlist_mmap(struct squat_uidlist *uidlist)
 		return -1;
 	}
 	if (st.st_size < (off_t)sizeof(uidlist->hdr)) {
-		if (st.st_size == 0)
-			return 0;
 		squat_uidlist_set_corrupted(uidlist, "File too small");
 		return -1;
 	}
@@ -436,7 +437,7 @@ static int squat_uidlist_map(struct squat_uidlist *uidlist)
 		return 1;
 	}
 
-	if (!uidlist->trie->mmap_disable) {
+	if ((uidlist->trie->flags & SQUAT_INDEX_FLAG_MMAP_DISABLE) == 0) {
 		if (mmap_hdr == NULL || uidlist->building ||
 		    uidlist->mmap_size < mmap_hdr->used_file_size) {
 			if (squat_uidlist_mmap(uidlist) < 0)
@@ -464,9 +465,44 @@ static int squat_uidlist_map(struct squat_uidlist *uidlist)
 		uidlist->data = NULL;
 		uidlist->data_size = 0;
 	}
-	if (uidlist->file_cache == NULL && uidlist->trie->mmap_disable)
+	if (uidlist->file_cache == NULL &&
+	    (uidlist->trie->flags & SQUAT_INDEX_FLAG_MMAP_DISABLE) != 0)
 		uidlist->file_cache = file_cache_new(uidlist->fd);
 	return squat_uidlist_map_header(uidlist);
+}
+
+static int squat_uidlist_read_to_memory(struct squat_uidlist *uidlist)
+{
+	size_t i, page_size = mmap_get_page_size();
+	char x;
+
+	if (uidlist->file_cache != NULL) {
+		return uidlist_file_cache_read(uidlist, 0,
+					       uidlist->hdr.used_file_size);
+	}
+	/* Tell the kernel we're going to use the uidlist data, so it loads
+	   it into memory and keeps it there. */
+	(void)madvise(uidlist->mmap_base, uidlist->mmap_size, MADV_WILLNEED);
+	/* It also speeds up a bit for us to sequentially load everything
+	   into memory, although at least Linux catches up quite fast even
+	   without this code. Compiler can quite easily optimize away this
+	   entire for loop, but volatile seems to help with gcc 4.2. */
+	for (i = 0; i < uidlist->mmap_size; i += page_size)
+		x = ((const volatile char *)uidlist->data)[i];
+	return 0;
+}
+
+static void squat_uidlist_free_from_memory(struct squat_uidlist *uidlist)
+{
+	size_t page_size = mmap_get_page_size();
+
+	if (uidlist->file_cache != NULL) {
+		file_cache_invalidate(uidlist->file_cache,
+				      page_size, (uoff_t)-1);
+	} else {
+		(void)madvise(uidlist->mmap_base, uidlist->mmap_size,
+			      MADV_DONTNEED);
+	}
 }
 
 struct squat_uidlist *squat_uidlist_init(struct squat_trie *trie)
@@ -514,6 +550,8 @@ static void squat_uidlist_close(struct squat_uidlist *uidlist)
 		file_cache_free(&uidlist->file_cache);
 	if (uidlist->file_lock != NULL)
 		file_lock_free(&uidlist->file_lock);
+	if (uidlist->dotlock != NULL)
+		file_dotlock_delete(&uidlist->dotlock);
 	if (uidlist->fd != -1) {
 		if (close(uidlist->fd) < 0)
 			i_error("close(%s) failed: %m", uidlist->path);
@@ -567,13 +605,22 @@ static int squat_uidlist_lock(struct squat_uidlist *uidlist)
 	for (;;) {
 		i_assert(uidlist->fd != -1);
 		i_assert(uidlist->file_lock == NULL);
+		i_assert(uidlist->dotlock == NULL);
 
-		ret = file_wait_lock(uidlist->fd, uidlist->path, F_WRLCK,
-				     uidlist->trie->lock_method,
-				     SQUAT_TRIE_LOCK_TIMEOUT,
-				     &uidlist->file_lock);
+		if (uidlist->trie->lock_method != FILE_LOCK_METHOD_DOTLOCK) {
+			ret = file_wait_lock(uidlist->fd, uidlist->path,
+					     F_WRLCK,
+					     uidlist->trie->lock_method,
+					     SQUAT_TRIE_LOCK_TIMEOUT,
+					     &uidlist->file_lock);
+		} else {
+			ret = file_dotlock_create(&uidlist->trie->dotlock_set,
+						  uidlist->path, 0,
+						  &uidlist->dotlock);
+		}
 		if (ret == 0) {
-			i_error("file_wait_lock(%s) failed: %m", uidlist->path);
+			i_error("squat uidlist %s: Locking timed out",
+				uidlist->path);
 			return 0;
 		}
 		if (ret < 0)
@@ -583,7 +630,10 @@ static int squat_uidlist_lock(struct squat_uidlist *uidlist)
 		if (ret == 0)
 			break;
 
-		file_unlock(&uidlist->file_lock);
+		if (uidlist->file_lock != NULL)
+			file_unlock(&uidlist->file_lock);
+		else
+			file_dotlock_delete(&uidlist->dotlock);
 		if (ret < 0)
 			return -1;
 
@@ -640,18 +690,22 @@ int squat_uidlist_build_init(struct squat_uidlist *uidlist,
 			     struct squat_uidlist_build_context **ctx_r)
 {
 	struct squat_uidlist_build_context *ctx;
+	int ret;
 
 	i_assert(!uidlist->building);
 
-	if (squat_uidlist_open_or_create(uidlist) < 0) {
-		if (uidlist->file_lock != NULL)
-			file_unlock(&uidlist->file_lock);
-		return -1;
-	}
-	if (lseek(uidlist->fd, uidlist->hdr.used_file_size, SEEK_SET) < 0) {
+	ret = squat_uidlist_open_or_create(uidlist);
+	if (ret == 0 &&
+	    lseek(uidlist->fd, uidlist->hdr.used_file_size, SEEK_SET) < 0) {
 		i_error("lseek(%s) failed: %m", uidlist->path);
+		ret = -1;
+	}
+
+	if (ret < 0) {
 		if (uidlist->file_lock != NULL)
 			file_unlock(&uidlist->file_lock);
+		if (uidlist->dotlock != NULL)
+			file_dotlock_delete(&uidlist->dotlock);
 		return -1;
 	}
 
@@ -800,10 +854,13 @@ int squat_uidlist_build_finish(struct squat_uidlist_build_context *ctx)
 	if (ctx->uidlist->corrupted)
 		return -1;
 
-	o_stream_seek(ctx->output, 0);
-	o_stream_send(ctx->output, &ctx->build_hdr, sizeof(ctx->build_hdr));
-	o_stream_seek(ctx->output, ctx->build_hdr.used_file_size);
-	o_stream_flush(ctx->output);
+	if (!ctx->output->closed) {
+		o_stream_seek(ctx->output, 0);
+		o_stream_send(ctx->output,
+			      &ctx->build_hdr, sizeof(ctx->build_hdr));
+		o_stream_seek(ctx->output, ctx->build_hdr.used_file_size);
+		o_stream_flush(ctx->output);
+	}
 
 	if (ctx->output->last_failed_errno != 0) {
 		errno = ctx->output->last_failed_errno;
@@ -823,7 +880,10 @@ void squat_uidlist_build_deinit(struct squat_uidlist_build_context **_ctx)
 	i_assert(ctx->uidlist->building);
 	ctx->uidlist->building = FALSE;
 
-	file_unlock(&ctx->uidlist->file_lock);
+	if (ctx->uidlist->file_lock != NULL)
+		file_unlock(&ctx->uidlist->file_lock);
+	else
+		file_dotlock_delete(&ctx->uidlist->dotlock);
 
 	if (ctx->need_reopen)
 		(void)squat_uidlist_open(ctx->uidlist);
@@ -852,6 +912,12 @@ int squat_uidlist_rebuild_init(struct squat_uidlist_build_context *build_ctx,
 		    build_ctx->build_hdr.count*2/3)
 			return 0;
 	}
+
+	/* make sure the entire uidlist is in memory before beginning,
+	   otherwise the pages are faulted to memory in random order which
+	   takes forever. */
+	if (squat_uidlist_read_to_memory(build_ctx->uidlist) < 0)
+		return -1;
 
 	temp_path = t_strconcat(build_ctx->uidlist->path, ".tmp", NULL);
 	fd = open(temp_path, O_RDWR | O_TRUNC | O_CREAT, 0600);
@@ -1014,6 +1080,10 @@ int squat_uidlist_rebuild_finish(struct squat_uidlist_rebuild_context *ctx,
 		ctx->build_ctx->need_reopen = TRUE;
 	}
 
+	/* we no longer require the entire uidlist to be in memory,
+	   let it be used for something more useful. */
+	squat_uidlist_free_from_memory(ctx->uidlist);
+
 	o_stream_unref(&ctx->output);
 	if (close(ctx->fd) < 0)
 		i_error("close(%s) failed: %m", temp_path);
@@ -1155,11 +1225,11 @@ uint32_t squat_uidlist_build_add_uid(struct squat_uidlist_build_context *ctx,
 		}
 		/* create a new range */
 		*p |= UID_LIST_MASK_RANGE;
-	}
-
-	if (list->uid_count == UIDLIST_LIST_SIZE) {
-		uidlist_flush(ctx, list, uid);
-		return uid_list_idx;
+	} else {
+		if (list->uid_count == UIDLIST_LIST_SIZE) {
+			uidlist_flush(ctx, list, uid);
+			return uid_list_idx;
+		}
 	}
 
 	p++;
