@@ -82,6 +82,7 @@ struct maildir_storage {
 struct maildir_mailbox {
 	struct index_mailbox ibox;
 	struct maildir_storage *storage;
+	struct mail_index_view *flags_view;
 
 	const char *path;
 	struct timeout *keep_lock_to;
@@ -148,9 +149,7 @@ int maildir_transaction_save_commit_pre(struct maildir_save_context *ctx);
 void maildir_transaction_save_commit_post(struct maildir_save_context *ctx);
 void maildir_transaction_save_rollback(struct maildir_save_context *ctx);
 
-int maildir_copy(struct mailbox_transaction_context *t, struct mail *mail,
-		 enum mail_flags flags, struct mail_keywords *keywords,
-		 struct mail *dest_mail);
+int maildir_copy(struct mail_save_context *ctx, struct mail *mail);
 int maildir_transaction_copy_commit(struct maildir_copy_context *ctx);
 void maildir_transaction_copy_rollback(struct maildir_copy_context *ctx);
 

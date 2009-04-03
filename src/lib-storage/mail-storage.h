@@ -290,6 +290,8 @@ const char *mail_storage_get_mailbox_control_dir(struct mail_storage *storage,
    in-memory indexes or mailbox doesn't exist. */
 const char *mail_storage_get_mailbox_index_dir(struct mail_storage *storage,
 					       const char *name);
+/* Returns path + file prefix for creating a temporary file. */
+const char *mail_storage_get_temp_prefix(struct mail_storage *storage);
 
 /* Open a mailbox. If input stream is given, mailbox is opened read-only
    using it as a backend. If storage doesn't support stream backends and its
@@ -515,12 +517,9 @@ int mailbox_save_continue(struct mail_save_context *ctx);
 int mailbox_save_finish(struct mail_save_context **ctx);
 void mailbox_save_cancel(struct mail_save_context **ctx);
 
-/* Copy given message. If dest_mail is non-NULL, the copied message can be
-   accessed using it. Note that setting it non-NULL may require mailbox
-   syncing, so don't give give it unless you need it. */
-int mailbox_copy(struct mailbox_transaction_context *t, struct mail *mail,
-		 enum mail_flags flags, struct mail_keywords *keywords,
-		 struct mail *dest_mail);
+/* Copy the given message. You'll need to specify the flags etc. using the
+   mailbox_save_*() functions. */
+int mailbox_copy(struct mail_save_context **ctx, struct mail *mail);
 
 /* Returns TRUE if mailbox is now in inconsistent state, meaning that
    the message IDs etc. may have changed - only way to recover this

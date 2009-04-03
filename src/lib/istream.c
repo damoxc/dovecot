@@ -67,6 +67,7 @@ void i_stream_set_return_partial_line(struct istream *stream, bool set)
 ssize_t i_stream_read(struct istream *stream)
 {
 	struct istream_private *_stream = stream->real_stream;
+	size_t old_size;
 	ssize_t ret;
 
 	if (unlikely(stream->closed))
@@ -75,6 +76,7 @@ ssize_t i_stream_read(struct istream *stream)
 	stream->eof = FALSE;
 	stream->stream_errno = 0;
 
+	old_size = _stream->pos - _stream->skip;
 	ret = _stream->read(_stream);
 	switch (ret) {
 	case -2:
@@ -91,6 +93,10 @@ ssize_t i_stream_read(struct istream *stream)
 		break;
 	case 0:
 		i_assert(!stream->blocking);
+		break;
+	default:
+		i_assert(ret > 0);
+		i_assert((size_t)ret+old_size == _stream->pos - _stream->skip);
 		break;
 	}
 	return ret;
@@ -187,11 +193,30 @@ const struct stat *i_stream_stat(struct istream *stream, bool exact)
 	return _stream->stat(_stream, exact);
 }
 
+int i_stream_get_size(struct istream *stream, bool exact, uoff_t *size_r)
+{
+	struct istream_private *_stream = stream->real_stream;
+
+	if (unlikely(stream->closed))
+		return -1;
+
+	return _stream->get_size(_stream, exact, size_r);
+}
+
 bool i_stream_have_bytes_left(const struct istream *stream)
 {
 	const struct istream_private *_stream = stream->real_stream;
 
 	return !stream->eof || _stream->skip != _stream->pos;
+}
+
+bool i_stream_is_eof(struct istream *stream)
+{
+	const struct istream_private *_stream = stream->real_stream;
+
+	if (_stream->skip == _stream->pos)
+		(void)i_stream_read(stream);
+	return !i_stream_have_bytes_left(stream);
 }
 
 static char *i_stream_next_line_finish(struct istream_private *stream, size_t i)
@@ -425,6 +450,22 @@ i_stream_default_stat(struct istream_private *stream, bool exact ATTR_UNUSED)
 	return &stream->statbuf;
 }
 
+static int
+i_stream_default_get_size(struct istream_private *stream,
+			  bool exact, uoff_t *size_r)
+{
+	const struct stat *st;
+
+	st = stream->stat(stream, exact);
+	if (st == NULL)
+		return -1;
+	if (st->st_size == -1)
+		return 0;
+
+	*size_r = st->st_size;
+	return 1;
+}
+
 struct istream *
 i_stream_create(struct istream_private *_stream, struct istream *parent, int fd)
 {
@@ -439,6 +480,8 @@ i_stream_create(struct istream_private *_stream, struct istream *parent, int fd)
 
 	if (_stream->stat == NULL)
 		_stream->stat = i_stream_default_stat;
+	if (_stream->get_size == NULL)
+		_stream->get_size = i_stream_default_get_size;
 	if (_stream->iostream.set_max_buffer_size == NULL) {
 		_stream->iostream.set_max_buffer_size =
 			i_stream_default_set_max_buffer_size;

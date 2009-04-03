@@ -49,14 +49,6 @@ dovecot_auth_LDADD = \
 
 ldap_sources = db-ldap.c passdb-ldap.c userdb-ldap.c
 
-if ! LDAP_PLUGIN
-builtin_ldap_sources = $(ldap_sources)
-endif
-
-if ! GSSAPI_PLUGIN
-builtin_gssapi_sources = mech-gssapi.c
-endif
-
 dovecot_auth_SOURCES = \
 	auth.c \
 	auth-cache.c \
@@ -79,6 +71,7 @@ dovecot_auth_SOURCES = \
 	mech-login.c \
 	mech-cram-md5.c \
 	mech-digest-md5.c \
+	mech-gssapi.c \
 	mech-ntlm.c \
 	mech-otp.c \
 	mech-skey.c \
@@ -109,8 +102,7 @@ dovecot_auth_SOURCES = \
 	userdb-static.c \
 	userdb-vpopmail.c \
 	userdb-sql.c \
-	$(builtin_gssapi_sources) \
-	$(builtin_ldap_sources)
+	$(ldap_sources)
 
 headers = \
 	auth.h \
@@ -147,14 +139,14 @@ headers = \
 if GSSAPI_PLUGIN
 libmech_gssapi_la_LDFLAGS = -module -avoid-version
 libmech_gssapi_la_LIBADD = $(KRB5_LIBS)
-libmech_gssapi_la_CPPFLAGS = $(AM_CPPFLAGS) $(KRB5_CFLAGS)
+libmech_gssapi_la_CPPFLAGS = $(AM_CPPFLAGS) $(KRB5_CFLAGS) -DPLUGIN_BUILD
 libmech_gssapi_la_SOURCES = mech-gssapi.c
 endif
 
 if LDAP_PLUGIN
 libauthdb_ldap_la_LDFLAGS = -module -avoid-version
 libauthdb_ldap_la_LIBADD = $(LDAP_LIBS)
-libauthdb_ldap_la_CPPFLAGS = $(AM_CPPFLAGS)
+libauthdb_ldap_la_CPPFLAGS = $(AM_CPPFLAGS) -DPLUGIN_BUILD
 libauthdb_ldap_la_SOURCES = $(ldap_sources)
 endif
 

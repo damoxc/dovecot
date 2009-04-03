@@ -38,7 +38,7 @@ struct imap_fetch_context {
 	struct mail *mail;
 
 	enum mail_fetch_field fetch_data;
-	buffer_t *all_headers_buf;
+	ARRAY_TYPE(const_string) all_headers;
         struct mailbox_header_lookup_ctx *all_headers_ctx;
 
 	ARRAY_DEFINE(handlers, struct imap_fetch_context_handler);
@@ -46,6 +46,7 @@ struct imap_fetch_context {
 
 	struct mail *cur_mail;
 	unsigned int cur_handler;
+	const char *cur_name;
 	uoff_t cur_size, cur_offset;
 	enum mail_fetch_field cur_size_field;
 	string_t *cur_str;

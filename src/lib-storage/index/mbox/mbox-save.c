@@ -739,7 +739,8 @@ int mbox_transaction_save_commit(struct mbox_save_context *ctx)
 	}
 
 	if (!ctx->synced && mbox->mbox_fd != -1 &&
-	    !mbox->mbox_writeonly && !mbox->ibox.fsync_disable) {
+	    !mbox->mbox_writeonly &&
+	    !mbox->storage->storage.set->fsync_disable) {
 		if (fdatasync(mbox->mbox_fd) < 0) {
 			mbox_set_syscall_error(mbox, "fdatasync()");
 			ret = -1;

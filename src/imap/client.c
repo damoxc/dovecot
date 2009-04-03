@@ -9,6 +9,7 @@
 #include "ostream.h"
 #include "var-expand.h"
 #include "imap-resp-code.h"
+#include "imap-util.h"
 #include "mail-namespace.h"
 #include "commands.h"
 
@@ -16,6 +17,7 @@
 #include <unistd.h>
 
 extern struct mail_storage_callbacks mail_storage_callbacks;
+struct imap_module_register imap_module_register = { 0 };
 
 static struct client *my_client; /* we don't need more than one currently */
 
@@ -309,6 +311,7 @@ void client_send_command_error(struct client_command_context *cmd,
 bool client_read_args(struct client_command_context *cmd, unsigned int count,
 		      unsigned int flags, const struct imap_arg **args_r)
 {
+	string_t *str;
 	int ret;
 
 	i_assert(count <= INT_MAX);
@@ -318,6 +321,11 @@ bool client_read_args(struct client_command_context *cmd, unsigned int count,
 		/* all parameters read successfully */
 		i_assert(cmd->client->input_lock == NULL ||
 			 cmd->client->input_lock == cmd);
+
+		str = t_str_new(256);
+		imap_write_args(str, *args_r);
+		cmd->args = p_strdup(cmd->pool, str_c(str));
+
 		cmd->client->input_lock = NULL;
 		return TRUE;
 	} else if (ret == -2) {
@@ -435,6 +443,7 @@ client_command_new(struct client *client)
 	cmd = p_new(client->command_pool, struct client_command_context, 1);
 	cmd->client = client;
 	cmd->pool = client->command_pool;
+	p_array_init(&cmd->module_contexts, cmd->pool, 5);
 
 	if (client->free_parser != NULL) {
 		cmd->parser = client->free_parser;

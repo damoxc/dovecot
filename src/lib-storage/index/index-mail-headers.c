@@ -142,16 +142,20 @@ static void index_mail_parse_header_finish(struct index_mail *mail)
 			index_mail_cache_add_idx(mail, match_idx, NULL, 0);
 		}
 	}
+
+	mail->data.dont_cache_field_idx = -1UL;
 }
 
 static unsigned int
-get_header_field_idx(struct index_mailbox *ibox, const char *field)
+get_header_field_idx(struct index_mailbox *ibox, const char *field,
+		     enum mail_cache_decision_type decision)
 {
 	struct mail_cache_field header_field = {
 		NULL, 0, MAIL_CACHE_FIELD_HEADER, 0,
-		MAIL_CACHE_DECISION_TEMP
+		MAIL_CACHE_DECISION_NO
 	};
 
+	header_field.decision = decision;
 	T_BEGIN {
 		header_field.name = t_strconcat("hdr.", field, NULL);
 		mail_cache_register_fields(ibox->cache, &header_field, 1);
@@ -196,7 +200,8 @@ void index_mail_parse_header_init(struct index_mail *mail,
 {
 	struct index_header_lookup_ctx *headers =
 		(struct index_header_lookup_ctx *)_headers;
-	unsigned int i;
+	const uint8_t *match;
+	unsigned int i, field_idx, match_count;
 
 	mail->header_seq = mail->data.seq;
 	if (mail->header_data == NULL) {
@@ -235,17 +240,28 @@ void index_mail_parse_header_init(struct index_mail *mail,
 		}
 	}
 
-	if ((mail->data.cache_fetch_fields & MAIL_FETCH_DATE) != 0 ||
-	    mail->data.save_sent_date) {
-		array_idx_set(&mail->header_match,
-			      get_header_field_idx(mail->ibox, "Date"),
-			      &mail->header_match_value);
-	}
-
 	/* register also all the other headers that exist in cache file */
 	T_BEGIN {
 		index_mail_parse_header_register_all_wanted(mail);
 	} T_END;
+
+	/* if we want sent date, it doesn't mean that we also want to cache
+	   Date: header. if we have Date field's index set at this point we
+	   know that we want it. otherwise add it and remember that we don't
+	   want it cached. */
+	field_idx = get_header_field_idx(mail->ibox, "Date",
+					 MAIL_CACHE_DECISION_NO);
+	match = array_get(&mail->header_match, &match_count);
+	if (field_idx < match_count &&
+	    match[field_idx] == mail->header_match_value) {
+		/* cache Date: header */
+	} else if ((mail->data.cache_fetch_fields & MAIL_FETCH_DATE) != 0 ||
+		   mail->data.save_sent_date) {
+		/* parse Date: header, but don't cache it. */
+		mail->data.dont_cache_field_idx = field_idx;
+		array_idx_set(&mail->header_match, field_idx,
+			      &mail->header_match_value);
+	}
 }
 
 static void index_mail_parse_finish_imap_envelope(struct index_mail *mail)
@@ -591,7 +607,8 @@ index_mail_get_raw_headers(struct index_mail *mail, const char *field,
 
 	i_assert(field != NULL);
 
-	field_idx = get_header_field_idx(mail->ibox, field);
+	field_idx = get_header_field_idx(mail->ibox, field,
+					 MAIL_CACHE_DECISION_TEMP);
 
 	dest = str_new(mail->data_pool, 128);
 	if (mail_cache_lookup_headers(mail->trans->cache_view, dest,
@@ -650,8 +667,9 @@ index_mail_get_raw_headers(struct index_mail *mail, const char *field,
 	return 0;
 }
 
-static const char *unfold_header(pool_t pool, const char *str)
+static int unfold_header(pool_t pool, const char **_str)
 {
+	const char *str = *_str;
 	char *new_str;
 	unsigned int i, j;
 
@@ -660,7 +678,7 @@ static const char *unfold_header(pool_t pool, const char *str)
 			break;
 	}
 	if (str[i] == '\0')
-		return str;
+		return 0;
 
 	/* @UNSAFE */
 	new_str = p_malloc(pool, i + strlen(str+i) + 1);
@@ -671,19 +689,25 @@ static const char *unfold_header(pool_t pool, const char *str)
 			i++;
 			if (str[i] == '\0')
 				break;
-			i_assert(str[i] == ' ' || str[i] == '\t');
+
+			if (str[i] != ' ' && str[i] != '\t') {
+				/* corrupted */
+				return -1;
+			}
 		} else {
 			new_str[j++] = str[i];
 		}
 	}
 	new_str[j] = '\0';
-	return new_str;
+	*_str = new_str;
+	return 0;
 }
 
-static const char *const *
-index_mail_headers_decode(struct index_mail *mail, const char *const *list,
+static int
+index_mail_headers_decode(struct index_mail *mail, const char *const **_list,
 			  unsigned int max_count)
 {
+	const char *const *list = *_list;
 	const char **decoded_list, *input;
 	unsigned int i, count;
 	string_t *str;
@@ -700,28 +724,39 @@ index_mail_headers_decode(struct index_mail *mail, const char *const *list,
 		if (message_header_decode_utf8((const unsigned char *)input,
 					       strlen(list[i]), str, FALSE))
 			input = str_c(str);
-		input = unfold_header(mail->data_pool, input);
+		if (unfold_header(mail->data_pool, &input) < 0)
+			return -1;
 		if (input == str->data)
 			input = p_strdup(mail->data_pool, input);
 		decoded_list[i] = input;
 	}
-	return decoded_list;
+	*_list = decoded_list;
+	return 0;
 }
 
 int index_mail_get_headers(struct mail *_mail, const char *field,
 			   bool decode_to_utf8, const char *const **value_r)
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
+	int ret, i;
 
-	if (index_mail_get_raw_headers(mail, field, value_r) < 0)
-		return -1;
-	if (!decode_to_utf8 || **value_r == NULL)
-		return 0;
+	for (i = 0; i < 2; i++) {
+		if (index_mail_get_raw_headers(mail, field, value_r) < 0)
+			return -1;
+		if (!decode_to_utf8 || **value_r == NULL)
+			return 0;
 
-	T_BEGIN {
-		*value_r = index_mail_headers_decode(mail, *value_r, -1U);
-	} T_END;
-	return 0;
+		T_BEGIN {
+			ret = index_mail_headers_decode(mail, value_r, -1U);
+		} T_END;
+
+		if (ret < 0) {
+			mail_cache_set_corrupted(mail->ibox->cache,
+				"Broken header %s for mail UID %u",
+				field, _mail->uid);
+		}
+	}
+	return ret;
 }
 
 int index_mail_get_first_header(struct mail *_mail, const char *field,
@@ -729,16 +764,28 @@ int index_mail_get_first_header(struct mail *_mail, const char *field,
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
 	const char *const *list;
+	int ret, i;
 
-	if (index_mail_get_raw_headers(mail, field, &list) < 0)
-		return -1;
-	if (decode_to_utf8 && list[0] != NULL) {
+	for (i = 0; i < 2; i++) {
+		if (index_mail_get_raw_headers(mail, field, &list) < 0)
+			return -1;
+		if (!decode_to_utf8 || list[0] == NULL) {
+			ret = 0;
+			break;
+		}
+
 		T_BEGIN {
-			list = index_mail_headers_decode(mail, list, 1);
+			ret = index_mail_headers_decode(mail, &list, 1);
 		} T_END;
+
+		if (ret < 0) {
+			mail_cache_set_corrupted(mail->ibox->cache,
+				"Broken header %s for mail UID %u",
+				field, _mail->uid);
+		}
 	}
 	*value_r = list[0];
-	return list[0] != NULL ? 1 : 0;
+	return ret < 0 ? -1 : (list[0] != NULL ? 1 : 0);
 }
 
 static void header_cache_callback(struct message_header_line *hdr,

@@ -630,6 +630,31 @@ int mail_index_sync_record(struct mail_index_sync_map_ctx *ctx,
 		}
 		break;
 	}
+	case MAIL_TRANSACTION_EXT_ATOMIC_INC: {
+		const struct mail_transaction_ext_atomic_inc *rec, *end;
+
+		if (ctx->cur_ext_map_idx == (uint32_t)-1) {
+			mail_index_sync_set_corrupted(ctx,
+				"Extension record updated "
+				"without intro prefix");
+			ret = -1;
+			break;
+		}
+
+		if (ctx->cur_ext_ignore) {
+			ret = 1;
+			break;
+		}
+
+		rec = data;
+		end = CONST_PTR_OFFSET(data, hdr->size);
+		for (rec = data; rec < end; rec++) {
+			ret = mail_index_sync_ext_atomic_inc(ctx, rec);
+			if (ret <= 0)
+				break;
+		}
+		break;
+	}
 	case MAIL_TRANSACTION_KEYWORD_UPDATE: {
 		const struct mail_transaction_keyword_update *rec = data;
 
@@ -784,6 +809,15 @@ int mail_index_sync_map(struct mail_index_map **_map,
 		/* can't use it. sync by re-reading index. */
 		mail_index_view_close(&view);
 		return 0;
+	}
+
+	mail_transaction_log_get_head(index->log, &prev_seq, &prev_offset);
+	if (prev_seq != map->hdr.log_file_seq ||
+	    prev_offset - map->hdr.log_file_tail_offset >
+	    				MAIL_INDEX_MIN_WRITE_BYTES) {
+		/* we're reading more from log than we would have preferred.
+		   remember that we probably want to rewrite index soon. */
+		index->index_min_write = TRUE;
 	}
 
 	/* view referenced the map. avoid unnecessary map cloning by

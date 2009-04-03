@@ -93,6 +93,7 @@ void maildir_uidlist_set_ext(struct maildir_uidlist *uidlist, uint32_t uid,
    maildir_uidlist_set_ext() */
 int maildir_uidlist_update(struct maildir_uidlist *uidlist);
 
+void maildir_uidlist_set_all_nonsynced(struct maildir_uidlist *uidlist);
 /* Sync uidlist with what's actually on maildir. Returns same as
    maildir_uidlist_lock(). */
 int maildir_uidlist_sync_init(struct maildir_uidlist *uidlist,
@@ -106,6 +107,7 @@ void maildir_uidlist_sync_remove(struct maildir_uidlist_sync_ctx *ctx,
 const char *
 maildir_uidlist_sync_get_full_filename(struct maildir_uidlist_sync_ctx *ctx,
 				       const char *filename);
+void maildir_uidlist_sync_recreate(struct maildir_uidlist_sync_ctx *ctx);
 void maildir_uidlist_sync_finish(struct maildir_uidlist_sync_ctx *ctx);
 int maildir_uidlist_sync_deinit(struct maildir_uidlist_sync_ctx **ctx);
 

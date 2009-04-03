@@ -117,9 +117,10 @@ charset_to_utf8_try(struct charset_translation *t,
 	} else {
 		size_t tmpsize = sizeof(tmpbuf) - destleft;
 
-		/* we just converted data to UTF-8, it can't be invalid */
-		if (uni_utf8_to_decomposed_titlecase(tmpbuf, tmpsize, dest) < 0)
-			i_unreached();
+		/* we just converted data to UTF-8. it shouldn't be invalid,
+		   but Solaris iconv appears to pass invalid data through
+		   sometimes (e.g. 8 bit characters with UTF-7) */
+		(void)uni_utf8_to_decomposed_titlecase(tmpbuf, tmpsize, dest);
 	}
 	return ret;
 }
@@ -128,8 +129,9 @@ enum charset_result
 charset_to_utf8(struct charset_translation *t,
 		const unsigned char *src, size_t *src_size, buffer_t *dest)
 {
+	bool dtcase = (t->flags & CHARSET_FLAG_DECOMP_TITLECASE) != 0;
 	enum charset_result result;
-	size_t pos, used, size;
+	size_t pos, used, size, prev_used = 0;
 	bool ret;
 
 	for (pos = 0;;) {
@@ -142,11 +144,16 @@ charset_to_utf8(struct charset_translation *t,
 			return result;
 		}
 
-		/* force buffer to grow */
-		used = dest->used;
-		size = buffer_get_size(dest) - used + 1;
-		(void)buffer_append_space_unsafe(dest, size);
-		buffer_set_used_size(dest, used);
+		if (!dtcase) {
+			/* force buffer to grow */
+			used = dest->used;
+			size = buffer_get_size(dest) - used + 1;
+			(void)buffer_append_space_unsafe(dest, size);
+			buffer_set_used_size(dest, used);
+		} else {
+			i_assert(dest->used != prev_used);
+			prev_used = dest->used;
+		}
 	}
 }
 

@@ -46,6 +46,7 @@ char program_path[PATH_MAX];
 char ssl_manual_key_password[100];
 const char *env_tz;
 bool auth_success_written;
+bool core_dumps_disabled;
 #ifdef DEBUG
 bool gdb;
 #endif
@@ -171,22 +172,26 @@ static void settings_reload(void)
 	}
 }
 
-static void sig_die(int signo, void *context ATTR_UNUSED)
+static void sig_die(const siginfo_t *si, void *context ATTR_UNUSED)
 {
 	/* warn about being killed because of some signal, except SIGINT (^C)
 	   which is too common at least while testing :) */
-	if (signo != SIGINT)
-		i_warning("Killed with signal %d", signo);
+	if (si->si_signo != SIGINT) {
+		i_warning("Killed with signal %d (by pid=%s uid=%s code=%s)",
+			  si->si_signo, dec2str(si->si_pid),
+			  dec2str(si->si_uid),
+			  lib_signal_code_to_str(si->si_signo, si->si_code));
+	}
 	io_loop_stop(ioloop);
 }
 
-static void sig_reload_settings(int signo ATTR_UNUSED,
+static void sig_reload_settings(const siginfo_t *si ATTR_UNUSED,
 				void *context ATTR_UNUSED)
 {
 	settings_reload();
 }
 
-static void sig_reopen_logs(int signo ATTR_UNUSED,
+static void sig_reopen_logs(const siginfo_t *si ATTR_UNUSED,
 			    void *context ATTR_UNUSED)
 {
 	set_logfile(master_set->defaults);
@@ -303,7 +308,9 @@ static void main_log_startup(void)
 #define STARTUP_STRING PACKAGE_NAME" v"VERSION" starting up"
 	rlim_t core_limit;
 
-	if (restrict_get_core_limit(&core_limit) == 0 && core_limit == 0)
+	core_dumps_disabled = restrict_get_core_limit(&core_limit) == 0 &&
+		core_limit == 0;
+	if (core_dumps_disabled)
 		i_info(STARTUP_STRING" (core dumps disabled)");
 	else
 		i_info(STARTUP_STRING);
@@ -364,15 +371,16 @@ static void main_deinit(void)
 	auth_processes_deinit();
 	dict_processes_deinit();
 	ssl_deinit();
-	child_processes_deinit();
 
 	listeners_close_fds();
 
 	if (close(null_fd) < 0)
 		i_error("close(null_fd) failed: %m");
 
-	lib_signals_deinit();
 	log_deinit();
+	/* log_deinit() may still want to look up child processes */
+	child_processes_deinit();
+	lib_signals_deinit();
 	closelog();
 }
 
@@ -403,7 +411,8 @@ static void print_help(void)
 
 static void print_build_options(void)
 {
-	printf("Build options:"
+	static const char *build_options =
+		"Build options:"
 #ifdef IOLOOP_EPOLL
 		" ioloop=epoll"
 #endif
@@ -501,7 +510,8 @@ static void print_build_options(void)
 #ifdef USERDB_VPOPMAIL
 		" vpopmail"
 #endif
-	"\n");
+	"\n";
+	puts(build_options);
 }
 
 int main(int argc, char *argv[])

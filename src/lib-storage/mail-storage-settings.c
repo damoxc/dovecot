@@ -188,6 +188,8 @@ mail_storage_settings_to_index_flags(const struct mail_storage_settings *set)
 		index_flags |= MAIL_INDEX_OPEN_FLAG_MMAP_DISABLE;
 	if (set->dotlock_use_excl)
 		index_flags |= MAIL_INDEX_OPEN_FLAG_DOTLOCK_USE_EXCL;
+	if (set->mail_nfs_index)
+		index_flags |= MAIL_INDEX_OPEN_FLAG_NFS_FLUSH;
 	return index_flags;
 }
 

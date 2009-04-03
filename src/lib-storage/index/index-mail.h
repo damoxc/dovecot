@@ -86,6 +86,7 @@ struct index_mail_data {
 	enum index_mail_access_part access_part;
 	/* dont_cache_fields overrides cache_fields */
 	enum mail_fetch_field cache_fetch_fields, dont_cache_fetch_fields;
+	unsigned int dont_cache_field_idx;
 
 	struct istream *stream, *filter_stream;
 	struct message_size hdr_size, body_size;
@@ -106,6 +107,7 @@ struct index_mail_data {
 	unsigned int messageparts_saved_to_cache:1;
 	unsigned int header_parsed:1;
 	unsigned int no_caching:1;
+	unsigned int forced_no_caching:1;
 	unsigned int destroying_stream:1;
 };
 
@@ -149,6 +151,7 @@ void index_mail_init(struct index_mail *mail,
 
 void index_mail_set_seq(struct mail *mail, uint32_t seq);
 bool index_mail_set_uid(struct mail *mail, uint32_t uid);
+void index_mail_set_uid_cache_updates(struct mail *mail, bool set);
 void index_mail_close(struct mail *mail);
 void index_mail_free(struct mail *mail);
 

@@ -57,8 +57,7 @@ void mail_index_modseq_enable(struct mail_index *index)
 	struct mail_index_transaction *trans;
 	struct mail_index_view *view;
 	struct mail_index_modseq_header hdr;
-	uint32_t ext_map_idx, log_seq;
-	uoff_t log_offset;
+	uint32_t ext_map_idx;
 
 	if (index->modseqs_enabled)
 		return;
@@ -75,8 +74,7 @@ void mail_index_modseq_enable(struct mail_index *index)
 					     0, &hdr, sizeof(hdr));
 
 		/* commit also refreshes the index, which syncs the modseqs */
-		(void)mail_index_transaction_commit(&trans,
-						    &log_seq, &log_offset);
+		(void)mail_index_transaction_commit(&trans);
 		mail_index_view_close(&view);
 
 		/* get the modseq extension to index map */
@@ -612,12 +610,24 @@ struct mail_index_map_modseq *
 mail_index_map_modseq_clone(const struct mail_index_map_modseq *mmap)
 {
 	struct mail_index_map_modseq *new_mmap;
+	const struct metadata_modseqs *src_metadata;
+	struct metadata_modseqs *dest_metadata;
+	unsigned int i, count;
+
+	src_metadata = array_get(&mmap->metadata_modseqs, &count);
 
 	new_mmap = i_new(struct mail_index_map_modseq, 1);
-	i_array_init(&new_mmap->metadata_modseqs,
-		     array_count(&mmap->metadata_modseqs) + 16);
-	array_append_array(&new_mmap->metadata_modseqs,
-			   &mmap->metadata_modseqs);
+	i_array_init(&new_mmap->metadata_modseqs, count + 16);
+
+	for (i = 0; i < count; i++) {
+		dest_metadata = array_append_space(&new_mmap->metadata_modseqs);
+		if (array_is_created(&src_metadata[i].modseqs)) {
+			i_array_init(&dest_metadata->modseqs,
+				     array_count(&src_metadata[i].modseqs));
+			array_append_array(&dest_metadata->modseqs,
+					   &src_metadata[i].modseqs);
+		}
+	}
 	return new_mmap;
 }
 

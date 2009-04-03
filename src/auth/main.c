@@ -38,12 +38,16 @@ static struct module *modules = NULL;
 static struct auth *auth;
 static struct auth_worker_client *worker_client;
 
-static void sig_die(int signo, void *context ATTR_UNUSED)
+static void sig_die(const siginfo_t *si, void *context ATTR_UNUSED)
 {
 	/* warn about being killed because of some signal, except SIGINT (^C)
 	   which is too common at least while testing :) */
-	if (signo != SIGINT)
-		i_warning("Killed with signal %d", signo);
+	if (si->si_signo != SIGINT) {
+		i_warning("Killed with signal %d (by pid=%s uid=%s code=%s)",
+			  si->si_signo, dec2str(si->si_pid),
+			  dec2str(si->si_uid),
+			  lib_signal_code_to_str(si->si_signo, si->si_code));
+	}
 	io_loop_stop(ioloop);
 }
 
@@ -80,8 +84,19 @@ static uid_t get_uid(const char *user)
 	if (is_numeric(user, '\0'))
 		return strtoul(user, NULL, 10);
 
-	if ((pw = getpwnam(user)) == NULL)
+	errno = 0;
+	if ((pw = getpwnam(user)) == NULL) {
+		if (errno != 0)
+			i_fatal("User '%s' lookup failed: %m", user);
+		setpwent();
+		if (getpwent() == NULL) {
+			if (errno != 0)
+				i_fatal("getpwent() failed: %m");
+			i_fatal("getpwnam() failed for some reason. "
+				"Is auth_process_size set to too low?");
+		}
 		i_fatal("User doesn't exist: %s", user);
+	}
 	return pw->pw_uid;
 }
 
@@ -94,8 +109,13 @@ static gid_t get_gid(const char *group)
 	if (is_numeric(group, '\0'))
 		return strtoul(group, NULL, 10);
 
-	if ((gr = getgrnam(group)) == NULL)
-		i_fatal("Group doesn't exist: %s", group);
+	errno = 0;
+	if ((gr = getgrnam(group)) == NULL) {
+		if (errno != 0)
+			i_fatal("Group '%s' lookup failed: %m", group);
+		else
+			i_fatal("Group doesn't exist: %s", group);
+	}
 	return gr->gr_gid;
 }
 
@@ -217,6 +237,7 @@ static void drop_privileges(void)
 
 	/* Password lookups etc. may require roots, allow it. */
 	restrict_access_by_env(FALSE);
+	restrict_access_allow_coredumps(TRUE);
 }
 
 static void main_init(bool nodaemon)

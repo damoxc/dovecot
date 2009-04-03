@@ -191,7 +191,7 @@ maildir_create(struct mail_storage *_storage, const char *data,
 	enum mail_storage_flags flags = _storage->flags;
 	struct mailbox_list_settings list_set;
 	struct mailbox_list *list;
-	const char *layout;
+	const char *layout, *dir;
 	struct stat st;
 
 	if (maildir_get_list_settings(&list_set, data, _storage, &layout,
@@ -253,12 +253,20 @@ maildir_create(struct mail_storage *_storage, const char *data,
 	mailbox_list_init(list, _storage->ns, &list_set, 0);
 
 	storage->temp_prefix = mailbox_list_get_temp_prefix(list);
-	if (list_set.control_dir == NULL) {
+	if (list_set.control_dir == NULL && list_set.inbox_path == NULL &&
+	    (_storage->ns->flags & NAMESPACE_FLAG_INBOX) != 0) {
 		/* put the temp files into tmp/ directory preferrably */
-		storage->temp_prefix =
-			p_strconcat(_storage->pool,
-				    "tmp/", storage->temp_prefix, NULL);
+		storage->temp_prefix = p_strconcat(_storage->pool, "tmp/",
+						   storage->temp_prefix, NULL);
+		dir = mailbox_list_get_path(list, NULL,
+					    MAILBOX_LIST_PATH_TYPE_DIR);
+	} else {
+		/* control dir should also be writable */
+		dir = mailbox_list_get_path(list, NULL,
+					    MAILBOX_LIST_PATH_TYPE_CONTROL);
 	}
+	_storage->temp_path_prefix = p_strconcat(_storage->pool, dir, "/",
+						 storage->temp_prefix, NULL);
 	return 0;
 }
 
@@ -494,7 +502,8 @@ maildir_mailbox_open(struct mail_storage *_storage, const char *name,
 	if (strcmp(name, "INBOX") == 0 &&
 	    (_storage->ns->flags & NAMESPACE_FLAG_INBOX) != 0) {
 		/* INBOX always exists */
-		mailbox_list_get_dir_permissions(_storage->list, &mode, &gid);
+		mailbox_list_get_dir_permissions(_storage->list, NULL,
+						 &mode, &gid);
 		if (create_maildir(_storage, path, mode, gid, TRUE) < 0)
 			return NULL;
 		return maildir_open(storage, "INBOX", flags);
@@ -513,7 +522,8 @@ maildir_mailbox_open(struct mail_storage *_storage, const char *name,
 	/* tmp/ directory doesn't exist. does the maildir? */
 	if (stat(path, &st) == 0) {
 		/* yes, we'll need to create the missing dirs */
-		mailbox_list_get_dir_permissions(_storage->list, &mode, &gid);
+		mailbox_list_get_dir_permissions(_storage->list, name,
+						 &mode, &gid);
 		if (create_maildir(_storage, path, mode, gid, TRUE) < 0)
 			return NULL;
 
@@ -584,7 +594,7 @@ static int maildir_mailbox_create(struct mail_storage *_storage,
 					  st.st_mode & 0666, st.st_gid) < 0)
 			return -1;
 	} else {
-		mailbox_list_get_dir_permissions(_storage->list,
+		mailbox_list_get_dir_permissions(_storage->list, NULL,
 						 &st.st_mode, &st.st_gid);
 		if (create_maildir(_storage, path, st.st_mode, st.st_gid,
 				   FALSE) < 0)
@@ -852,6 +862,8 @@ static int maildir_storage_mailbox_close(struct mailbox *box)
 		timeout_remove(&mbox->keep_lock_to);
 	}
 
+	if (mbox->flags_view != NULL)
+		mail_index_view_close(&mbox->flags_view);
 	if (mbox->keywords != NULL)
 		maildir_keywords_deinit(&mbox->keywords);
 	maildir_uidlist_deinit(&mbox->uidlist);

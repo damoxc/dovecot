@@ -190,7 +190,6 @@ static struct setting_define master_setting_defines[] = {
 
 	DEF(SET_STR_VARS, mail_location),
 	DEF(SET_BOOL, mail_debug),
-	DEF(SET_UINT, umask),
 	DEF(SET_BOOL, mail_drop_priv_before_exec),
 
 	DEF(SET_STR, mail_executable),
@@ -258,7 +257,8 @@ struct master_settings master_default_settings = {
 
 	MEMBER(mail_location) "",
 	MEMBER(mail_debug) FALSE,
-	MEMBER(umask) 0077,
+	MEMBER(maildir_very_dirty_syncs) FALSE,
+	MEMBER(dbox_purge_min_percentage) 0,
 	MEMBER(mail_drop_priv_before_exec) FALSE,
 
 	MEMBER(mail_executable) NULL,
@@ -317,8 +317,8 @@ get_process_capability(enum process_type ptype, struct master_settings *set)
 		args[1] = t_strdup_printf("gid=%s", dec2str(getegid()));
 	}
 
-	if (pipe(fd) < 0) {
-		i_error("pipe() failed: %m");
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd) < 0) {
+		i_error("socketpair() failed: %m");
 		return NULL;
 	}
 	fd_close_on_exec(fd[0], TRUE);
@@ -761,6 +761,21 @@ static bool settings_verify(struct master_settings *set)
 	return TRUE;
 }
 
+static bool login_want_core_dumps(struct master_server_settings *set)
+{
+	const char *p;
+
+	p = set->pop3 == NULL ? NULL :
+		strstr(set->pop3->login_executable, " -D");
+	if (p != NULL && p[3] == '\0')
+		return TRUE;
+	p = set->imap == NULL ? NULL :
+		strstr(set->imap->login_executable, " -D");
+	if (p != NULL && p[3] == '\0')
+		return TRUE;
+	return FALSE;
+}
+
 static bool settings_do_fixes(struct master_settings *set)
 {
 	struct stat st;
@@ -784,21 +799,6 @@ static bool settings_do_fixes(struct master_settings *set)
 	if (mkdir_parents(PKG_STATEDIR, 0750) < 0 && errno != EEXIST) {
 		i_error("mkdir(%s) failed: %m", PKG_STATEDIR);
 		return FALSE;
-	}
-
-	if (!settings_have_connect_sockets(set)) {
-		/* we are not using external authentication, so make sure the
-		   login directory exists with correct permissions and it's
-		   empty. with external auth we wouldn't want to delete
-		   existing sockets or break the permissions required by the
-		   auth server. */
-		if (safe_mkdir(set->login_dir, 0750,
-			       master_uid, set->server->login_gid) == 0) {
-			i_warning("Corrected permissions for login directory "
-				  "%s", set->login_dir);
-		}
-
-		unlink_auth_sockets(set->login_dir, "");
 	}
 
 #ifdef HAVE_MODULES
@@ -932,6 +932,25 @@ int master_settings_read(const char *path,
 	return 0;
 }
 
+static void settings_verify_master(struct master_server_settings *set)
+{
+	if (!settings_have_connect_sockets(set->defaults)) {
+		/* we are not using external authentication, so make sure the
+		   login directory exists with correct permissions and it's
+		   empty. with external auth we wouldn't want to delete
+		   existing sockets or break the permissions required by the
+		   auth server. */
+		mode_t mode = login_want_core_dumps(set) ? 0770 : 0750;
+		if (safe_mkdir(set->defaults->login_dir, mode,
+			       master_uid, set->login_gid) == 0) {
+			i_warning("Corrected permissions for login directory "
+				  "%s", set->defaults->login_dir);
+		}
+
+		unlink_auth_sockets(set->defaults->login_dir, "");
+	}
+}
+
 bool master_settings_check(struct master_server_settings *set,
 			   bool nochecks, bool nofixes)
 {
@@ -969,6 +988,7 @@ bool master_settings_check(struct master_server_settings *set,
 		return FALSE;
 
 	if (!nochecks) {
+		settings_verify_master(set);
 		auths = array_get(&set->defaults->auths, &count);
 		if (count == 0) {
 			i_error("Missing auth section");

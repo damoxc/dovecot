@@ -556,12 +556,11 @@ void auth_request_lookup_credentials_callback(enum passdb_result result,
 						    &result, TRUE)) {
 			auth_request_log_info(request, "passdb",
 				"Fallbacking to expired data from cache");
-		}
-		if (result == PASSDB_RESULT_OK) {
-			if (!passdb_get_credentials(request, cache_cred,
-						    cache_scheme,
-						    &credentials, &size))
-				result = PASSDB_RESULT_SCHEME_NOT_AVAILABLE;
+			passdb_handle_credentials(
+				result, cache_cred, cache_scheme,
+				auth_request_lookup_credentials_finish,
+				request);
+			return;
 		}
 	}
 
@@ -575,8 +574,6 @@ void auth_request_lookup_credentials(struct auth_request *request,
 {
 	struct passdb_module *passdb = request->passdb->passdb;
 	const char *cache_key, *cache_cred, *cache_scheme;
-	const unsigned char *credentials;
-	size_t size;
 	enum passdb_result result;
 
 	i_assert(request->state == AUTH_REQUEST_STATE_MECH_CONTINUE);
@@ -589,13 +586,10 @@ void auth_request_lookup_credentials(struct auth_request *request,
 		if (passdb_cache_lookup_credentials(request, cache_key,
 						    &cache_cred, &cache_scheme,
 						    &result, FALSE)) {
-			if (result == PASSDB_RESULT_OK &&
-			    !passdb_get_credentials(request, cache_cred,
-						    cache_scheme,
-						    &credentials, &size))
-				result = PASSDB_RESULT_SCHEME_NOT_AVAILABLE;
-			auth_request_lookup_credentials_finish(
-				result, credentials, size, request);
+			passdb_handle_credentials(
+				result, cache_cred, cache_scheme,
+				auth_request_lookup_credentials_finish,
+				request);
 			return;
 		}
 	}
@@ -604,6 +598,8 @@ void auth_request_lookup_credentials(struct auth_request *request,
 
 	if (passdb->iface.lookup_credentials == NULL) {
 		/* this passdb doesn't support credentials */
+		auth_request_log_debug(request, "password",
+			"passdb doesn't support credential lookups");
 		auth_request_lookup_credentials_callback(
 			PASSDB_RESULT_SCHEME_NOT_AVAILABLE, NULL, 0, request);
 	} else if (passdb->blocking) {
@@ -981,7 +977,7 @@ void auth_request_set_field(struct auth_request *request,
 			    const char *name, const char *value,
 			    const char *default_scheme)
 {
-	const char *p;
+	const char *p, *orig_value;
 
 	i_assert(*name != '\0');
 	i_assert(value != NULL);
@@ -999,6 +995,7 @@ void auth_request_set_field(struct auth_request *request,
 	if (strcmp(name, "user") == 0 ||
 	    strcmp(name, "username") == 0 || strcmp(name, "domain") == 0) {
 		/* update username */
+		orig_value = value;
 		if (strcmp(name, "username") == 0 &&
 		    strchr(value, '@') == NULL &&
 		    (p = strchr(request->user, '@')) != NULL) {
@@ -1023,6 +1020,9 @@ void auth_request_set_field(struct auth_request *request,
 				request->user, value);
 			request->user = p_strdup(request->pool, value);
 		}
+		/* restore the original value so it gets saved correctly to
+		   cache. */
+		value = orig_value;
 	} else if (strcmp(name, "nodelay") == 0) {
 		/* don't delay replying to client of the failure */
 		request->no_failure_delay = TRUE;
@@ -1168,6 +1168,9 @@ void auth_request_set_userdb_field(struct auth_request *request,
 	} else if (strcmp(name, "userdb_import") == 0) {
 		auth_stream_reply_import(request->userdb_reply, value);
 		return;
+	} else if (strcmp(name, "system_user") == 0) {
+		/* FIXME: the system_user is for backwards compatibility */
+		name = "system_groups_user";
 	}
 
 	auth_stream_reply_add(request->userdb_reply, name, value);

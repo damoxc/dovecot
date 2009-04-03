@@ -69,12 +69,16 @@ static char *explicit_envelope_sender = NULL;
 static struct module *modules;
 static struct ioloop *ioloop;
 
-static void sig_die(int signo, void *context ATTR_UNUSED)
+static void sig_die(const siginfo_t *si, void *context ATTR_UNUSED)
 {
 	/* warn about being killed because of some signal, except SIGINT (^C)
 	   which is too common at least while testing :) */
-	if (signo != SIGINT)
-		i_warning("Killed with signal %d", signo);
+	if (si->si_signo != SIGINT) {
+		i_warning("Killed with signal %d (by pid=%s uid=%s code=%s)",
+			  si->si_signo, dec2str(si->si_pid),
+			  dec2str(si->si_uid),
+			  lib_signal_code_to_str(si->si_signo, si->si_code));
+	}
 	io_loop_stop(current_ioloop);
 }
 
@@ -82,9 +86,6 @@ static const char *deliver_get_address(struct mail *mail, const char *header)
 {
 	struct message_address *addr;
 	const char *str;
-
-	if (explicit_envelope_sender != NULL)
-		return explicit_envelope_sender;
 
 	if (mail_get_first_header(mail, header, &str) <= 0)
 		return NULL;
@@ -206,6 +207,7 @@ int deliver_save(struct mail_namespace *namespaces,
 {
 	struct mailbox *box;
 	struct mailbox_transaction_context *t;
+	struct mail_save_context *save_ctx;
 	struct mail_keywords *kw;
 	enum mail_error error;
 	const char *mailbox_name;
@@ -239,7 +241,9 @@ int deliver_save(struct mail_namespace *namespaces,
 
 	kw = str_array_length(keywords) == 0 ? NULL :
 		mailbox_keywords_create_valid(box, keywords);
-	if (mailbox_copy(t, mail, flags, kw, NULL) < 0)
+	save_ctx = mailbox_save_alloc(t);
+	mailbox_save_set_flags(save_ctx, flags, kw);
+	if (mailbox_copy(&save_ctx, mail) < 0)
 		ret = -1;
 	mailbox_keywords_free(box, &kw);
 
@@ -262,6 +266,9 @@ int deliver_save(struct mail_namespace *namespaces,
 
 const char *deliver_get_return_address(struct mail *mail)
 {
+	if (explicit_envelope_sender != NULL)
+		return explicit_envelope_sender;
+
 	return deliver_get_address(mail, "Return-Path");
 }
 
@@ -314,7 +321,8 @@ static const char *address_sanitize(const char *address)
 }
 
 
-static struct istream *create_raw_stream(int fd, time_t *mtime_r)
+static struct istream *
+create_raw_stream(const char *temp_path_prefix, int fd, time_t *mtime_r)
 {
 	struct istream *input, *input2, *input_list[2];
 	const unsigned char *data;
@@ -364,7 +372,7 @@ static struct istream *create_raw_stream(int fd, time_t *mtime_r)
 
 	input_list[0] = input2; input_list[1] = NULL;
 	input = i_stream_create_seekable(input_list, MAIL_MAX_MEMORY_BUFFER,
-					 "/tmp/dovecot.deliver.");
+					 temp_path_prefix);
 	i_stream_unref(&input2);
 	return input;
 }
@@ -469,7 +477,7 @@ int main(int argc, char *argv[])
 {
 	const char *config_path = DEFAULT_CONFIG_FILE;
 	const char *mailbox = "INBOX";
-	const char *home, *destaddr, *user, *error, *path, *orig_user;
+	const char *home, *destaddr, *user, *errstr, *path, *orig_user;
 	ARRAY_TYPE(const_string) extra_fields = ARRAY_INIT;
 	struct setting_parser_context *parser;
 	struct mail_user *mail_user, *raw_mail_user;
@@ -484,6 +492,7 @@ int main(int argc, char *argv[])
 	struct mail_user_settings *user_set;
 	const struct mail_storage_settings *mail_set;
 	struct mail *mail;
+	char cwd[PATH_MAX];
 	uid_t process_euid;
 	bool stderr_rejection = FALSE;
 	bool keep_environment = FALSE;
@@ -493,6 +502,7 @@ int main(int argc, char *argv[])
 	int i, ret;
 	pool_t userdb_pool = NULL;
 	string_t *str;
+	enum mail_error error;
 
 	if (getuid() != geteuid() && geteuid() == 0) {
 		/* running setuid - don't allow this if deliver is
@@ -550,6 +560,12 @@ int main(int argc, char *argv[])
 			if (i == argc)
 				i_fatal_status(EX_USAGE, "Missing -p argument");
 			path = argv[i];
+			if (*path != '/') {
+				/* expand relative paths before we chdir */
+				if (getcwd(cwd, sizeof(cwd)) == NULL)
+					i_fatal("getcwd() failed: %m");
+				path = t_strconcat(cwd, "/", path, NULL);
+			}
 		} else if (strcmp(argv[i], "-e") == 0) {
 			stderr_rejection = TRUE;
 		} else if (strcmp(argv[i], "-c") == 0) {
@@ -666,6 +682,7 @@ int main(int argc, char *argv[])
 		userdb_pool = pool_alloconly_create("userdb lookup replys", 512);
 		orig_user = user;
 		ret = auth_client_lookup_and_restrict(deliver_set->auth_socket_path,
+						      mail_set->mail_debug,
 						      &user, process_euid,
 						      userdb_pool,
 						      &extra_fields);
@@ -711,7 +728,7 @@ int main(int argc, char *argv[])
 	(void)umask(deliver_set->umask);
 
 	dict_drivers_register_builtin();
-        duplicate_init();
+        duplicate_init(mail_set);
 	mail_users_init(deliver_set->auth_socket_path, mail_set->mail_debug);
 
 	module_dir_init(modules);
@@ -719,16 +736,16 @@ int main(int argc, char *argv[])
 	mail_user = mail_user_alloc(user, user_set);
 	mail_user_set_home(mail_user, home);
 	mail_user_set_vars(mail_user, geteuid(), "deliver", NULL, NULL);
-	if (mail_user_init(mail_user, &error) < 0)
-		i_fatal("Mail user initialization failed: %s", error);
-	if (mail_namespaces_init(mail_user, &error) < 0)
-		i_fatal("Namespace initialization failed: %s", error);
+	if (mail_user_init(mail_user, &errstr) < 0)
+		i_fatal("Mail user initialization failed: %s", errstr);
+	if (mail_namespaces_init(mail_user, &errstr) < 0)
+		i_fatal("Namespace initialization failed: %s", errstr);
 
 	/* create a separate mail user for the internal namespace */
 	raw_mail_user = mail_user_alloc(user, user_set);
 	mail_user_set_home(raw_mail_user, "/");
-	if (mail_user_init(raw_mail_user, &error) < 0)
-		i_fatal("Raw user initialization failed: %s", error);
+	if (mail_user_init(raw_mail_user, &errstr) < 0)
+		i_fatal("Raw user initialization failed: %s", errstr);
 
 	settings_parser_deinit(&parser);
 
@@ -738,10 +755,11 @@ int main(int argc, char *argv[])
 	raw_ns = mail_namespaces_init_empty(raw_mail_user);
 	raw_ns->flags |= NAMESPACE_FLAG_INTERNAL;
 	raw_ns->set = &raw_ns_set;
-	if (mail_storage_create(raw_ns, "raw", 0, &error) < 0)
-		i_fatal("Couldn't create internal raw storage: %s", error);
+	if (mail_storage_create(raw_ns, "raw", 0, &errstr) < 0)
+		i_fatal("Couldn't create internal raw storage: %s", errstr);
 	if (path == NULL) {
-		input = create_raw_stream(0, &mtime);
+		const char *prefix = mail_user_get_temp_prefix(mail_user);
+		input = create_raw_stream(prefix, 0, &mtime);
 		box = mailbox_open(&raw_ns->storage, "Dovecot Delivery Mail",
 				   input, MAILBOX_OPEN_NO_INDEX_FILES);
 		i_stream_unref(&input);
@@ -750,11 +768,11 @@ int main(int argc, char *argv[])
 		box = mailbox_open(&raw_ns->storage, path, NULL,
 				   MAILBOX_OPEN_NO_INDEX_FILES);
 	}
-	if (box == NULL)
-		i_fatal("Can't open delivery mail as raw");
+	if (box == NULL) {
+		i_fatal("Can't open delivery mail as raw: %s",
+			mail_storage_get_last_error(raw_ns->storage, &error));
+	}
 	if (mailbox_sync(box, 0, 0, NULL) < 0) {
-		enum mail_error error;
-
 		i_fatal("Can't sync delivery mail: %s",
 			mail_storage_get_last_error(raw_ns->storage, &error));
 	}
@@ -771,7 +789,7 @@ int main(int argc, char *argv[])
 	if (destaddr == NULL) {
 		destaddr = deliver_get_address(mail, "Envelope-To");
 		if (destaddr == NULL) {
-			destaddr = strchr(user, '@') == NULL ? user :
+			destaddr = strchr(user, '@') != NULL ? user :
 				t_strconcat(user, "@",
 					    deliver_set->hostname, NULL);
 		}
@@ -806,21 +824,18 @@ int main(int argc, char *argv[])
 	}
 
 	if (ret < 0 ) {
-		const char *error_string;
-		enum mail_error error;
-
 		if (storage == NULL) {
 			/* This shouldn't happen */
 			i_error("BUG: Saving failed for unknown storage");
 			return EX_TEMPFAIL;
 		}
 
-		error_string = mail_storage_get_last_error(storage, &error);
+		errstr = mail_storage_get_last_error(storage, &error);
 
 		if (stderr_rejection) {
 			/* write to stderr also for tempfails so that MTA
 			   can log the reason if it wants to. */
-			fprintf(stderr, "%s\n", error_string);
+			fprintf(stderr, "%s\n", errstr);
 		}
 
 		if (error != MAIL_ERROR_NOSPACE ||
@@ -833,11 +848,11 @@ int main(int argc, char *argv[])
 
 		/* we'll have to reply with permanent failure */
 		deliver_log(mail, "rejected: %s",
-			    str_sanitize(error_string, 512));
+			    str_sanitize(errstr, 512));
 
 		if (stderr_rejection)
 			return EX_NOPERM;
-		ret = mail_send_rejection(mail, user, error_string);
+		ret = mail_send_rejection(mail, user, errstr);
 		if (ret != 0)
 			return ret < 0 ? EX_TEMPFAIL : ret;
 		/* ok, rejection sent */

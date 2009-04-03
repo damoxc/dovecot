@@ -1,6 +1,7 @@
 /* Copyright (c) 2002-2009 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "eacces-error.h"
 #include "restrict-access.h"
 #include "nfs-workarounds.h"
 #include "mail-index-private.h"
@@ -14,6 +15,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <grp.h>
 
 #ifdef HAVE_FLOCK
 #  include <sys/file.h>
@@ -249,7 +251,7 @@ static int mbox_dotlock_privileged_op(struct mbox_mailbox *mbox,
 				      enum mbox_dotlock_op op)
 {
 	const char *dir, *fname;
-	int ret = -1, orig_dir_fd;
+	int ret = -1, orig_dir_fd, orig_errno;
 
 	orig_dir_fd = open(".", O_RDONLY);
 	if (orig_dir_fd == -1) {
@@ -299,23 +301,31 @@ static int mbox_dotlock_privileged_op(struct mbox_mailbox *mbox,
 		ret = file_dotlock_create(set, fname, 0, &mbox->mbox_dotlock);
 		if (ret > 0)
 			mbox->mbox_used_privileges = TRUE;
+		else if (ret < 0 && errno == EACCES) {
+			const char *errmsg =
+				eacces_error_get_creating("file_dotlock_create",
+							  fname);
+			mail_storage_set_critical(&mbox->storage->storage,
+						  "%s", errmsg);
+		} else {
+			mbox_set_syscall_error(mbox, "file_dotlock_create()");
+		}
 		break;
 	case MBOX_DOTLOCK_OP_UNLOCK:
 		/* we're now privileged - avoid doing as much as possible */
 		ret = file_dotlock_delete(&mbox->mbox_dotlock);
+		if (ret < 0)
+			mbox_set_syscall_error(mbox, "file_dotlock_delete()");
 		mbox->mbox_used_privileges = FALSE;
 		break;
 	case MBOX_DOTLOCK_OP_TOUCH:
-		if (!file_dotlock_is_locked(mbox->mbox_dotlock)) {
-			file_dotlock_delete(&mbox->mbox_dotlock);
-			mbox->mbox_used_privileges = TRUE;
-			ret = -1;
-		} else {
-			ret = file_dotlock_touch(mbox->mbox_dotlock);
-		}
+		ret = file_dotlock_touch(mbox->mbox_dotlock);
+		if (ret < 0)
+			mbox_set_syscall_error(mbox, "file_dotlock_touch()");
 		break;
 	}
 
+	orig_errno = errno;
 	restrict_access_drop_priv_gid();
 
 	if (fchdir(orig_dir_fd) < 0) {
@@ -323,7 +333,42 @@ static int mbox_dotlock_privileged_op(struct mbox_mailbox *mbox,
 			"fchdir() failed: %m");
 	}
 	(void)close(orig_dir_fd);
+	errno = orig_errno;
 	return ret;
+}
+
+static void
+mbox_dotlock_log_eacces_error(struct mbox_mailbox *mbox, const char *path)
+{
+	const char *dir, *errmsg;
+	struct stat st;
+	const struct group *group;
+	int orig_errno = errno;
+
+	errmsg = eacces_error_get_creating("file_dotlock_create", path);
+	dir = strrchr(path, '/');
+	dir = dir == NULL ? "." : t_strdup_until(path, dir);
+	if (strcmp(mbox->ibox.box.name, "INBOX") != 0) {
+		mail_storage_set_critical(&mbox->storage->storage,
+			"%s (not INBOX -> no privileged locking)", errmsg);
+	} else if (!mbox->mbox_privileged_locking) {
+		dir = mailbox_list_get_path(mbox->storage->storage.list, NULL,
+					    MAILBOX_LIST_PATH_TYPE_DIR);
+		mail_storage_set_critical(&mbox->storage->storage,
+			"%s (under root dir %s -> no privileged locking)",
+			errmsg, dir);
+	} else if (stat(dir, &st) == 0 &&
+		   (st.st_mode & 02) == 0 && /* not world-writable */
+		   (st.st_mode & 020) != 0) { /* group-writable */
+		group = getgrgid(st.st_gid);
+		mail_storage_set_critical(&mbox->storage->storage,
+			"%s (set mail_privileged_group=%s)", errmsg,
+			group == NULL ? dec2str(st.st_gid) : group->gr_name);
+	} else {
+		mail_storage_set_critical(&mbox->storage->storage,
+			"%s (nonstandard permissions in %s)", errmsg, dir);
+	}
+	errno = orig_errno;
 }
 
 static int
@@ -337,17 +382,16 @@ mbox_lock_dotlock_int(struct mbox_lock_context *ctx, int lock_type, bool try)
 		if (!mbox->mbox_dotlocked)
 			return 1;
 
-		if (!mbox->mbox_used_privileges)
-			ret = file_dotlock_delete(&mbox->mbox_dotlock);
-		else {
+		if (!mbox->mbox_used_privileges) {
+			if (file_dotlock_delete(&mbox->mbox_dotlock) <= 0) {
+				mbox_set_syscall_error(mbox,
+						       "file_dotlock_delete()");
+			}
+		} else {
 			ctx->using_privileges = TRUE;
-			ret = mbox_dotlock_privileged_op(mbox, NULL,
-							MBOX_DOTLOCK_OP_UNLOCK);
+			(void)mbox_dotlock_privileged_op(mbox, NULL,
+							 MBOX_DOTLOCK_OP_UNLOCK);
 			ctx->using_privileges = FALSE;
-		}
-		if (ret <= 0) {
-			mbox_set_syscall_error(mbox, "file_dotlock_delete()");
-			ret = -1;
 		}
                 mbox->mbox_dotlocked = FALSE;
 		return 1;
@@ -367,18 +411,21 @@ mbox_lock_dotlock_int(struct mbox_lock_context *ctx, int lock_type, bool try)
 	set.context = ctx;
 
 	ret = file_dotlock_create(&set, mbox->path, 0, &mbox->mbox_dotlock);
-	if (ret < 0 && errno == EACCES && restrict_access_have_priv_gid() &&
-	    mbox->mbox_privileged_locking) {
+	if (ret >= 0) {
+		/* success / timeout */
+	} else if (errno == EACCES && restrict_access_have_priv_gid() &&
+		   mbox->mbox_privileged_locking) {
 		/* try again, this time with extra privileges */
 		ret = mbox_dotlock_privileged_op(mbox, &set,
 						 MBOX_DOTLOCK_OP_LOCK);
-	}
+	} else if (errno == EACCES)
+		mbox_dotlock_log_eacces_error(mbox, mbox->path);
+	else
+		mbox_set_syscall_error(mbox, "file_dotlock_create()");
 
 	if (ret < 0) {
 		if ((ENOSPACE(errno) || errno == EACCES) && try)
 			return 1;
-
-		mbox_set_syscall_error(mbox, "file_lock_dotlock()");
 		return -1;
 	}
 	if (ret == 0) {
@@ -410,6 +457,7 @@ static int mbox_lock_flock(struct mbox_lock_context *ctx, int lock_type,
 			   time_t max_wait_time)
 {
 	time_t now, last_notify;
+	unsigned int next_alarm;
 
 	if (mbox_file_open_latest(ctx, lock_type) < 0)
 		return -1;
@@ -424,26 +472,49 @@ static int mbox_lock_flock(struct mbox_lock_context *ctx, int lock_type,
 	else
 		lock_type = LOCK_UN;
 
+	if (max_wait_time == 0) {
+		/* usually we're waiting here, but if we came from
+		   mbox_lock_dotlock(), we just want to try locking */
+		lock_type |= LOCK_NB;
+	} else {
+		now = time(NULL);
+		if (now >= max_wait_time)
+			alarm(1);
+		else
+			alarm(I_MIN(max_wait_time - now, 5));
+	}
+
         last_notify = 0;
-	while (flock(ctx->mbox->mbox_fd, lock_type | LOCK_NB) < 0) {
-		if (errno != EWOULDBLOCK) {
+	while (flock(ctx->mbox->mbox_fd, lock_type) < 0) {
+		if (errno != EINTR) {
+			if (errno == EWOULDBLOCK && max_wait_time == 0) {
+				/* non-blocking lock trying failed */
+				return 0;
+			}
+			alarm(0);
 			mbox_set_syscall_error(ctx->mbox, "flock()");
 			return -1;
 		}
 
 		now = time(NULL);
-		if (now >= max_wait_time)
+		if (now >= max_wait_time) {
+			alarm(0);
 			return 0;
-
-		if (now != last_notify) {
-			index_storage_lock_notify(&ctx->mbox->ibox,
-				MAILBOX_LOCK_NOTIFY_MAILBOX_ABORT,
-				max_wait_time - now);
 		}
 
-		usleep(LOCK_RANDOM_USLEEP_TIME);
+		/* notify locks once every 5 seconds.
+		   try to use rounded values. */
+		next_alarm = (max_wait_time - now) % 5;
+		if (next_alarm == 0)
+			next_alarm = 5;
+		alarm(next_alarm);
+
+		index_storage_lock_notify(&ctx->mbox->ibox,
+					  MAILBOX_LOCK_NOTIFY_MAILBOX_ABORT,
+					  max_wait_time - now);
 	}
 
+	alarm(0);
 	return 1;
 }
 #endif
@@ -453,6 +524,7 @@ static int mbox_lock_lockf(struct mbox_lock_context *ctx, int lock_type,
 			   time_t max_wait_time)
 {
 	time_t now, last_notify;
+	unsigned int next_alarm;
 
 	if (mbox_file_open_latest(ctx, lock_type) < 0)
 		return -1;
@@ -460,31 +532,53 @@ static int mbox_lock_lockf(struct mbox_lock_context *ctx, int lock_type,
 	if (lock_type == F_UNLCK && ctx->mbox->mbox_fd == -1)
 		return 1;
 
-	if (lock_type != F_UNLCK)
-		lock_type = F_TLOCK;
-	else
+	if (lock_type == F_UNLCK)
 		lock_type = F_ULOCK;
+	else if (max_wait_time == 0) {
+		/* usually we're waiting here, but if we came from
+		   mbox_lock_dotlock(), we just want to try locking */
+		lock_type = F_TLOCK;
+	} else {
+		now = time(NULL);
+		if (now >= max_wait_time)
+			alarm(1);
+		else
+			alarm(I_MIN(max_wait_time - now, 5));
+		lock_type = F_LOCK;
+	}
 
         last_notify = 0;
 	while (lockf(ctx->mbox->mbox_fd, lock_type, 0) < 0) {
-		if (errno != EAGAIN) {
+		if (errno != EINTR) {
+			if ((errno == EACCES || errno == EAGAIN) &&
+			    max_wait_time == 0) {
+				/* non-blocking lock trying failed */
+				return 0;
+			}
+			alarm(0);
 			mbox_set_syscall_error(ctx->mbox, "lockf()");
 			return -1;
 		}
 
 		now = time(NULL);
-		if (now >= max_wait_time)
+		if (now >= max_wait_time) {
+			alarm(0);
 			return 0;
-
-		if (now != last_notify) {
-			index_storage_lock_notify(&ctx->mbox->ibox,
-				MAILBOX_LOCK_NOTIFY_MAILBOX_ABORT,
-				max_wait_time - now);
 		}
 
-		usleep(LOCK_RANDOM_USLEEP_TIME);
+		/* notify locks once every 5 seconds.
+		   try to use rounded values. */
+		next_alarm = (max_wait_time - now) % 5;
+		if (next_alarm == 0)
+			next_alarm = 5;
+		alarm(next_alarm);
+
+		index_storage_lock_notify(&ctx->mbox->ibox,
+					  MAILBOX_LOCK_NOTIFY_MAILBOX_ABORT,
+					  max_wait_time - now);
 	}
 
+	alarm(0);
 	return 1;
 }
 #endif

@@ -25,7 +25,13 @@ static struct passdb_module_interface *passdb_interface_find(const char *name)
 
 void passdb_register_module(struct passdb_module_interface *iface)
 {
-	if (passdb_interface_find(iface->name) != NULL) {
+	struct passdb_module_interface *old_iface;
+
+	old_iface = passdb_interface_find(iface->name);
+	if (old_iface != NULL && old_iface->verify_plain == NULL) {
+		/* replacing a "support not compiled in" passdb */
+		passdb_unregister_module(old_iface);
+	} else if (old_iface != NULL) {
 		i_panic("passdb_register_module(%s): Already registered",
 			iface->name);
 	}
@@ -52,8 +58,15 @@ bool passdb_get_credentials(struct auth_request *auth_request,
 			    const unsigned char **credentials_r, size_t *size_r)
 {
 	const char *wanted_scheme = auth_request->credentials_scheme;
-	const char *plaintext;
+	const char *plaintext, *username;
 	int ret;
+
+	if (auth_request->prefer_plain_credentials &&
+	    password_scheme_is_alias(input_scheme, "PLAIN")) {
+		/* we've a plaintext scheme and we prefer to get it instead
+		   of converting it to the fallback scheme */
+		wanted_scheme = "";
+	}
 
 	ret = password_decode(input, input_scheme, credentials_r, size_r);
 	if (ret <= 0) {
@@ -92,14 +105,19 @@ bool passdb_get_credentials(struct auth_request *auth_request,
 
 		/* we can generate anything out of plaintext passwords */
 		plaintext = t_strndup(*credentials_r, *size_r);
+		username = auth_request->original_username;
+		if (!auth_request->domain_is_realm &&
+		    strchr(username, '@') != NULL) {
+			/* domain must not be used as realm. add the @realm. */
+			username = t_strconcat(username, "@",
+					       auth_request->realm, NULL);
+		}
 		if (auth_request->auth->set->debug_passwords) {
 			auth_request_log_info(auth_request, "password",
-				"Generating %s from user %s password %s",
-				wanted_scheme, auth_request->original_username,
-				plaintext);
+				"Generating %s from user '%s', password '%s'",
+				wanted_scheme, username, plaintext);
 		}
-		if (!password_generate(plaintext,
-				       auth_request->original_username,
+		if (!password_generate(plaintext, username,
 				       wanted_scheme, credentials_r, size_r)) {
 			auth_request_log_error(auth_request, "password",
 				"Requested unknown scheme %s", wanted_scheme);
@@ -123,10 +141,15 @@ void passdb_handle_credentials(enum passdb_result result,
 		return;
 	}
 
-	if (password == NULL ||
-	    !passdb_get_credentials(auth_request, password, scheme,
-				    &credentials, &size))
+	if (password == NULL) {
+		auth_request_log_info(auth_request, "password",
+			"Requested %s scheme, but we have a NULL password",
+			auth_request->credentials_scheme);
 		result = PASSDB_RESULT_SCHEME_NOT_AVAILABLE;
+	} else if (!passdb_get_credentials(auth_request, password, scheme,
+					   &credentials, &size)) {
+		result = PASSDB_RESULT_SCHEME_NOT_AVAILABLE;
+	}
 
 	callback(result, credentials, size, auth_request);
 }

@@ -119,7 +119,7 @@ mail_storage_set_autodetection(const char **data, const char **driver,
 int mail_storage_create(struct mail_namespace *ns, const char *driver,
 			enum mail_storage_flags flags, const char **error_r)
 {
-	struct mail_storage *storage_class, *storage;
+	struct mail_storage *storage_class, *storage = NULL;
 	struct mail_storage *const *classes;
 	const char *data = ns->set->location;
 	const char *home, *p;
@@ -212,6 +212,7 @@ int mail_storage_create(struct mail_namespace *ns, const char *driver,
 			"Mail storage autodetection failed with home=%s", home);
 		return -1;
 	}
+
 
 	if (hook_mail_storage_created != NULL) {
 		T_BEGIN {
@@ -383,6 +384,20 @@ const char *mail_storage_get_mailbox_index_dir(struct mail_storage *storage,
 
 	return mailbox_list_get_path(storage->list, name,
 				     MAILBOX_LIST_PATH_TYPE_INDEX);
+}
+
+const char *mail_storage_get_temp_prefix(struct mail_storage *storage)
+{
+	const char *dir;
+
+	if (storage->temp_path_prefix == NULL) {
+		dir = mailbox_list_get_path(storage->list, NULL,
+					    MAILBOX_LIST_PATH_TYPE_DIR);
+		storage->temp_path_prefix = p_strconcat(storage->pool, dir, "/",
+			mailbox_list_get_temp_prefix(storage->list), NULL);
+	}
+
+	return storage->temp_path_prefix;
 }
 
 bool mail_storage_set_error_from_errno(struct mail_storage *storage)
@@ -884,11 +899,12 @@ void mailbox_save_cancel(struct mail_save_context **_ctx)
 	ctx->transaction->box->v.save_cancel(ctx);
 }
 
-int mailbox_copy(struct mailbox_transaction_context *t, struct mail *mail,
-		 enum mail_flags flags, struct mail_keywords *keywords,
-		 struct mail *dest_mail)
+int mailbox_copy(struct mail_save_context **_ctx, struct mail *mail)
 {
-	return t->box->v.copy(t, mail, flags, keywords, dest_mail);
+	struct mail_save_context *ctx = *_ctx;
+
+	*_ctx = NULL;
+	return ctx->transaction->box->v.copy(ctx, mail);
 }
 
 bool mailbox_is_inconsistent(struct mailbox *box)

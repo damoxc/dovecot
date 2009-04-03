@@ -23,17 +23,24 @@ static struct io *log_io;
 static struct module *modules;
 static struct dict_server *dict_server;
 
-static void sig_die(int signo, void *context ATTR_UNUSED)
+static void sig_die(const siginfo_t *si, void *context ATTR_UNUSED)
 {
 	/* warn about being killed because of some signal, except SIGINT (^C)
 	   which is too common at least while testing :) */
-	if (signo != SIGINT)
-		i_warning("Killed with signal %d", signo);
+	if (si->si_signo != SIGINT) {
+		i_warning("Killed with signal %d (by pid=%s uid=%s code=%s)",
+			  si->si_signo, dec2str(si->si_pid),
+			  dec2str(si->si_uid),
+			  lib_signal_code_to_str(si->si_signo, si->si_code));
+	}
 	io_loop_stop(ioloop);
 }
 
 static void log_error_callback(void *context ATTR_UNUSED)
 {
+	/* the log fd is closed, don't die when trying to log later */
+	i_set_failure_ignore_errors(TRUE);
+
 	io_loop_stop(ioloop);
 }
 

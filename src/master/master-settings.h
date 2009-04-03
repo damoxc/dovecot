@@ -99,7 +99,8 @@ struct master_settings {
 
 	const char *mail_location;
 	bool mail_debug;
-	unsigned int umask;
+	bool maildir_very_dirty_syncs;
+	unsigned int dbox_purge_min_percentage;
 	bool mail_drop_priv_before_exec;
 
 	const char *mail_executable;

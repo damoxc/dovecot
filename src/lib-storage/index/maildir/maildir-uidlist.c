@@ -51,6 +51,8 @@
 
 #define UIDLIST_IS_LOCKED(uidlist) \
 	((uidlist)->lock_count > 0)
+#define UIDLIST_ALLOW_WRITING(uidlist) \
+	(UIDLIST_IS_LOCKED(uidlist) || (uidlist)->mbox == NULL)
 
 struct maildir_uidlist_rec {
 	uint32_t uid;
@@ -164,7 +166,7 @@ static int maildir_uidlist_lock_timeout(struct maildir_uidlist *uidlist,
 		}
 		/* the control dir doesn't exist. create it unless the whole
 		   mailbox was just deleted. */
-		if (maildir_set_deleted(uidlist->mbox))
+		if (!maildir_set_deleted(uidlist->mbox))
 			return -1;
 	}
 
@@ -213,6 +215,17 @@ void maildir_uidlist_unlock(struct maildir_uidlist *uidlist)
 	(void)file_dotlock_delete(&uidlist->dotlock);
 }
 
+static bool dotlock_callback(unsigned int secs_left, bool stale, void *context)
+{
+	struct index_mailbox *ibox = context;
+
+	index_storage_lock_notify(ibox, stale ?
+				  MAILBOX_LOCK_NOTIFY_MAILBOX_OVERRIDE :
+				  MAILBOX_LOCK_NOTIFY_MAILBOX_ABORT,
+				  secs_left);
+	return TRUE;
+}
+
 struct maildir_uidlist *
 maildir_uidlist_init_readonly(struct index_mailbox *ibox)
 {
@@ -243,6 +256,8 @@ maildir_uidlist_init_readonly(struct index_mailbox *ibox)
 		MAILDIR_UIDLIST_LOCK_STALE_TIMEOUT + 2;
 	uidlist->dotlock_settings.stale_timeout =
 		MAILDIR_UIDLIST_LOCK_STALE_TIMEOUT;
+	uidlist->dotlock_settings.callback = dotlock_callback;
+	uidlist->dotlock_settings.context = ibox;
 
 	return uidlist;
 }
@@ -602,6 +617,10 @@ maildir_uidlist_update_read(struct maildir_uidlist *uidlist,
 		/* the file was updated */
 		fd = uidlist->fd;
 		if (lseek(fd, 0, SEEK_SET) < 0) {
+			if (errno == ESTALE && try_retry) {
+				*retry_r = TRUE;
+				return -1;
+			}
 			mail_storage_set_critical(storage,
 				"lseek(%s) failed: %m", uidlist->path);
 			return -1;
@@ -906,13 +925,12 @@ maildir_uidlist_lookup_ext(struct maildir_uidlist *uidlist, uint32_t uid,
 	const struct maildir_uidlist_rec *rec;
 	unsigned int idx;
 	const unsigned char *p;
-	const char *value;
 
 	rec = maildir_uidlist_lookup_rec(uidlist, uid, &idx);
 	if (rec == NULL || rec->extensions == NULL)
 		return NULL;
 
-	p = rec->extensions; value = NULL;
+	p = rec->extensions;
 	while (*p != '\0') {
 		/* <key><value>\0 */
 		if (*p == (char)key)
@@ -1073,7 +1091,7 @@ static int maildir_uidlist_write_fd(struct maildir_uidlist *uidlist, int fd,
 		return -1;
 	}
 
-	if (!uidlist->ibox->fsync_disable) {
+	if (!storage->set->fsync_disable) {
 		if (fdatasync(fd) < 0) {
 			mail_storage_set_critical(storage,
 				"fdatasync(%s) failed: %m", path);
@@ -1114,7 +1132,7 @@ static int maildir_uidlist_recreate(struct maildir_uidlist *uidlist)
 		}
 		/* the control dir doesn't exist. create it unless the whole
 		   mailbox was just deleted. */
-		if (maildir_set_deleted(uidlist->mbox))
+		if (!maildir_set_deleted(uidlist->mbox))
 			return -1;
 	}
 
@@ -1321,6 +1339,11 @@ static int maildir_uidlist_sync_lock(struct maildir_uidlist *uidlist,
 	return 1;
 }
 
+void maildir_uidlist_set_all_nonsynced(struct maildir_uidlist *uidlist)
+{
+	maildir_uidlist_mark_all(uidlist, TRUE);
+}
+
 int maildir_uidlist_sync_init(struct maildir_uidlist *uidlist,
 			      enum maildir_uidlist_sync_flags sync_flags,
 			      struct maildir_uidlist_sync_ctx **sync_ctx_r)
@@ -1336,7 +1359,7 @@ int maildir_uidlist_sync_init(struct maildir_uidlist *uidlist,
 	*sync_ctx_r = ctx = i_new(struct maildir_uidlist_sync_ctx, 1);
 	ctx->uidlist = uidlist;
 	ctx->sync_flags = sync_flags;
-	ctx->partial = !locked ||
+	ctx->partial = (!locked && ctx->uidlist->mbox != NULL) ||
 		(sync_flags & MAILDIR_UIDLIST_SYNC_PARTIAL) != 0;
 	ctx->locked = locked;
 	ctx->first_unwritten_pos = (unsigned int)-1;
@@ -1427,14 +1450,19 @@ int maildir_uidlist_sync_next(struct maildir_uidlist_sync_ctx *ctx,
 {
 	struct maildir_uidlist *uidlist = ctx->uidlist;
 	struct maildir_uidlist_rec *rec, *old_rec;
-	const char *p;
+	const char *p, *dir;
 
 	if (ctx->failed)
 		return -1;
 	for (p = filename; *p != '\0'; p++) {
 		if (*p == 13 || *p == 10) {
+			struct mailbox *box = &uidlist->ibox->box;
+
+			dir = mailbox_list_get_path(box->storage->list,
+						box->name,
+						MAILBOX_LIST_PATH_TYPE_MAILBOX);
 			i_warning("Maildir %s: Ignoring a file with #0x%x: %s",
-				  uidlist->mbox->path, *p, filename);
+				  dir, *p, filename);
 			return 1;
 		}
 	}
@@ -1459,7 +1487,7 @@ int maildir_uidlist_sync_next(struct maildir_uidlist_sync_ctx *ctx,
 				MAILDIR_UIDLIST_REC_FLAG_MOVED);
 	} else {
 		old_rec = hash_table_lookup(uidlist->files, filename);
-		i_assert(old_rec != NULL || UIDLIST_IS_LOCKED(uidlist));
+		i_assert(old_rec != NULL || UIDLIST_ALLOW_WRITING(uidlist));
 
 		rec = p_new(ctx->record_pool, struct maildir_uidlist_rec, 1);
 
@@ -1557,7 +1585,7 @@ static void maildir_uidlist_assign_uids(struct maildir_uidlist_sync_ctx *ctx)
 	struct maildir_uidlist_rec **recs;
 	unsigned int dest, count;
 
-	i_assert(UIDLIST_IS_LOCKED(ctx->uidlist));
+	i_assert(UIDLIST_ALLOW_WRITING(ctx->uidlist));
 	i_assert(ctx->first_nouid_pos != (unsigned int)-1);
 
 	if (ctx->first_unwritten_pos == (unsigned int)-1)
@@ -1613,6 +1641,11 @@ static void maildir_uidlist_swap(struct maildir_uidlist_sync_ctx *ctx)
 	}
 }
 
+void maildir_uidlist_sync_recreate(struct maildir_uidlist_sync_ctx *ctx)
+{
+	ctx->uidlist->recreate = TRUE;
+}
+
 void maildir_uidlist_sync_finish(struct maildir_uidlist_sync_ctx *ctx)
 {
 	if (!ctx->partial) {
@@ -1626,13 +1659,17 @@ void maildir_uidlist_sync_finish(struct maildir_uidlist_sync_ctx *ctx)
 	ctx->finished = TRUE;
 	ctx->uidlist->initial_sync = TRUE;
 
-	i_assert(ctx->locked || !ctx->changed);
+	/* mbox=NULL means we're coming from dbox rebuilding code.
+	   the dbox is already locked, so allow uidlist recreation */
+	i_assert(ctx->locked || !ctx->changed || ctx->uidlist->mbox == NULL);
 	if ((ctx->changed || ctx->uidlist->recreate ||
 	     maildir_uidlist_want_compress(ctx)) &&
-	    !ctx->failed && ctx->locked) T_BEGIN {
-		if (maildir_uidlist_sync_update(ctx) < 0)
-			ctx->failed = TRUE;
-	} T_END;
+	    !ctx->failed && (ctx->locked || ctx->uidlist->mbox == NULL)) {
+		T_BEGIN {
+			if (maildir_uidlist_sync_update(ctx) < 0)
+				ctx->failed = TRUE;
+		} T_END;
+	}
 }
 
 int maildir_uidlist_sync_deinit(struct maildir_uidlist_sync_ctx **_ctx)

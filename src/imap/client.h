@@ -43,17 +43,35 @@ enum client_command_state {
 	CLIENT_COMMAND_STATE_DONE
 };
 
+struct imap_module_register {
+	unsigned int id;
+};
+
+union imap_module_context {
+	struct imap_module_register *reg;
+};
+extern struct imap_module_register imap_module_register;
+
 struct client_command_context {
 	struct client_command_context *prev, *next;
 	struct client *client;
 
 	pool_t pool;
+	/* IMAP command tag */
 	const char *tag;
+	/* Name of this command */
 	const char *name;
+	/* Parameters for this command. These are generated from parsed IMAP
+	   arguments, so they may not be exactly the same as how client sent
+	   them. */
+	const char *args;
 	enum command_flags cmd_flags;
 
 	command_func_t *func;
 	void *context;
+
+	/* Module-specific contexts. */
+	ARRAY_DEFINE(module_contexts, union imap_module_context *);
 
 	struct imap_parser *parser;
 	enum client_command_state state;

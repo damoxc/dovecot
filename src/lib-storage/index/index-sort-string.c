@@ -271,15 +271,20 @@ static void index_sort_zeroes(struct sort_string_context *ctx)
 	ctx->sort_strings = i_new(const char *, ctx->last_seq + 1);
 	ctx->sort_string_pool = pool =
 		pool_alloconly_create("sort strings", 1024*64);
-	str = t_str_new(512);
+	str = str_new(default_pool, 512);
 	nodes = array_get_modifiable(&ctx->zero_nodes, &count);
 	for (i = 0; i < count; i++) {
 		i_assert(nodes[i].seq <= ctx->last_seq);
 
-		index_sort_header_get(mail, nodes[i].seq, sort_type, str);
-		ctx->sort_strings[nodes[i].seq] = str_len(str) == 0 ? "" :
-			p_strdup(pool, str_c(str));
+		T_BEGIN {
+			index_sort_header_get(mail, nodes[i].seq,
+					      sort_type, str);
+			ctx->sort_strings[nodes[i].seq] =
+				str_len(str) == 0 ? "" :
+				p_strdup(pool, str_c(str));
+		} T_END;
 	}
+	str_free(&str);
 
 	/* we have all strings, sort nodes based on them */
 	static_zero_cmp_context = ctx;
@@ -508,7 +513,7 @@ index_sort_add_ids_range(struct sort_string_context *ctx,
 
 	struct mail_sort_node *nodes;
 	unsigned int i, count, rightmost_idx, skip;
-	const char *left_str = NULL, *right_str = NULL, *str;
+	const char *left_str = NULL, *right_str = NULL, *str = NULL;
 	uint32_t left_sort_id, right_sort_id, diff;
 	bool no_left_str = FALSE, no_right_str = FALSE;
 	int ret;

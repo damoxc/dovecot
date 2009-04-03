@@ -456,12 +456,11 @@ static int index_mailbox_list_open_indexes(struct mailbox_list *list,
 {
 	struct index_mailbox_list *ilist = INDEX_LIST_CONTEXT(list);
 	const char *path;
-	enum mail_index_open_flags index_flags;
+	enum mail_index_open_flags index_flags = 0;
 	enum file_lock_method lock_method;
 	int ret;
 
-	index_flags = MAIL_INDEX_OPEN_FLAG_CREATE |
-		mail_storage_settings_to_index_flags(list->mail_set);
+	index_flags = mail_storage_settings_to_index_flags(list->mail_set);
 
 	if (!file_lock_method_parse(list->mail_set->lock_method,
 				    &lock_method)) {
@@ -469,14 +468,15 @@ static int index_mailbox_list_open_indexes(struct mailbox_list *list,
 		return -1;
 	}
 
-	if (mail_index_open(ilist->mail_index, index_flags,
-			    *list->set.lock_method) < 0) {
+	if (mail_index_open_or_create(ilist->mail_index, index_flags,
+				      *list->set.lock_method) < 0) {
 		if (mail_index_move_to_memory(ilist->mail_index) < 0) {
 			/* try opening once more. it should be created
 			   directly into memory now. */
-			ret = mail_index_open(ilist->mail_index, index_flags,
-					      *list->set.lock_method);
-			if (ret <= 0) {
+			ret = mail_index_open_or_create(ilist->mail_index,
+							index_flags,
+							*list->set.lock_method);
+			if (ret < 0) {
 				/* everything failed. there's a bug in the
 				   code, but just work around it by disabling
 				   the index completely */

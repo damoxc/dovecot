@@ -2,7 +2,7 @@
 
 #include "common.h"
 
-#if defined(PASSDB_LDAP) || defined(USERDB_LDAP)
+#if defined(BUILTIN_LDAP) || defined(PLUGIN_BUILD)
 
 #include "network.h"
 #include "ioloop.h"
@@ -130,7 +130,7 @@ static struct ldap_settings default_ldap_settings = {
 	MEMBER(deref) "never",
 	MEMBER(scope) "subtree",
 	MEMBER(base) NULL,
-	MEMBER(ldap_version) 2,
+	MEMBER(ldap_version) 3,
 	MEMBER(debug_level) "0",
 	MEMBER(ldaprc_path) "",
 	MEMBER(user_attrs) "homeDirectory=home,uidNumber=uid,gidNumber=gid",
@@ -828,8 +828,8 @@ int db_ldap_connect(struct ldap_connection *conn)
 static void db_ldap_disconnect_timeout(struct ldap_connection *conn)
 {
 	db_ldap_abort_requests(conn, -1U,
-			       DB_LDAP_REQUEST_DISCONNECT_TIMEOUT_SECS,
-			       FALSE, "LDAP server not connected");
+		DB_LDAP_REQUEST_DISCONNECT_TIMEOUT_SECS, FALSE,
+		"Aborting (timeout), we're not connected to LDAP server");
 
 	if (aqueue_count(conn->request_queue) == 0) {
 		/* no requests left, remove this timeout handler */

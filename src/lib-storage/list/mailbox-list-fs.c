@@ -140,13 +140,17 @@ fs_list_get_path(struct mailbox_list *_list, const char *name,
 		 enum mailbox_list_path_type type)
 {
 	const struct mailbox_list_settings *set = &_list->set;
+	const char *path;
 
 	if (name == NULL) {
 		/* return root directories */
 		switch (type) {
 		case MAILBOX_LIST_PATH_TYPE_DIR:
-		case MAILBOX_LIST_PATH_TYPE_MAILBOX:
 			return set->root_dir;
+		case MAILBOX_LIST_PATH_TYPE_MAILBOX:
+			path = t_strconcat(set->root_dir, "/",
+					   set->mailbox_dir_name, NULL);
+			return t_strndup(path, strlen(path)-1);
 		case MAILBOX_LIST_PATH_TYPE_CONTROL:
 			return set->control_dir != NULL ?
 				set->control_dir : set->root_dir;
@@ -165,20 +169,22 @@ fs_list_get_path(struct mailbox_list *_list, const char *name,
 	switch (type) {
 	case MAILBOX_LIST_PATH_TYPE_DIR:
 		if (*set->maildir_name != '\0')
-			return t_strdup_printf("%s/%s", set->root_dir, name);
+			return t_strdup_printf("%s/%s%s", set->root_dir,
+					       set->mailbox_dir_name, name);
 		break;
 	case MAILBOX_LIST_PATH_TYPE_MAILBOX:
 		break;
 	case MAILBOX_LIST_PATH_TYPE_CONTROL:
 		if (set->control_dir != NULL)
-			return t_strdup_printf("%s/%s", set->control_dir,
-					       name);
+			return t_strdup_printf("%s/%s%s", set->control_dir,
+					       set->mailbox_dir_name, name);
 		break;
 	case MAILBOX_LIST_PATH_TYPE_INDEX:
 		if (set->index_dir != NULL) {
 			if (*set->index_dir == '\0')
 				return "";
-			return t_strdup_printf("%s/%s", set->index_dir, name);
+			return t_strdup_printf("%s/%s%s", set->index_dir,
+					       set->mailbox_dir_name, name);
 		}
 		break;
 	}
@@ -191,10 +197,12 @@ fs_list_get_path(struct mailbox_list *_list, const char *name,
 	     type == MAILBOX_LIST_PATH_TYPE_DIR))
 		return set->inbox_path;
 
-	if (*set->maildir_name == '\0')
-		return t_strdup_printf("%s/%s", set->root_dir, name);
-	else {
-		return t_strdup_printf("%s/%s/%s", set->root_dir, name,
+	if (*set->maildir_name == '\0') {
+		return t_strdup_printf("%s/%s%s", set->root_dir,
+				       set->mailbox_dir_name, name);
+	} else {
+		return t_strdup_printf("%s/%s%s/%s", set->root_dir,
+				       set->mailbox_dir_name, name,
 				       set->maildir_name);
 	}
 }
@@ -287,7 +295,7 @@ static int fs_list_rename_mailbox(struct mailbox_list *list,
 	/* create the hierarchy */
 	p = strrchr(newpath, '/');
 	if (p != NULL) {
-		mailbox_list_get_dir_permissions(list, &mode, &gid);
+		mailbox_list_get_dir_permissions(list, NULL, &mode, &gid);
 		p = t_strdup_until(newpath, p);
 		if (mkdir_parents_chown(p, mode, (uid_t)-1, gid) < 0 &&
 		    errno != EEXIST) {

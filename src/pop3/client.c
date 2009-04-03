@@ -28,11 +28,25 @@
 
 /* Disconnect client after idling this many milliseconds */
 #define CLIENT_IDLE_TIMEOUT_MSECS (10*60*1000)
+/* If client starts idling for this many milliseconds, commit the current
+   transaction. This allows the mailbox to become unlocked. */
+#define CLIENT_COMMIT_TIMEOUT_MSECS (10*1000)
 
 static struct client *my_client; /* we don't need more than one currently */
 
 static void client_input(struct client *client);
 static int client_output(struct client *client);
+
+static void client_commit_timeout(struct client *client)
+{
+	if (client->cmd != NULL) {
+		/* Can't commit while commands are running */
+		return;
+	}
+
+	(void)mailbox_transaction_commit(&client->trans);
+	client->trans = mailbox_transaction_begin(client->mailbox, 0);
+}
 
 static void client_idle_timeout(struct client *client)
 {
@@ -164,6 +178,10 @@ struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
         client->last_input = ioloop_time;
 	client->to_idle = timeout_add(CLIENT_IDLE_TIMEOUT_MSECS,
 				      client_idle_timeout, client);
+	if (!set->pop3_lock_session) {
+		client->to_commit = timeout_add(CLIENT_COMMIT_TIMEOUT_MSECS,
+						client_commit_timeout, client);
+	}
 
 	client->user = user;
 
@@ -198,6 +216,9 @@ struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
 		client_destroy(client, "Mailbox init failed");
 		return NULL;
 	}
+
+	if (!set->pop3_no_flag_updates && client->messages_count > 0)
+		client->seen_bitmask = i_malloc(MSGS_BITMASK_SIZE(client));
 
 	i_assert(my_client == NULL);
 	my_client = client;
@@ -253,6 +274,9 @@ static const char *client_get_disconnect_reason(struct client *client)
 
 void client_destroy(struct client *client, const char *reason)
 {
+	if (client->seen_change_count > 0)
+		client_update_mails(client);
+
 	if (!client->disconnected) {
 		if (reason == NULL)
 			reason = client_get_disconnect_reason(client);
@@ -278,10 +302,13 @@ void client_destroy(struct client *client, const char *reason)
 
 	i_free(client->message_sizes);
 	i_free(client->deleted_bitmask);
+	i_free(client->seen_bitmask);
 
 	if (client->io != NULL)
 		io_remove(&client->io);
 	timeout_remove(&client->to_idle);
+	if (client->to_commit != NULL)
+		timeout_remove(&client->to_commit);
 
 	i_stream_destroy(&client->input);
 	o_stream_destroy(&client->output);
@@ -427,6 +454,8 @@ static void client_input(struct client *client)
 	client->waiting_input = FALSE;
 	client->last_input = ioloop_time;
 	timeout_reset(client->to_idle);
+	if (client->to_commit != NULL)
+		timeout_reset(client->to_commit);
 
 	switch (i_stream_read(client->input)) {
 	case -1:
@@ -454,6 +483,8 @@ static int client_output(struct client *client)
 
 	client->last_output = ioloop_time;
 	timeout_reset(client->to_idle);
+	if (client->to_commit != NULL)
+		timeout_reset(client->to_commit);
 
 	if (client->cmd != NULL) {
 		o_stream_cork(client->output);

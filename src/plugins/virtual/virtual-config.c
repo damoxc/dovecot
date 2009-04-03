@@ -119,12 +119,26 @@ virtual_config_parse_line(struct virtual_parse_context *ctx, const char *line,
 	if (strcasecmp(line, "INBOX") == 0)
 		line = "INBOX";
 	bbox->name = p_strdup(ctx->pool, line);
+	if (*line == '-') line++;
 	bbox->ns = mail_namespace_find(user->namespaces, &line);
+	if (bbox->ns == NULL) {
+		*error_r = t_strdup_printf("Namespace not found for %s",
+					   bbox->name);
+		return -1;
+	}
 	if (strchr(bbox->name, '*') != NULL ||
 	    strchr(bbox->name, '%') != NULL) {
 		name = bbox->name[0] == '-' ? bbox->name + 1 : bbox->name;
 		bbox->glob = imap_match_init(ctx->pool, name, TRUE, ctx->sep);
 		ctx->have_wildcards = TRUE;
+	} else if (bbox->name[0] == '!') {
+		/* save messages here */
+		if (ctx->mbox->save_bbox != NULL) {
+			*error_r = "Multiple save mailboxes defined";
+			return -1;
+		}
+		bbox->name++;
+		ctx->mbox->save_bbox = bbox;
 	}
 	array_append(&ctx->mbox->backend_boxes, &bbox, 1);
 	return 0;
@@ -243,6 +257,11 @@ static int virtual_config_expand_wildcards(struct virtual_parse_context *ctx)
 
 	/* get patterns we want to list */
 	wboxes = array_get_modifiable(&wildcard_boxes, &count);
+	if (count == 0) {
+		/* only negative wildcards - doesn't really make sense.
+		   just ignore. */
+		return 0;
+	}
 	patterns = t_new(const char *, count + 1);
 	for (i = 0; i < count; i++)
 		patterns[i] = wboxes[i]->name;
@@ -258,7 +277,9 @@ static int virtual_config_expand_wildcards(struct virtual_parse_context *ctx)
 			continue;
 
 		if (virtual_config_match(info, &wildcard_boxes, &i) &&
-		    !virtual_config_match(info, &neg_boxes, &j)) {
+		    !virtual_config_match(info, &neg_boxes, &j) &&
+		    virtual_backend_box_lookup_name(ctx->mbox,
+						    info->name) == NULL) {
 			virtual_config_copy_expanded(ctx, wboxes[i],
 						     info->name);
 		}

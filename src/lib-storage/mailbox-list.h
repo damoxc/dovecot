@@ -99,6 +99,9 @@ struct mailbox_list_settings {
 	   If mailbox_name is "Maildir", you have a non-selectable mailbox
 	   "mail" and a selectable mailbox "mail/foo". */
 	const char *maildir_name;
+	/* if set, store mailboxes under root_dir/mailbox_dir_name/.
+	   this setting contains either "" or "dir/". */
+	const char *mailbox_dir_name;
 
 	/* If mailbox index is used, use these settings for it
 	   (pointers, so they're set to NULL after init is finished): */
@@ -136,14 +139,15 @@ mailbox_list_get_namespace(const struct mailbox_list *list) ATTR_PURE;
 struct mail_user *
 mailbox_list_get_user(const struct mailbox_list *list) ATTR_PURE;
 
-/* Returns the mode and GID that should be used when creating new global files
-   to the mailbox list root directories. (gid_t)-1 is returned if it's not
-   necessary to change the default */
-void mailbox_list_get_permissions(struct mailbox_list *list,
+/* Returns the mode and GID that should be used when creating new files to
+   the specified mailbox, or to mailbox list root if name is NULL. (gid_t)-1 is
+   returned if it's not necessary to change the default gid. */
+void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
 				  mode_t *mode_r, gid_t *gid_r);
 /* Like mailbox_list_get_permissions(), but add execute-bits for mode
    if either read or write bit is set (e.g. 0640 -> 0750). */
 void mailbox_list_get_dir_permissions(struct mailbox_list *list,
+				      const char *name,
 				      mode_t *mode_r, gid_t *gid_r);
 
 /* Returns TRUE if the name doesn't contain any invalid characters.
@@ -196,7 +200,7 @@ mailbox_list_iter_init_namespaces(struct mail_namespace *namespaces,
 /* Get next mailbox. Returns the mailbox name */
 const struct mailbox_info *
 mailbox_list_iter_next(struct mailbox_list_iterate_context *ctx);
-/* Deinitialize mailbox list request. Returns FALSE if some error
+/* Deinitialize mailbox list request. Returns -1 if some error
    occurred while listing. */
 int mailbox_list_iter_deinit(struct mailbox_list_iterate_context **ctx);
 

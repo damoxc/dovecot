@@ -64,6 +64,7 @@ struct mail_storage {
         const struct mail_storage *storage_class;
 	struct mail_namespace *ns;
 	struct mailbox_list *list;
+	const char *temp_path_prefix;
 	const struct mail_storage_settings *set;
 
 	enum mail_storage_flags flags;
@@ -179,10 +180,7 @@ struct mailbox_vfuncs {
 	int (*save_continue)(struct mail_save_context *ctx);
 	int (*save_finish)(struct mail_save_context *ctx);
 	void (*save_cancel)(struct mail_save_context *ctx);
-
-	int (*copy)(struct mailbox_transaction_context *t, struct mail *mail,
-		    enum mail_flags flags, struct mail_keywords *keywords,
-		    struct mail *dest_mail);
+	int (*copy)(struct mail_save_context *ctx, struct mail *mail);
 
 	bool (*is_inconsistent)(struct mailbox *box);
 };
@@ -234,6 +232,7 @@ struct mail_vfuncs {
 	void (*free)(struct mail *mail);
 	void (*set_seq)(struct mail *mail, uint32_t seq);
 	bool (*set_uid)(struct mail *mail, uint32_t uid);
+	void (*set_uid_cache_updates)(struct mail *mail, bool set);
 
 	enum mail_flags (*get_flags)(struct mail *mail);
 	const char *const *(*get_keywords)(struct mail *mail);
@@ -346,6 +345,7 @@ struct mail_save_context {
 	int received_tz_offset;
 
 	char *guid, *from_envelope;
+	struct ostream *output;
 };
 
 struct mailbox_sync_context {
@@ -380,6 +380,7 @@ void mail_storage_set_internal_error(struct mail_storage *storage);
 bool mail_storage_set_error_from_errno(struct mail_storage *storage);
 
 const char *mail_generate_guid_string(void);
+void mail_generate_guid_128(uint8_t guid[16]);
 void mail_set_expunged(struct mail *mail);
 void mailbox_set_deleted(struct mailbox *box);
 

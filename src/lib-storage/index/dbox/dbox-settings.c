@@ -16,6 +16,7 @@ static struct setting_define dbox_setting_defines[] = {
 	DEF(SET_UINT, dbox_rotate_min_size),
 	DEF(SET_UINT, dbox_rotate_days),
 	DEF(SET_UINT, dbox_max_open_files),
+	DEF(SET_UINT, dbox_purge_min_percentage),
 
 	SETTING_DEFINE_LIST_END
 };
@@ -24,7 +25,8 @@ static struct dbox_settings dbox_default_settings = {
 	MEMBER(dbox_rotate_size) 2048*1024,
 	MEMBER(dbox_rotate_min_size) 16*1024,
 	MEMBER(dbox_rotate_days) 0,
-	MEMBER(dbox_max_open_files) 64
+	MEMBER(dbox_max_open_files) 64,
+	MEMBER(dbox_purge_min_percentage) 0
 };
 
 static struct setting_parser_info dbox_setting_parser_info = {

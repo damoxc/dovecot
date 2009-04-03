@@ -15,6 +15,11 @@ struct deliver_settings {
 	const char *mail_plugins;
 	const char *mail_plugin_dir;
 
+	const char *mail_uid;
+	const char *mail_gid;
+	const char *mail_chroot;
+	const char *mail_access_groups;
+
 	/* deliver: */
 	const char *postmaster_address;
 	const char *hostname;

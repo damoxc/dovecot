@@ -429,7 +429,8 @@ void index_mail_cache_add_idx(struct index_mail *mail, unsigned int field_idx,
 			return;
 	}
 
-	if (!mail->data.no_caching) {
+	if (!mail->data.no_caching &&
+	    mail->data.dont_cache_field_idx != field_idx) {
 		mail_cache_add(mail->trans->cache_trans, mail->data.seq,
 			       field_idx, data, data_size);
 	}
@@ -1139,6 +1140,7 @@ static void index_mail_reset(struct index_mail *mail)
 	data->save_date = (time_t)-1;
 	data->received_date = (time_t)-1;
 	data->sent_date.time = (uint32_t)-1;
+	data->dont_cache_field_idx = -1UL;
 
 	mail->mail.mail.seq = 0;
 	mail->mail.mail.uid = 0;
@@ -1313,6 +1315,13 @@ bool index_mail_set_uid(struct mail *_mail, uint32_t uid)
 	}
 }
 
+void index_mail_set_uid_cache_updates(struct mail *_mail, bool set)
+{
+	struct index_mail *mail = (struct index_mail *)_mail;
+
+	mail->data.no_caching = set || mail->data.forced_no_caching;
+}
+
 void index_mail_free(struct mail *_mail)
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
@@ -1370,6 +1379,7 @@ void index_mail_cache_parse_deinit(struct mail *_mail, time_t received_date,
 		/* we're going to delete this mail anyway,
 		   don't bother trying to update cache file */
 		mail->data.no_caching = TRUE;
+		mail->data.forced_no_caching = TRUE;
 	}
 
 	/* This is needed with 0 byte mails to get hdr=NULL call done. */
@@ -1468,6 +1478,7 @@ void index_mail_set_cache_corrupted(struct mail *mail,
 					   imail->trans->trans);
 
 	imail->data.no_caching = TRUE;
+	imail->data.forced_no_caching = TRUE;
 	mail_cache_set_corrupted(imail->ibox->cache,
 				 "Broken %s for mail UID %u",
 				 field_name, mail->uid);

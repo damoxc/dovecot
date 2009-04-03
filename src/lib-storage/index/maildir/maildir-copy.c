@@ -132,10 +132,8 @@ maildir_copy_hardlink(struct maildir_transaction_context *t, struct mail *mail,
 	struct maildir_mailbox *dest_mbox =
 		(struct maildir_mailbox *)t->ictx.ibox;
 	struct maildir_mailbox *src_mbox;
-	struct maildir_save_context *ctx;
 	struct hardlink_ctx do_ctx;
 	const char *path, *filename = NULL;
-	uint32_t seq;
 
 	i_assert((t->ictx.flags & MAILBOX_TRANSACTION_FLAG_EXTERNAL) != 0);
 
@@ -151,7 +149,6 @@ maildir_copy_hardlink(struct maildir_transaction_context *t, struct mail *mail,
 
 	if (t->save_ctx == NULL)
 		t->save_ctx = maildir_save_transaction_init(t);
-	ctx = t->save_ctx;
 
 	/* don't allow caller to specify recent flag */
 	flags &= ~MAIL_RECENT;
@@ -239,15 +236,15 @@ maildir_copy_hardlink(struct maildir_transaction_context *t, struct mail *mail,
 #if 0
 	if (keywords == NULL || keywords->count == 0) {
 		/* hardlinked to destination, set hardlinked-flag */
-		seq = maildir_save_add(t, do_ctx.dest_fname,
-				       flags | MAILDIR_SAVE_FLAG_HARDLINK, NULL,
-				       dest_mail);
+		maildir_save_add(t, do_ctx.dest_fname,
+				 flags | MAILDIR_SAVE_FLAG_HARDLINK, NULL,
+				 dest_mail);
 	} else
 #endif
 {
 		/* hardlinked to tmp/, treat as normal copied mail */
-		seq = maildir_save_add(t, do_ctx.dest_fname, flags, keywords,
-				       dest_mail);
+		maildir_save_add(t, do_ctx.dest_fname, flags, keywords,
+				 dest_mail);
 	}
 	return 1;
 }
@@ -259,29 +256,28 @@ maildir_compatible_file_modes(struct mailbox *box1, struct mailbox *box2)
 		box1->file_create_gid == box2->file_create_gid;
 }
 
-int maildir_copy(struct mailbox_transaction_context *_t, struct mail *mail,
-		 enum mail_flags flags, struct mail_keywords *keywords,
-		 struct mail *dest_mail)
+int maildir_copy(struct mail_save_context *ctx, struct mail *mail)
 {
 	struct maildir_transaction_context *t =
-		(struct maildir_transaction_context *)_t;
+		(struct maildir_transaction_context *)ctx->transaction;
 	struct maildir_mailbox *mbox = (struct maildir_mailbox *)t->ictx.ibox;
 	int ret;
 
 	if (mbox->storage->set->maildir_copy_with_hardlinks &&
 	    maildir_compatible_file_modes(&mbox->ibox.box, mail->box)) {
 		T_BEGIN {
-			ret = maildir_copy_hardlink(t, mail, flags,
-						    keywords, dest_mail);
+			ret = maildir_copy_hardlink(t, mail, ctx->flags,
+						    ctx->keywords,
+						    ctx->dest_mail);
 		} T_END;
 
-		if (ret > 0)
-			return 0;
-		if (ret < 0)
-			return -1;
+		if (ret != 0) {
+			index_save_context_free(ctx);
+			return ret > 0 ? 0 : -1;
+		}
 
 		/* non-fatal hardlinking failure, try the slow way */
 	}
 
-	return mail_storage_copy(_t, mail, flags, keywords, dest_mail);
+	return mail_storage_copy(ctx, mail);
 }

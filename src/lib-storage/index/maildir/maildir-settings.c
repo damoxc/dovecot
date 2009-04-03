@@ -15,6 +15,7 @@ static struct setting_define maildir_setting_defines[] = {
 	DEF(SET_BOOL, maildir_stat_dirs),
 	DEF(SET_BOOL, maildir_copy_with_hardlinks),
 	DEF(SET_BOOL, maildir_copy_preserve_filename),
+	DEF(SET_BOOL, maildir_very_dirty_syncs),
 
 	SETTING_DEFINE_LIST_END
 };
@@ -22,7 +23,8 @@ static struct setting_define maildir_setting_defines[] = {
 static struct maildir_settings maildir_default_settings = {
 	MEMBER(maildir_stat_dirs) FALSE,
 	MEMBER(maildir_copy_with_hardlinks) TRUE,
-	MEMBER(maildir_copy_preserve_filename) FALSE
+	MEMBER(maildir_copy_preserve_filename) FALSE,
+	MEMBER(maildir_very_dirty_syncs) FALSE
 };
 
 static struct setting_parser_info maildir_setting_parser_info = {

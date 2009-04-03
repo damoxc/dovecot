@@ -26,12 +26,19 @@ struct mbox_index_header {
 	uint8_t unused[3];
 };
 struct dbox_index_header {
-	uint32_t last_dirty_flush_stamp;
+	uint32_t map_uid_validity;
+	uint32_t highest_maildir_uid;
 };
 
 struct virtual_mail_index_record {
 	uint32_t mailbox_id;
 	uint32_t real_uid;
+};
+
+struct dbox_mail_index_map_record {
+	uint32_t file_id;
+	uint32_t offset;
+	uint32_t size;
 };
 
 static const char *unixdate2str(time_t timestamp)
@@ -113,7 +120,8 @@ static void dump_extension_header(struct mail_index *index,
 		const struct dbox_index_header *hdr = data;
 
 		printf("header\n");
-		printf(" - last_dirty_flush_stamp = %s\n", unixdate2str(hdr->last_dirty_flush_stamp));
+		printf(" - map_uid_validity = %u\n", hdr->map_uid_validity);
+		printf(" - highest_maildir_uid = %u\n", hdr->highest_maildir_uid);
 	} else if (strcmp(ext->name, "modseq") == 0) {
 		const struct mail_index_modseq_header *hdr = data;
 
@@ -400,8 +408,11 @@ static void dump_record(struct mail_index_view *view, unsigned int seq)
 
 		str_truncate(str, 0);
 		str_printfa(str, " - ext %d %-10s: ", i, ext[i].name);
-		if (ext[i].record_size == sizeof(uint32_t) &&
-		    ext[i].record_align == sizeof(uint32_t))
+		if (ext[i].record_size == sizeof(uint16_t) &&
+		    ext[i].record_align == sizeof(uint16_t))
+			str_printfa(str, "%10u", *((const uint16_t *)data));
+		else if (ext[i].record_size == sizeof(uint32_t) &&
+			 ext[i].record_align == sizeof(uint32_t))
 			str_printfa(str, "%10u", *((const uint32_t *)data));
 		else if (ext[i].record_size == sizeof(uint64_t) &&
 			 ext[i].record_align == sizeof(uint64_t)) {
@@ -417,6 +428,11 @@ static void dump_record(struct mail_index_view *view, unsigned int seq)
 			const struct virtual_mail_index_record *vrec = data;
 			printf("                   : mailbox_id = %u\n", vrec->mailbox_id);
 			printf("                   : real_uid   = %u\n", vrec->real_uid);
+		} else if (strcmp(ext[i].name, "map") == 0) {
+			const struct dbox_mail_index_map_record *mrec = data;
+			printf("                   : file_id = %u\n", mrec->file_id);
+			printf("                   : offset  = %u\n", mrec->offset);
+			printf("                   : size    = %u\n", mrec->size);
 		}
 	}
 }
@@ -426,6 +442,8 @@ int main(int argc, const char *argv[])
 	struct mail_index *index;
 	struct mail_index_view *view;
 	struct mail_cache_view *cache_view;
+	struct stat st;
+	const char *p;
 	unsigned int seq, uid = 0;
 
 	lib_init();
@@ -433,7 +451,12 @@ int main(int argc, const char *argv[])
 	if (argc < 2)
 		i_fatal("Usage: idxview <index dir> [<uid>]");
 
-	index = mail_index_alloc(argv[1], "dovecot.index");
+	if (stat(argv[1], &st) == 0 && S_ISDIR(st.st_mode))
+		index = mail_index_alloc(argv[1], "dovecot.index");
+	else if ((p = strrchr(argv[1], '/')) != NULL)
+		index = mail_index_alloc(t_strdup_until(argv[1], p), p + 1);
+	else
+		index = mail_index_alloc(".", argv[1]);
 	if (mail_index_open(index, MAIL_INDEX_OPEN_FLAG_READONLY,
 			    FILE_LOCK_METHOD_FCNTL) <= 0)
 		i_fatal("Couldn't open index %s", argv[1]);

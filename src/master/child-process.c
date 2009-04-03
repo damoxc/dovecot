@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "lib-signals.h"
+#include "array.h"
 #include "hash.h"
 #include "str.h"
 #include "env-util.h"
@@ -126,7 +127,70 @@ static const char *get_exit_status_message(enum fatal_exit_status status,
 	return NULL;
 }
 
-static void sigchld_handler(int signo ATTR_UNUSED,
+static void
+log_coredump(string_t *str, enum process_type process_type, int status)
+{
+#ifdef WCOREDUMP
+	struct master_auth_settings *const *auth_set;
+	int signum = WTERMSIG(status);
+
+	if (WCOREDUMP(status)) {
+		str_append(str, " (core dumped)");
+		return;
+	}
+
+	if (signum != SIGABRT && signum != SIGSEGV && signum != SIGBUS)
+		return;
+
+	/* let's try to figure out why we didn't get a core dump */
+	if (core_dumps_disabled) {
+		str_printfa(str, " (core dumps disabled)");
+		return;
+	}
+
+	switch (process_type) {
+	case PROCESS_TYPE_LOGIN:
+#ifdef HAVE_PR_SET_DUMPABLE
+		str_append(str, " (core not dumped - add -D to login_executable)");
+		return;
+#else
+		break;
+#endif
+	case PROCESS_TYPE_IMAP:
+	case PROCESS_TYPE_POP3:
+#ifndef HAVE_PR_SET_DUMPABLE
+		if (!master_set->defaults->mail_drop_priv_before_exec) {
+			str_append(str, " (core not dumped - set mail_drop_priv_before_exec=yes)");
+			return;
+		}
+		if (*master_set->defaults->mail_privileged_group != '\0') {
+			str_append(str, " (core not dumped - mail_privileged_group prevented it)");
+			return;
+		}
+#endif
+		str_append(str, " (core not dumped - is home dir set?)");
+		return;
+	case PROCESS_TYPE_AUTH:
+	case PROCESS_TYPE_AUTH_WORKER:
+		auth_set = array_idx(&master_set->defaults->auths, 0);
+		if (auth_set[0]->uid == 0)
+			break;
+#ifdef HAVE_PR_SET_DUMPABLE
+		str_printfa(str, " (core not dumped - "
+			    "no permissions for auth user %s in %s?)",
+			    auth_set[0]->user, master_set->defaults->base_dir);
+#else
+		str_append(str, " (core not dumped - auth user is not root)");
+#endif
+		return;
+	default:
+		break;
+	}
+	str_append(str, " (core not dumped)");
+#endif
+}
+
+static void sigchld_handler(const siginfo_t *si ATTR_UNUSED,
 			    void *context ATTR_UNUSED)
 {
 	struct child_process *process;
@@ -180,6 +244,7 @@ static void sigchld_handler(int signo ATTR_UNUSED,
 			str_printfa(str, "child %s (%s) killed with signal %d",
 				    dec2str(pid), process_type_name,
 				    WTERMSIG(status));
+			log_coredump(str, process_type, status);
 		}
 
 		if (str_len(str) > 0) {
@@ -218,10 +283,15 @@ void child_processes_init(void)
 	lib_signals_set_handler(SIGCHLD, TRUE, sigchld_handler, NULL);
 }
 
-void child_processes_deinit(void)
+void child_processes_flush(void)
 {
 	/* make sure we log if child processes died unexpectedly */
-	sigchld_handler(SIGCHLD, NULL);
+	sigchld_handler(NULL, NULL);
+}
+
+void child_processes_deinit(void)
+{
+	child_processes_flush();
 	lib_signals_unset_handler(SIGCHLD, sigchld_handler, NULL);
 	hash_table_destroy(&processes);
 }

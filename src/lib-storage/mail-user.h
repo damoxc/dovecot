@@ -86,6 +86,9 @@ void mail_user_set_home(struct mail_user *user, const char *home);
    successfully, 0 if there is no home directory (either user doesn't exist or
    has no home directory) or -1 if lookup failed. */
 int mail_user_get_home(struct mail_user *user, const char **home_r);
+/* Returns path + file prefix for creating a temporary file. Uses home
+   directory if possible, fallbacks to mail directory. */
+const char *mail_user_get_temp_prefix(struct mail_user *user);
 /* If name exists in plugin_envs, return its value. */
 const char *mail_user_plugin_getenv(struct mail_user *user, const char *name);
 

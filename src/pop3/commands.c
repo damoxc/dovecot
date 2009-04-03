@@ -13,9 +13,6 @@
 #include "capability.h"
 #include "commands.h"
 
-#define MSGS_BITMASK_SIZE(client) \
-	((client->messages_count + (CHAR_BIT-1)) / CHAR_BIT)
-
 static const char *get_msgnum(struct client *client, const char *args,
 			      unsigned int *msgnum)
 {
@@ -199,15 +196,12 @@ pop3_search_build(struct client *client, uint32_t seq)
 	return search_args;
 }
 
-static bool expunge_mails(struct client *client)
+bool client_update_mails(struct client *client)
 {
 	struct mail_search_args *search_args;
 	struct mail_search_context *ctx;
 	struct mail *mail;
-	uint32_t idx;
-
-	if (client->deleted_bitmask == NULL)
-		return TRUE;
+	uint32_t idx, bit;
 
 	if (mailbox_is_readonly(client->mailbox)) {
 		/* silently ignore */
@@ -221,21 +215,26 @@ static bool expunge_mails(struct client *client)
 	mail = mail_alloc(client->trans, 0, NULL);
 	while (mailbox_search_next(ctx, mail) > 0) {
 		idx = mail->seq - 1;
-		if ((client->deleted_bitmask[idx / CHAR_BIT] &
-		     1 << (idx % CHAR_BIT)) != 0) {
+		bit = 1 << (idx % CHAR_BIT);
+		if (client->deleted_bitmask != NULL &&
+		    (client->deleted_bitmask[idx / CHAR_BIT] & bit) != 0) {
 			mail_expunge(mail);
 			client->expunged_count++;
+		} else if (client->seen_bitmask != NULL &&
+			   (client->seen_bitmask[idx / CHAR_BIT] & bit) != 0) {
+			mail_update_flags(mail, MODIFY_ADD, MAIL_SEEN);
 		}
 	}
 	mail_free(&mail);
 
+	client->seen_change_count = 0;
 	return mailbox_search_deinit(&ctx) == 0;
 }
 
 static int cmd_quit(struct client *client, const char *args ATTR_UNUSED)
 {
-	if (client->deleted) {
-		if (!expunge_mails(client)) {
+	if (client->deleted || client->seen_bitmask != NULL) {
+		if (!client_update_mails(client)) {
 			client_send_storage_error(client);
 			client_disconnect(client,
 				"Storage error during logout.");
@@ -410,11 +409,11 @@ static int fetch(struct client *client, unsigned int msgnum, uoff_t body_lines)
 		return ret;
 	}
 
-	if (body_lines == (uoff_t)-1 && !client->set->pop3_no_flag_updates) {
+	if (body_lines == (uoff_t)-1 && client->seen_bitmask != NULL) {
 		if ((mail_get_flags(ctx->mail) & MAIL_SEEN) == 0) {
 			/* mark the message seen with RETR command */
-			(void)mail_update_flags(ctx->mail,
-						MODIFY_ADD, MAIL_SEEN);
+			client->seen_bitmask[msgnum / CHAR_BIT] |= 1 << (msgnum % CHAR_BIT);
+			client->seen_change_count++;
 		}
 	}
 
@@ -464,6 +463,10 @@ static int cmd_rset(struct client *client, const char *args ATTR_UNUSED)
 		client->deleted_count = 0;
 		client->deleted_size = 0;
 	}
+	if (client->seen_change_count > 0) {
+		memset(client->seen_bitmask, 0, MSGS_BITMASK_SIZE(client));
+		client->seen_change_count = 0;
+	}
 
 	if (client->set->pop3_enable_last) {
 		/* remove all \Seen flags (as specified by RFC 1460) */
@@ -477,10 +480,8 @@ static int cmd_rset(struct client *client, const char *args ATTR_UNUSED)
 			mail_update_flags(mail, MODIFY_REMOVE, MAIL_SEEN);
 		mail_free(&mail);
 		(void)mailbox_search_deinit(&search_ctx);
-	} else {
-		/* forget all our seen flag updates.
-		   FIXME: is this needed? it loses data added to cache file */
-		mailbox_transaction_rollback(&client->trans);
+
+		mailbox_transaction_commit(&client->trans);
 		client->trans = mailbox_transaction_begin(client->mailbox, 0);
 	}
 

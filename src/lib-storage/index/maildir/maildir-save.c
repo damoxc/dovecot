@@ -52,7 +52,6 @@ struct maildir_save_context {
 	ARRAY_TYPE(keyword_indexes) keywords_array;
 
 	struct istream *input;
-	struct ostream *output;
 	int fd;
 	uint32_t first_seq, seq;
 
@@ -372,7 +371,7 @@ int maildir_save_begin(struct mail_save_context *_ctx, struct istream *input)
 
 	T_BEGIN {
 		/* create a new file in tmp/ directory */
-		const char *fname;
+		const char *fname = NULL;
 
 		ctx->fd = maildir_create_tmp(ctx->mbox, ctx->tmpdir, &fname);
 		if (ctx->fd == -1)
@@ -388,8 +387,8 @@ int maildir_save_begin(struct mail_save_context *_ctx, struct istream *input)
 	} T_END;
 
 	if (!ctx->failed) {
-		ctx->output = o_stream_create_fd_file(ctx->fd, 0, FALSE);
-		o_stream_cork(ctx->output);
+		_ctx->output = o_stream_create_fd_file(ctx->fd, 0, FALSE);
+		o_stream_cork(_ctx->output);
 	}
 	return ctx->failed ? -1 : 0;
 }
@@ -403,7 +402,7 @@ int maildir_save_continue(struct mail_save_context *_ctx)
 		return -1;
 
 	do {
-		if (o_stream_send_istream(ctx->output, ctx->input) < 0) {
+		if (o_stream_send_istream(_ctx->output, ctx->input) < 0) {
 			if (!mail_storage_set_error_from_errno(storage)) {
 				mail_storage_set_critical(storage,
 					"o_stream_send_istream(%s/%s) "
@@ -439,7 +438,7 @@ static int maildir_save_finish_real(struct mail_save_context *_ctx)
 	}
 
 	path = t_strconcat(ctx->tmpdir, "/", ctx->file_last->basename, NULL);
-	if (o_stream_flush(ctx->output) < 0) {
+	if (o_stream_flush(_ctx->output) < 0) {
 		if (!mail_storage_set_error_from_errno(storage)) {
 			mail_storage_set_critical(storage,
 				"o_stream_flush(%s) failed: %m", path);
@@ -484,16 +483,16 @@ static int maildir_save_finish_real(struct mail_save_context *_ctx)
 	i_stream_unref(&ctx->input);
 
 	/* remember the size in case we want to add it to filename */
-	ctx->file_last->size = ctx->output->offset;
+	ctx->file_last->size = _ctx->output->offset;
 	if (ctx->cur_dest_mail == NULL ||
 	    mail_get_virtual_size(ctx->cur_dest_mail,
 				  &ctx->file_last->vsize) < 0)
 		ctx->file_last->vsize = (uoff_t)-1;
 
-	output_errno = ctx->output->stream_errno;
-	o_stream_destroy(&ctx->output);
+	output_errno = _ctx->output->stream_errno;
+	o_stream_destroy(&_ctx->output);
 
-	if (!ctx->mbox->ibox.fsync_disable && !ctx->failed) {
+	if (!storage->set->fsync_disable && !ctx->failed) {
 		if (fsync(ctx->fd) < 0) {
 			if (!mail_storage_set_error_from_errno(storage)) {
 				mail_storage_set_critical(storage,
@@ -584,7 +583,7 @@ static int maildir_transaction_fsync_dirs(struct maildir_save_context *ctx,
 {
 	struct mail_storage *storage = &ctx->mbox->storage->storage;
 
-	if (ctx->mbox->ibox.fsync_disable)
+	if (storage->set->fsync_disable)
 		return 0;
 
 	if (new_changed) {
@@ -671,7 +670,7 @@ int maildir_transaction_save_commit_pre(struct maildir_save_context *ctx)
 	bool newdir, new_changed, cur_changed;
 	int ret;
 
-	i_assert(ctx->output == NULL);
+	i_assert(ctx->ctx.output == NULL);
 	i_assert(ctx->finished);
 
 	sync_flags = MAILDIR_UIDLIST_SYNC_PARTIAL |
@@ -818,7 +817,7 @@ maildir_transaction_save_rollback_real(struct maildir_save_context *ctx)
 	size_t dir_len;
 	bool hardlinks = FALSE;
 
-	i_assert(ctx->output == NULL);
+	i_assert(ctx->ctx.output == NULL);
 
 	if (!ctx->finished)
 		maildir_save_cancel(&ctx->ctx);

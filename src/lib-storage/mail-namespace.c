@@ -142,8 +142,7 @@ namespace_add(struct mail_user *user,
 static bool
 namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 {
-	struct mail_namespace *ns, *inbox_ns = NULL, *private_ns = NULL;
-	unsigned int private_ns_count = 0;
+	struct mail_namespace *ns, *inbox_ns = NULL;
 	unsigned int subscriptions_count = 0;
 	char list_sep = '\0';
 
@@ -156,10 +155,6 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 				return FALSE;
 			}
 			inbox_ns = ns;
-		}
-		if (ns->type == NAMESPACE_PRIVATE) {
-			private_ns = ns;
-			private_ns_count++;
 		}
 		if (*ns->prefix != '\0' &&
 		    (ns->flags & NAMESPACE_FLAG_LIST_PREFIX) != 0 &&
@@ -192,15 +187,9 @@ namespaces_check(struct mail_namespace *namespaces, const char **error_r)
 	}
 
 	if (inbox_ns == NULL) {
-		if (private_ns_count == 1) {
-			/* just one private namespace. we'll assume it's
-			   the INBOX namespace. */
-			private_ns->flags |= NAMESPACE_FLAG_INBOX;
-		} else {
 			*error_r = "namespace configuration error: "
 				"inbox=yes namespace missing";
-			return FALSE;
-		}
+		return FALSE;
 	}
 	if (list_sep == '\0') {
 		*error_r = "namespace configuration error: "
@@ -381,7 +370,8 @@ const char *mail_namespace_get_vname(struct mail_namespace *ns, string_t *dest,
 {
 	str_truncate(dest, 0);
 	if ((ns->flags & NAMESPACE_FLAG_INBOX) == 0 ||
-	    strcasecmp(name, "INBOX") != 0)
+	    strcasecmp(name, "INBOX") != 0 ||
+	    ns->user != ns->owner)
 		str_append(dest, ns->prefix);
 
 	for (; *name != '\0'; name++) {

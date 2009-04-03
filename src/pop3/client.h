@@ -6,12 +6,15 @@ struct mail_storage;
 
 typedef void command_func_t(struct client *client);
 
+#define MSGS_BITMASK_SIZE(client) \
+	(((client)->messages_count + (CHAR_BIT-1)) / CHAR_BIT)
+
 struct client {
 	int fd_in, fd_out;
 	struct io *io;
 	struct istream *input;
 	struct ostream *output;
-	struct timeout *to_idle;
+	struct timeout *to_idle, *to_commit;
 
 	command_func_t *cmd;
 	void *cmd_context;
@@ -27,8 +30,7 @@ struct client {
 
 	unsigned int uid_validity;
 	unsigned int messages_count;
-	unsigned int deleted_count;
-	unsigned int expunged_count;
+	unsigned int deleted_count, expunged_count, seen_change_count;
 	uoff_t *message_sizes;
 	uoff_t total_size;
 	uoff_t deleted_size;
@@ -43,6 +45,7 @@ struct client {
 	uoff_t byte_counter_offset;
 
 	unsigned char *deleted_bitmask;
+	unsigned char *seen_bitmask;
 
 	/* settings: */
 	const struct pop3_settings *set;
@@ -69,6 +72,7 @@ int client_send_line(struct client *client, const char *fmt, ...)
 void client_send_storage_error(struct client *client);
 
 bool client_handle_input(struct client *client);
+bool client_update_mails(struct client *client);
 
 void clients_init(void);
 void clients_deinit(void);
