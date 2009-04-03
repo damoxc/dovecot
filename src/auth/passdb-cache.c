@@ -116,12 +116,9 @@ bool passdb_cache_lookup_credentials(struct auth_request *request,
 	auth_request_set_fields(request, list + 1, NULL);
 
 	*result_r = PASSDB_RESULT_OK;
-	*password_r = list[0];
+	*password_r = *list[0] == '\0' ? NULL : list[0];
 	*scheme_r = password_get_scheme(password_r);
 	i_assert(*scheme_r != NULL || *password_r == NULL);
-
-	if (*password_r == NULL)
-		*result_r = PASSDB_RESULT_SCHEME_NOT_AVAILABLE;
 	return TRUE;
 }
 

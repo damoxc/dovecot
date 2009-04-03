@@ -69,7 +69,8 @@ static int dbox_map_mkdir_storage(struct dbox_storage *storage)
 	mode_t mode;
 	gid_t gid;
 
-	mailbox_list_get_dir_permissions(storage->storage.list, &mode, &gid);
+	mailbox_list_get_dir_permissions(storage->storage.list, NULL,
+					 &mode, &gid);
 	if (mkdir_parents_chown(storage->storage_dir, mode,
 				(uid_t)-1, gid) < 0 && errno != EEXIST) {
 		mail_storage_set_critical(&storage->storage,

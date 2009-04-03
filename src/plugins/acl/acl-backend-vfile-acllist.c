@@ -113,6 +113,8 @@ static int acl_backend_vfile_acllist_read(struct acl_backend_vfile *backend)
 
 void acl_backend_vfile_acllist_refresh(struct acl_backend_vfile *backend)
 {
+	i_assert(!backend->iterating_acllist);
+
 	if (backend->acllist_last_check +
 	    (time_t)backend->cache_secs > ioloop_time)
 		return;
@@ -176,10 +178,18 @@ int acl_backend_vfile_acllist_rebuild(struct acl_backend_vfile *backend)
 	gid_t gid;
 	int fd, ret;
 
+	i_assert(!backend->rebuilding_acllist);
+
 	rootdir = mailbox_list_get_path(list, NULL,
 					MAILBOX_LIST_PATH_TYPE_DIR);
 	if (rootdir == NULL)
 		return 0;
+
+	ns = mailbox_list_get_namespace(list);
+	if ((ns->flags & NAMESPACE_FLAG_UNUSABLE) != 0) {
+		/* we can't write anything here */
+		return 0;
+	}
 
 	path = t_str_new(256);
 	str_printfa(path, "%s/%s", rootdir, mailbox_list_get_temp_prefix(list));
@@ -187,7 +197,7 @@ int acl_backend_vfile_acllist_rebuild(struct acl_backend_vfile *backend)
 	/* Build it into a temporary file and rename() over. There's no need
 	   to use locking, because even if multiple processes are rebuilding
 	   the file at the same time the result should be the same. */
-	mailbox_list_get_permissions(list, &mode, &gid);
+	mailbox_list_get_permissions(list, NULL, &mode, &gid);
 	fd = safe_mkstemp(path, mode, (uid_t)-1, gid);
 	if (fd == -1) {
 		if (errno == EACCES) {
@@ -202,7 +212,6 @@ int acl_backend_vfile_acllist_rebuild(struct acl_backend_vfile *backend)
 
 	ret = 0;
 	acllist_clear(backend, 0);
-	ns = mailbox_list_get_namespace(list);
 
 	backend->rebuilding_acllist = TRUE;
 	iter = mailbox_list_iter_init(list, "*", MAILBOX_LIST_ITER_RAW_LIST |
@@ -218,7 +227,6 @@ int acl_backend_vfile_acllist_rebuild(struct acl_backend_vfile *backend)
 	if (mailbox_list_iter_deinit(&iter) < 0)
 		ret = -1;
 	o_stream_destroy(&output);
-	backend->rebuilding_acllist = FALSE;
 
 	if (ret == 0) {
 		if (fstat(fd, &st) < 0) {
@@ -251,6 +259,7 @@ int acl_backend_vfile_acllist_rebuild(struct acl_backend_vfile *backend)
 		if (unlink(str_c(path)) < 0 && errno != ENOENT)
 			i_error("unlink(%s) failed: %m", str_c(path));
 	}
+	backend->rebuilding_acllist = FALSE;
 	return ret;
 }
 
@@ -274,10 +283,12 @@ void acl_backend_vfile_acllist_verify(struct acl_backend_vfile *backend,
 {
 	const struct acl_backend_vfile_acllist *acllist;
 
+	if (backend->rebuilding_acllist || backend->iterating_acllist)
+		return;
+
 	acl_backend_vfile_acllist_refresh(backend);
 	acllist = acl_backend_vfile_acllist_find(backend, name);
-	if (acllist != NULL && acllist->mtime != mtime &&
-	    !backend->rebuilding_acllist)
+	if (acllist != NULL && acllist->mtime != mtime)
 		(void)acl_backend_vfile_acllist_rebuild(backend);
 }
 
@@ -292,6 +303,7 @@ acl_backend_vfile_nonowner_iter_init(struct acl_backend *_backend)
 
 	ctx = i_new(struct acl_mailbox_list_context_vfile, 1);
 	ctx->ctx.backend = _backend;
+	backend->iterating_acllist = TRUE;
 	return &ctx->ctx;
 }
 
@@ -316,5 +328,9 @@ int acl_backend_vfile_nonowner_iter_next(struct acl_mailbox_list_context *_ctx,
 void
 acl_backend_vfile_nonowner_iter_deinit(struct acl_mailbox_list_context *ctx)
 {
+	struct acl_backend_vfile *backend =
+		(struct acl_backend_vfile *)ctx->backend;
+
+	backend->iterating_acllist = FALSE;
 	i_free(ctx);
 }

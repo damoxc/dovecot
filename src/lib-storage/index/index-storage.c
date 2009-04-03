@@ -67,33 +67,6 @@ static void index_list_free(struct index_list *list)
 	i_free(list);
 }
 
-static int stat_parent(struct mail_storage *storage, const char *path,
-		       mode_t *mode_r, gid_t *gid_r)
-{
-	struct stat st;
-	const char *p;
-
-	while ((p = strrchr(path, '/')) != NULL) {
-		path = t_strdup_until(path, p);
-		if (stat(path, &st) == 0) {
-			*mode_r = st.st_mode;
-			*gid_r = (st.st_mode & S_ISGID) != 0 ||
-				st.st_gid == getegid() ?
-				(gid_t)-1 : st.st_gid;
-			return 0;
-		}
-		if (errno != ENOENT) {
-			mail_storage_set_critical(storage,
-						  "stat(%s) failed: %m", path);
-			return -1;
-		}
-	}
-	/* use default permissions */
-	*mode_r = 0700;
-	*gid_r = (gid_t)-1;
-	return 0;
-}
-
 static int create_index_dir(struct mail_storage *storage, const char *name)
 {
 	const char *root_dir, *index_dir;
@@ -107,10 +80,7 @@ static int create_index_dir(struct mail_storage *storage, const char *name)
 	if (strcmp(index_dir, root_dir) == 0 || *index_dir == '\0')
 		return 0;
 
-	/* get permissions from the parent directory */
-	if (stat_parent(storage, index_dir, &mode, &gid) < 0)
-		return -1;
-
+	mailbox_list_get_dir_permissions(storage->list, name, &mode, &gid);
 	if (mkdir_parents_chown(index_dir, mode, (uid_t)-1, gid) < 0 &&
 	    errno != EEXIST) {
 		mail_storage_set_critical(storage, "mkdir(%s) failed: %m",
@@ -459,21 +429,28 @@ void index_storage_mailbox_init(struct index_mailbox *ibox, const char *name,
 				bool move_to_memory)
 {
 	struct mail_storage *storage = ibox->storage;
+	struct mailbox *box = &ibox->box;
+	gid_t dir_gid;
 
 	i_assert(name != NULL);
 
-	ibox->box.storage = storage;
-	ibox->box.name = p_strdup(ibox->box.pool, name);
-	ibox->box.open_flags = flags;
-	if (ibox->box.file_create_mode == 0) {
-		ibox->box.file_create_mode = 0600;
-		ibox->box.dir_create_mode = 0700;
-		ibox->box.file_create_gid = (gid_t)-1;
+	box->storage = storage;
+	box->name = p_strdup(box->pool, name);
+	box->open_flags = flags;
+	if (box->file_create_mode == 0) {
+		mailbox_list_get_permissions(box->storage->list, name,
+					     &box->file_create_mode,
+					     &box->file_create_gid);
+		mailbox_list_get_dir_permissions(box->storage->list, name,
+						 &box->dir_create_mode,
+						 &dir_gid);
+		mail_index_set_permissions(ibox->index, box->file_create_mode,
+					   box->file_create_gid);
 	}
 
-	p_array_init(&ibox->box.search_results, ibox->box.pool, 16);
-	array_create(&ibox->box.module_contexts,
-		     ibox->box.pool, sizeof(void *), 5);
+	p_array_init(&box->search_results, box->pool, 16);
+	array_create(&box->module_contexts,
+		     box->pool, sizeof(void *), 5);
 
 	ibox->keep_recent = (flags & MAILBOX_OPEN_KEEP_RECENT) != 0;
 	ibox->keep_locked = (flags & MAILBOX_OPEN_KEEP_LOCKED) != 0;

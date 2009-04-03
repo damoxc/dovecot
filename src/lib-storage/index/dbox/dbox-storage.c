@@ -56,12 +56,13 @@ dbox_get_list_settings(struct mailbox_list_settings *list_set,
 		       const char **layout_r, const char **alt_dir_r,
 		       const char **error_r)
 {
+	const char *subs_fname = DBOX_SUBSCRIPTION_FILE_NAME;
 	bool debug = (storage->flags & MAIL_STORAGE_FLAG_DEBUG) != 0;
 
 	*layout_r = "fs";
 
 	memset(list_set, 0, sizeof(*list_set));
-	list_set->subscription_fname = DBOX_SUBSCRIPTION_FILE_NAME;
+	list_set->subscription_fname = subs_fname;
 	list_set->maildir_name = DBOX_MAILDIR_NAME;
 	list_set->mailbox_dir_name = DBOX_MAILBOX_DIR_NAME;
 
@@ -210,7 +211,7 @@ static int dbox_create(struct mail_storage *_storage, const char *data,
 	i_array_init(&storage->open_files, I_MIN(storage->max_open_files, 128));
 
 	storage->map = dbox_map_init(storage);
-	mailbox_list_get_permissions(storage->storage.list,
+	mailbox_list_get_permissions(storage->storage.list, NULL,
 				     &storage->create_mode,
 				     &storage->create_gid);
 	return 0;
@@ -338,7 +339,7 @@ static int create_dbox(struct mail_storage *_storage, const char *path,
 	mode_t mode;
 	gid_t gid;
 
-	mailbox_list_get_dir_permissions(_storage->list, &mode, &gid);
+	mailbox_list_get_dir_permissions(_storage->list, NULL, &mode, &gid);
 	if (mkdir_parents_chown(path, mode, (uid_t)-1, gid) == 0) {
 		if (!directory) {
 			/* create indexes immediately with the dbox header */
@@ -555,7 +556,7 @@ dbox_list_delete_mailbox(struct mailbox_list *list, const char *name)
 		mode_t mode;
 		gid_t gid;
 
-		mailbox_list_get_dir_permissions(list, &mode, &gid);
+		mailbox_list_get_dir_permissions(list, NULL, &mode, &gid);
 		if (mkdir_parents_chown(trash_dir, mode, (uid_t)-1, gid) < 0 &&
 		    errno != EEXIST) {
 			mailbox_list_set_critical(list,

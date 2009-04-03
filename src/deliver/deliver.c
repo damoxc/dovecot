@@ -70,12 +70,16 @@ static pool_t plugin_pool;
 static ARRAY_DEFINE(lda_envs, const char *);
 static ARRAY_DEFINE(plugin_envs, const char *);
 
-static void sig_die(int signo, void *context ATTR_UNUSED)
+static void sig_die(const siginfo_t *si, void *context ATTR_UNUSED)
 {
 	/* warn about being killed because of some signal, except SIGINT (^C)
 	   which is too common at least while testing :) */
-	if (signo != SIGINT)
-		i_warning("Killed with signal %d", signo);
+	if (si->si_signo != SIGINT) {
+		i_warning("Killed with signal %d (by pid=%s uid=%s code=%s)",
+			  si->si_signo, dec2str(si->si_pid),
+			  dec2str(si->si_uid),
+			  lib_signal_code_to_str(si->si_signo, si->si_code));
+	}
 	io_loop_stop(current_ioloop);
 }
 
@@ -606,7 +610,8 @@ static const char *address_sanitize(const char *address)
 }
 
 
-static struct istream *create_raw_stream(int fd, time_t *mtime_r)
+static struct istream *
+create_raw_stream(const char *temp_path_prefix, int fd, time_t *mtime_r)
 {
 	struct istream *input, *input2, *input_list[2];
 	const unsigned char *data;
@@ -656,7 +661,7 @@ static struct istream *create_raw_stream(int fd, time_t *mtime_r)
 
 	input_list[0] = input2; input_list[1] = NULL;
 	input = i_stream_create_seekable(input_list, MAIL_MAX_MEMORY_BUFFER,
-					 "/tmp/dovecot.deliver.");
+					 temp_path_prefix);
 	i_stream_unref(&input2);
 	return input;
 }
@@ -828,6 +833,7 @@ int main(int argc, char *argv[])
 	struct mailbox_transaction_context *t;
 	struct mailbox_header_lookup_ctx *headers_ctx;
 	struct mail *mail;
+	char cwd[PATH_MAX];
 	uid_t process_euid;
 	bool stderr_rejection = FALSE;
 	bool keep_environment = FALSE;
@@ -836,6 +842,7 @@ int main(int argc, char *argv[])
 	int i, ret;
 	pool_t userdb_pool = NULL;
 	string_t *str;
+	enum mail_error error;
 
 	if (getuid() != geteuid() && geteuid() == 0) {
 		/* running setuid - don't allow this if deliver is
@@ -893,6 +900,12 @@ int main(int argc, char *argv[])
 			if (i == argc)
 				i_fatal_status(EX_USAGE, "Missing -p argument");
 			path = argv[i];
+			if (*path != '/') {
+				/* expand relative paths before we chdir */
+				if (getcwd(cwd, sizeof(cwd)) == NULL)
+					i_fatal("getcwd() failed: %m");
+				path = t_strconcat(cwd, "/", path, NULL);
+			}
 		} else if (strcmp(argv[i], "-e") == 0) {
 			stderr_rejection = TRUE;
 		} else if (strcmp(argv[i], "-c") == 0) {
@@ -1106,7 +1119,8 @@ int main(int argc, char *argv[])
 				FILE_LOCK_METHOD_FCNTL, &errstr) < 0)
 		i_fatal("Couldn't create internal raw storage: %s", errstr);
 	if (path == NULL) {
-		input = create_raw_stream(0, &mtime);
+		const char *prefix = mail_user_get_temp_prefix(mail_user);
+		input = create_raw_stream(prefix, 0, &mtime);
 		box = mailbox_open(&raw_ns->storage, "Dovecot Delivery Mail",
 				   input, MAILBOX_OPEN_NO_INDEX_FILES);
 		i_stream_unref(&input);
@@ -1115,11 +1129,11 @@ int main(int argc, char *argv[])
 		box = mailbox_open(&raw_ns->storage, path, NULL,
 				   MAILBOX_OPEN_NO_INDEX_FILES);
 	}
-	if (box == NULL)
-		i_fatal("Can't open delivery mail as raw");
+	if (box == NULL) {
+		i_fatal("Can't open delivery mail as raw: %s",
+			mail_storage_get_last_error(raw_ns->storage, &error));
+	}
 	if (mailbox_sync(box, 0, 0, NULL) < 0) {
-		enum mail_error error;
-
 		i_fatal("Can't sync delivery mail: %s",
 			mail_storage_get_last_error(raw_ns->storage, &error));
 	}

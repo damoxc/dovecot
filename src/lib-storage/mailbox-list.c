@@ -203,6 +203,7 @@ void mailbox_list_init(struct mailbox_list *list, struct mail_namespace *ns,
 	list->ns = ns;
 	list->flags = flags;
 	list->file_create_mode = (mode_t)-1;
+	list->dir_create_mode = (mode_t)-1;
 	list->file_create_gid = (gid_t)-1;
 
 	/* copy settings */
@@ -222,6 +223,16 @@ void mailbox_list_init(struct mailbox_list *list, struct mail_namespace *ns,
 		p_strdup(list->pool, set->maildir_name);
 	list->set.mailbox_dir_name =
 		p_strdup(list->pool, set->mailbox_dir_name);
+
+	if (set->mailbox_dir_name == NULL)
+		list->set.mailbox_dir_name = "";
+	else if (set->mailbox_dir_name[strlen(set->mailbox_dir_name)-1] == '/') {
+		list->set.mailbox_dir_name =
+			p_strdup(list->pool, set->mailbox_dir_name);
+	} else {
+		list->set.mailbox_dir_name =
+			p_strconcat(list->pool, set->mailbox_dir_name, "/", NULL);
+	}
 
 	list->set.mail_storage_flags = set->mail_storage_flags;
 	list->set.lock_method = set->lock_method;
@@ -272,19 +283,28 @@ mailbox_list_get_namespace(const struct mailbox_list *list)
 	return list->ns;
 }
 
-void mailbox_list_get_permissions(struct mailbox_list *list,
+static mode_t get_dir_mode(mode_t mode)
+{
+	/* add the execute bit if either read or write bit is set */
+	if ((mode & 0600) != 0) mode |= 0100;
+	if ((mode & 0060) != 0) mode |= 0010;
+	if ((mode & 0006) != 0) mode |= 0001;
+	return mode;
+}
+
+void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
 				  mode_t *mode_r, gid_t *gid_r)
 {
 	const char *path;
 	struct stat st;
 
-	if (list->file_create_mode != (mode_t)-1) {
+	if (list->file_create_mode != (mode_t)-1 && name == NULL) {
 		*mode_r = list->file_create_mode;
 		*gid_r = list->file_create_gid;
 		return;
 	}
 
-	path = mailbox_list_get_path(list, NULL, MAILBOX_LIST_PATH_TYPE_DIR);
+	path = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR);
 	if (stat(path, &st) < 0) {
 		if (!ENOTFOUND(errno)) {
 			mailbox_list_set_critical(list, "stat(%s) failed: %m",
@@ -294,16 +314,27 @@ void mailbox_list_get_permissions(struct mailbox_list *list,
 			       list->ns->prefix, path);
 		}
 		/* return safe defaults */
-		*mode_r = 0600;
-		*gid_r = (gid_t)-1;
+		list->file_create_mode = 0600;
+		list->dir_create_mode = 0700;
+		list->file_create_gid = (gid_t)-1;
+
+		*mode_r = list->file_create_mode;
+		*gid_r = list->file_create_gid;
 		return;
 	}
 
 	list->file_create_mode = st.st_mode & 0666;
+	list->dir_create_mode = st.st_mode & 0777;
+	if (!S_ISDIR(st.st_mode)) {
+		/* we're getting permissions from a file.
+		   apply +x modes as necessary. */
+		list->dir_create_mode = get_dir_mode(list->dir_create_mode);
+	}
+
 	if (S_ISDIR(st.st_mode) && (st.st_mode & S_ISGID) != 0) {
 		/* directory's GID is used automatically for new files */
 		list->file_create_gid = (gid_t)-1;
-	} else if ((st.st_mode & 0060) == 0) {
+	} else if ((st.st_mode & 0070) == 0) {
 		/* group doesn't have any permissions, so don't bother
 		   changing it */
 		list->file_create_gid = (gid_t)-1;
@@ -314,10 +345,10 @@ void mailbox_list_get_permissions(struct mailbox_list *list,
 		list->file_create_gid = st.st_gid;
 	}
 
-	if ((list->flags & MAILBOX_LIST_FLAG_DEBUG) != 0) {
+	if ((list->flags & MAILBOX_LIST_FLAG_DEBUG) != 0 && name == NULL) {
 		i_info("Namespace %s: Using permissions from %s: "
 		       "mode=0%o gid=%ld", list->ns->prefix, path,
-		       (int)list->file_create_mode,
+		       (int)list->dir_create_mode,
 		       list->file_create_gid == (gid_t)-1 ? -1L :
 		       (long)list->file_create_gid);
 	}
@@ -327,18 +358,13 @@ void mailbox_list_get_permissions(struct mailbox_list *list,
 }
 
 void mailbox_list_get_dir_permissions(struct mailbox_list *list,
+				      const char *name,
 				      mode_t *mode_r, gid_t *gid_r)
 {
 	mode_t mode;
 
-	mailbox_list_get_permissions(list, &mode, gid_r);
-
-	/* add the execute bit if either read or write bit is set */
-	if ((mode & 0600) != 0) mode |= 0100;
-	if ((mode & 0060) != 0) mode |= 0010;
-	if ((mode & 0006) != 0) mode |= 0001;
-
-	*mode_r = mode;
+	mailbox_list_get_permissions(list, name, &mode, gid_r);
+	*mode_r = list->dir_create_mode;
 }
 
 bool mailbox_list_is_valid_pattern(struct mailbox_list *list,

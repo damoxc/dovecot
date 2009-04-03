@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([Dovecot],[1.2.beta1],[dovecot@dovecot.org])
+AC_INIT([Dovecot],[1.2.rc1],[dovecot@dovecot.org])
 AC_CONFIG_SRCDIR([src])
 
 AM_INIT_AUTOMAKE([foreign])
@@ -2078,12 +2078,16 @@ if test "$found_sql_drivers" != "" || test "$want_sql" != "no"; then
 fi
 
 if test $want_vpopmail != no; then
-	vpop_libdeps="$vpopmail_home/etc/lib_deps"
-
-	AC_MSG_CHECKING([for vpopmail configuration at $vpop_libdeps])
-	if test -f $vpop_libdeps; then
-		AUTH_CFLAGS="$AUTH_CFLAGS `cat $vpopmail_home/etc/inc_deps` $CFLAGS"
-		AUTH_LIBS="$AUTH_LIBS `cat $vpop_libdeps`"
+	vpop_etc="$vpopmail_home/etc"
+	AC_MSG_CHECKING([for vpopmail configuration at $vpop_etc/lib_deps])
+	if ! test -f $vpop_etc/lib_deps; then
+		AC_MSG_RESULT(not found)
+		vpop_etc="$vpopmail_home"
+		AC_MSG_CHECKING([for vpopmail configuration at $vpop_etc/lib_deps])
+	fi
+	if test -f $vpop_etc/lib_deps; then
+		AUTH_CFLAGS="$AUTH_CFLAGS `cat $vpop_etc/inc_deps` $CFLAGS"
+		AUTH_LIBS="$AUTH_LIBS `cat $vpop_etc/lib_deps`"
 		AC_DEFINE(USERDB_VPOPMAIL,, Build with vpopmail support)
 		AC_DEFINE(PASSDB_VPOPMAIL,, Build with vpopmail support)
 		userdb="$userdb vpopmail"
@@ -2092,7 +2096,7 @@ if test $want_vpopmail != no; then
 	else
 		AC_MSG_RESULT(not found)
 		if test $want_vpopmail = yes; then
-		  AC_ERROR([Can't build with vpopmail support: $vpop_libdeps not found])
+		  AC_ERROR([Can't build with vpopmail support: $vpop_etc/lib_deps not found])
 		fi
 	fi
 fi
@@ -2352,7 +2356,7 @@ dnl ** capabilities
 dnl **
 
 capability_banner="IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE"
-capability="$capability_banner SORT THREAD=REFERENCES MULTIAPPEND UNSELECT IDLE CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH"
+capability="$capability_banner SORT THREAD=REFERENCES THREAD=REFS MULTIAPPEND UNSELECT IDLE CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH"
 AC_DEFINE_UNQUOTED(CAPABILITY_STRING, "$capability", IMAP capabilities)
 AC_DEFINE_UNQUOTED(CAPABILITY_BANNER_STRING, "$capability_banner", IMAP capabilities advertised in banner) 
 
@@ -2443,5 +2447,3 @@ echo "Building with GSSAPI support ........ : $have_gssapi"
 echo "Building with user database modules . :$userdb"
 echo "Building with password lookup modules :$passdb"
 echo "Building with SQL drivers ............:$sql_drivers"
-
-echo "NOTE: This is the UNSTABLE development branch of Dovecot v1.2."

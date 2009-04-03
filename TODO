@@ -12,16 +12,10 @@
  - use backup index in mail_index_fsck()
  - dbox: mail_index_fsck() should perhaps cause dbox to be resynced?
 
- - namespace shared: prefix = shared/%%d/%%u/: LIST shared/% doesn't work
+ - convert plugin: convert_pop3_uidl_format setting? so old %f uidls could be
+   converted to dbox..
  - proxying: support fallbacking to local (or other?) server if the first
    one is down
-
-fts_solr: select() failed: Interrupted system call
-fts_solr: Indexing failed: (null)
-
-imap(tss)(pid=12890): Error: dovecot-acl-list creation failed:
-safe_mkstemp(/usr/local/var/run/dovecot/user-not-found/test/temp.hurina.12890.87eb6b37b351b733) failed: No such file or directory
-
  - i_panic("Message count decreased") happens - why?
      - at least one backtrace shows client_destroy -> client_command_cancel ->
        imap_sync_deinit
@@ -42,10 +36,6 @@ safe_mkstemp(/usr/local/var/run/dovecot/user-not-found/test/temp.hurina.12890.87
     - read the entire file to memory only once and keep it there, stat() later
       to see if it has changed. if not, perhaps don't even bother stat()ing
       dovecot-acl files? at least not that often..
- - virtual mailboxes: backend mailbox where to save mails if they're tried to
-   be saved to the virtual mailbox.
- - acl example in wiki with acl_shared_dict = file:/var/mail/%d/dovecot.shared
-  - with list=children
  - add anonymous environment for anon logins
  - fs quota: getquotaroot inbox vs. other-box should return different quotas
    if two quotas are defined
@@ -159,10 +149,6 @@ safe_mkstemp(/usr/local/var/run/dovecot/user-not-found/test/temp.hurina.12890.87
  - login_max_processes_count shouldn't count proxying processes
 
  - Allow %variables in mail_chroot setting
- - something should be done to umask setting. we should be creating files with
-   0666 or 0777 and rely on umask, but we shouldn't do that unless we're sure
-   that the umask is the wanted one (ie. imap/pop3 process wasn't started
-   directly)
  - ssl_verify_client_cert isn't working if the SSL cert doesn't have CRL
 
  - keywords:
@@ -214,12 +200,6 @@ safe_mkstemp(/usr/local/var/run/dovecot/user-not-found/test/temp.hurina.12890.87
  - lib-storage
     - rename: allow moving between storages, as long as they're of same type
     - x search charset asdf all -> should fail
-    - should we allow following symlinks in mbox/maildirs? they are now.
-       - if we implement shared mailboxes with shared indexes, never do that or
-	 others could symlink your personal mailboxes and see the indexes
-	 created for it which may contain envelope etc. data
-       - this allows circular mailbox hierarchies which should be prevented by
-	 eg. allowing max. 20 hierarchies.
 
  - login
     - imap-login: Master sent reply with unknown tag 1. client closed
@@ -240,10 +220,6 @@ safe_mkstemp(/usr/local/var/run/dovecot/user-not-found/test/temp.hurina.12890.87
     - if auth process dies, login process should retry authentication if
       possible. or if not, disconnect the client so it doesn't think the auth
       failed.
-    - send client IP immediately after accept() to master process. make sure
-      master shows the IP if login dies unexpectedly. master should probably
-      also kill the login process if it doesn't kill itself soon enough.. or
-      maybe just log the IP immediately.
 
  - auth
     - v2.0: add auth_plugins setting, put all plugins into the same dir

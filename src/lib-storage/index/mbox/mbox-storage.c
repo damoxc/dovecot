@@ -386,6 +386,9 @@ mbox_list_get_path(struct mailbox_list *list, const char *name,
 	path = storage->list_module_ctx.super.get_path(list, name, type);
 	if (type == MAILBOX_LIST_PATH_TYPE_CONTROL ||
 	    type == MAILBOX_LIST_PATH_TYPE_INDEX) {
+		if (name == NULL)
+			return t_strconcat(path, "/"MBOX_INDEX_DIR_NAME, NULL);
+
 		p = strrchr(path, '/');
 		if (p == NULL)
 			return "";
@@ -442,7 +445,7 @@ static int mbox_create(struct mail_storage *_storage, const char *data,
 {
 	struct mbox_storage *storage = (struct mbox_storage *)_storage;
 	struct mailbox_list_settings list_set;
-	const char *layout;
+	const char *layout, *dir;
 
 	if (mbox_get_list_settings(&list_set, data, _storage,
 				   &layout, error_r) < 0)
@@ -470,6 +473,16 @@ static int mbox_create(struct mail_storage *_storage, const char *data,
 	mailbox_list_init(_storage->list, _storage->ns, &list_set,
 			  mail_storage_get_list_flags(_storage->flags) |
 			  MAILBOX_LIST_FLAG_MAILBOX_FILES);
+
+	dir = mailbox_list_get_path(_storage->list, NULL,
+				    MAILBOX_LIST_PATH_TYPE_INDEX);
+	if (*dir == '\0') {
+		/* no index directory. just fallback to writing to root. */
+		dir = mailbox_list_get_path(_storage->list, NULL,
+					    MAILBOX_LIST_PATH_TYPE_DIR);
+	}
+	_storage->temp_path_prefix = p_strconcat(_storage->pool, dir, "/",
+		mailbox_list_get_temp_prefix(_storage->list), NULL);
 	return 0;
 }
 
@@ -578,22 +591,6 @@ mbox_alloc_mailbox(struct mbox_storage *storage, struct mail_index *index,
 
 	index_storage_mailbox_init(&mbox->ibox, name, flags,
 				   want_memory_indexes(storage, path));
-
-	if ((flags & MAILBOX_OPEN_KEEP_LOCKED) != 0) {
-		if (mbox_lock(mbox, F_WRLCK, &mbox->mbox_global_lock_id) <= 0) {
-			struct mailbox *box = &mbox->ibox.box;
-
-			mailbox_close(&box);
-			return NULL;
-		}
-
-		if (mbox->mbox_dotlock != NULL) {
-			mbox->keep_lock_to =
-				timeout_add(MBOX_LOCK_TOUCH_MSECS,
-					    mbox_lock_touch_timeout, mbox);
-		}
-	}
-
 	return mbox;
 }
 
@@ -626,6 +623,20 @@ mbox_open(struct mbox_storage *storage, const char *name,
 						MAILBOX_LIST_PATH_TYPE_DIR);
 		if (strncmp(path, rootdir, strlen(rootdir)) != 0)
 			mbox->mbox_privileged_locking = TRUE;
+	}
+	if ((flags & MAILBOX_OPEN_KEEP_LOCKED) != 0) {
+		if (mbox_lock(mbox, F_WRLCK, &mbox->mbox_global_lock_id) <= 0) {
+			struct mailbox *box = &mbox->ibox.box;
+
+			mailbox_close(&box);
+			return NULL;
+		}
+
+		if (mbox->mbox_dotlock != NULL) {
+			mbox->keep_lock_to =
+				timeout_add(MBOX_LOCK_TOUCH_MSECS,
+					    mbox_lock_touch_timeout, mbox);
+		}
 	}
 	return &mbox->ibox.box;
 }
@@ -733,7 +744,8 @@ static int mbox_mailbox_create(struct mail_storage *_storage, const char *name,
 	p = directory ? path + strlen(path) : strrchr(path, '/');
 	if (p != NULL) {
 		p = t_strdup_until(path, p);
-		mailbox_list_get_dir_permissions(_storage->list, &mode, &gid);
+		mailbox_list_get_dir_permissions(_storage->list, NULL,
+						 &mode, &gid);
 		if (mkdir_parents_chown(p, mode, (uid_t)-1, gid) < 0 &&
 		    errno != EEXIST) {
 			if (!mail_storage_set_error_from_errno(_storage)) {

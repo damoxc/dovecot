@@ -142,21 +142,54 @@ log_coredump(string_t *str, enum process_type process_type, int status)
 		return;
 
 	/* let's try to figure out why we didn't get a core dump */
-	if (process_type != PROCESS_TYPE_IMAP &&
-	    process_type != PROCESS_TYPE_POP3)
-		str_append(str, " (core not dumped)");
-#ifndef HAVE_PR_SET_DUMPABLE
-	else if (!settings_root->defaults->mail_drop_priv_before_exec)
-		str_append(str, " (core not dumped - set mail_drop_priv_before_exec=yes)");
-#endif
-	else if (core_dumps_disabled)
+	if (core_dumps_disabled) {
 		str_printfa(str, " (core dumps disabled)");
-	else
+		return;
+	}
+
+	switch (process_type) {
+	case PROCESS_TYPE_LOGIN:
+#ifdef HAVE_PR_SET_DUMPABLE
+		str_append(str, " (core not dumped - add -D to login_executable)");
+		return;
+#else
+		break;
+#endif
+	case PROCESS_TYPE_IMAP:
+	case PROCESS_TYPE_POP3:
+#ifndef HAVE_PR_SET_DUMPABLE
+		if (!settings_root->defaults->mail_drop_priv_before_exec) {
+			str_append(str, " (core not dumped - set mail_drop_priv_before_exec=yes)");
+			return;
+		}
+		if (*settings_root->defaults->mail_privileged_group != '\0') {
+			str_append(str, " (core not dumped - mail_privileged_group prevented it)");
+			return;
+		}
+#endif
 		str_append(str, " (core not dumped - is home dir set?)");
+		return;
+	case PROCESS_TYPE_AUTH:
+	case PROCESS_TYPE_AUTH_WORKER:
+		if (settings_root->auths->uid == 0)
+			break;
+#ifdef HAVE_PR_SET_DUMPABLE
+		str_printfa(str, " (core not dumped - "
+			    "no permissions for auth user %s in %s?)",
+			    settings_root->auths->user,
+			    settings_root->defaults->base_dir);
+#else
+		str_append(str, " (core not dumped - auth user is not root)");
+#endif
+		return;
+	default:
+		break;
+	}
+	str_append(str, " (core not dumped)");
 #endif
 }
 
-static void sigchld_handler(int signo ATTR_UNUSED,
+static void sigchld_handler(const siginfo_t *si ATTR_UNUSED,
 			    void *context ATTR_UNUSED)
 {
 	struct child_process *process;
@@ -252,7 +285,7 @@ void child_processes_init(void)
 void child_processes_flush(void)
 {
 	/* make sure we log if child processes died unexpectedly */
-	sigchld_handler(SIGCHLD, NULL);
+	sigchld_handler(NULL, NULL);
 }
 
 void child_processes_deinit(void)

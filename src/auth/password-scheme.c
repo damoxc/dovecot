@@ -517,13 +517,20 @@ digest_md5_generate(const char *plaintext, const char *user,
 	if (user == NULL)
 		i_fatal("digest_md5_generate(): username not given");
 
-	/* user:realm:passwd */
-	realm = strchr(user, '@');
-	if (realm != NULL) realm++; else realm = "";
 
+	/* assume user@realm format for username. If user@domain is wanted
+	   in the username, allow also user@domain@realm. */
+	realm = strrchr(user, '@');
+	if (realm != NULL) {
+		user = t_strdup_until(user, realm);
+		realm++;
+	} else {
+		realm = "";
+	}
+
+	/* user:realm:passwd */
 	digest = t_malloc(MD5_RESULTLEN);
-	str = t_strdup_printf("%s:%s:%s", t_strcut(user, '@'),
-			      realm, plaintext);
+	str = t_strdup_printf("%s:%s:%s", user, realm, plaintext);
 	md5_get_digest(str, strlen(str), digest);
 
 	*raw_password_r = digest;
@@ -641,7 +648,8 @@ static const struct password_scheme builtin_schemes[] = {
 	{ "SSHA256", PW_ENCODING_BASE64, 0, ssha256_verify, ssha256_generate },
 	{ "PLAIN", PW_ENCODING_NONE, 0, NULL, plain_generate },
 	{ "CLEARTEXT", PW_ENCODING_NONE, 0, NULL, plain_generate },
-	{ "CRAM-MD5", PW_ENCODING_HEX, 0, NULL, cram_md5_generate },
+	{ "CRAM-MD5", PW_ENCODING_HEX, CRAM_MD5_CONTEXTLEN,
+	  NULL, cram_md5_generate },
 	{ "HMAC-MD5", PW_ENCODING_HEX, CRAM_MD5_CONTEXTLEN,
 	  NULL, cram_md5_generate },
 	{ "DIGEST-MD5", PW_ENCODING_HEX, MD5_RESULTLEN,

@@ -140,6 +140,7 @@ fs_list_get_path(struct mailbox_list *_list, const char *name,
 		 enum mailbox_list_path_type type)
 {
 	const struct mailbox_list_settings *set = &_list->set;
+	const char *path;
 
 	if (name == NULL) {
 		/* return root directories */
@@ -147,8 +148,9 @@ fs_list_get_path(struct mailbox_list *_list, const char *name,
 		case MAILBOX_LIST_PATH_TYPE_DIR:
 			return set->root_dir;
 		case MAILBOX_LIST_PATH_TYPE_MAILBOX:
-			return t_strconcat(set->root_dir, "/",
+			path = t_strconcat(set->root_dir, "/",
 					   set->mailbox_dir_name, NULL);
+			return t_strndup(path, strlen(path)-1);
 		case MAILBOX_LIST_PATH_TYPE_CONTROL:
 			return set->control_dir != NULL ?
 				set->control_dir : set->root_dir;
@@ -293,7 +295,7 @@ static int fs_list_rename_mailbox(struct mailbox_list *list,
 	/* create the hierarchy */
 	p = strrchr(newpath, '/');
 	if (p != NULL) {
-		mailbox_list_get_dir_permissions(list, &mode, &gid);
+		mailbox_list_get_dir_permissions(list, NULL, &mode, &gid);
 		p = t_strdup_until(newpath, p);
 		if (mkdir_parents_chown(p, mode, (uid_t)-1, gid) < 0 &&
 		    errno != EEXIST) {

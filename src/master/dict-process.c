@@ -78,6 +78,10 @@ static int dict_process_create(struct dict_listener *listener)
 	}
 	log_set_prefix(log, "master-dict: ");
 
+	/* make sure we don't leak syslog fd. try to do it as late as possible,
+	   but also before dup2()s in case syslog fd is one of them. */
+	closelog();
+
 	/* set stdin and stdout to /dev/null, so anything written into it
 	   gets ignored. */
 	if (dup2(null_fd, 0) < 0)
@@ -108,10 +112,6 @@ static int dict_process_create(struct dict_listener *listener)
 	i_assert((count % 2) == 0);
 	for (i = 0; i < count; i += 2)
 		env_put(t_strdup_printf("DICT_%s=%s", dicts[i], dicts[i+1]));
-
-	/* make sure we don't leak syslog fd, but do it last so that
-	   any errors above will be logged */
-	closelog();
 
 	executable = PKG_LIBEXECDIR"/dict";
 	client_process_exec(executable, "");
@@ -194,6 +194,7 @@ static void dict_listener_deinit(struct dict_listener *listener)
 		io_remove(&listener->io);
 	if (close(listener->fd) < 0)
 		i_error("close(dict listener) failed: %m");
+	listener->fd = -1;
 
 	/* don't try to free the dict processes here,
 	   let dict_process_destroyed() do it to avoid "unknown child exited"
@@ -209,7 +210,7 @@ dict_process_destroyed(struct child_process *_process,
 	struct dict_listener *listener = process->listener;
 
 	dict_process_deinit(process);
-	if (listener->processes == NULL) {
+	if (listener->processes == NULL && listener->fd != -1) {
 		/* last listener died, create new ones */
 		listener->io = io_add(listener->fd, IO_READ,
 				      dict_listener_input, listener);

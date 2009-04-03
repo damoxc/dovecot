@@ -99,6 +99,7 @@ struct settings {
 	bool maildir_stat_dirs;
 	bool maildir_copy_with_hardlinks;
 	bool maildir_copy_preserve_filename;
+	bool maildir_very_dirty_syncs;
 	const char *mbox_read_locks;
 	const char *mbox_write_locks;
 	unsigned int mbox_lock_timeout;
@@ -111,7 +112,6 @@ struct settings {
 	unsigned int dbox_rotate_min_size;
 	unsigned int dbox_rotate_days;
 	unsigned int dbox_purge_min_percentage;
-	unsigned int umask;
 	bool mail_drop_priv_before_exec;
 
 	const char *mail_executable;

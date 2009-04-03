@@ -253,6 +253,7 @@ struct settings default_settings = {
 	MEMBER(maildir_stat_dirs) FALSE,
 	MEMBER(maildir_copy_with_hardlinks) TRUE,
 	MEMBER(maildir_copy_preserve_filename) FALSE,
+	MEMBER(maildir_very_dirty_syncs) FALSE,
 	MEMBER(mbox_read_locks) "fcntl",
 	MEMBER(mbox_write_locks) "dotlock fcntl",
 	MEMBER(mbox_lock_timeout) 300,
@@ -265,7 +266,6 @@ struct settings default_settings = {
 	MEMBER(dbox_rotate_min_size) 16,
 	MEMBER(dbox_rotate_days) 1,
 	MEMBER(dbox_purge_min_percentage) 0,
-	MEMBER(umask) 0077,
 	MEMBER(mail_drop_priv_before_exec) FALSE,
 
 	MEMBER(mail_executable) PKG_LIBEXECDIR"/imap",
@@ -942,6 +942,21 @@ static bool settings_verify(struct settings *set)
 	return TRUE;
 }
 
+static bool login_want_core_dumps(struct settings *set)
+{
+	const char *p;
+
+	p = set->server->pop3 == NULL ? NULL :
+		strstr(set->server->pop3->login_executable, " -D");
+	if (p != NULL && p[3] == '\0')
+		return TRUE;
+	p = set->server->imap == NULL ? NULL :
+		strstr(set->server->imap->login_executable, " -D");
+	if (p != NULL && p[3] == '\0')
+		return TRUE;
+	return FALSE;
+}
+
 static bool settings_do_fixes(struct settings *set)
 {
 	struct stat st;
@@ -973,7 +988,8 @@ static bool settings_do_fixes(struct settings *set)
 		   empty. with external auth we wouldn't want to delete
 		   existing sockets or break the permissions required by the
 		   auth server. */
-		if (safe_mkdir(set->login_dir, 0750,
+		mode_t mode = login_want_core_dumps(set) ? 0770 : 0750;
+		if (safe_mkdir(set->login_dir, mode,
 			       master_uid, set->server->login_gid) == 0) {
 			i_warning("Corrected permissions for login directory "
 				  "%s", set->login_dir);

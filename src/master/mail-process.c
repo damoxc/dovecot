@@ -4,6 +4,7 @@
 #include "array.h"
 #include "hash.h"
 #include "fd-close-on-exec.h"
+#include "eacces-error.h"
 #include "env-util.h"
 #include "base64.h"
 #include "str.h"
@@ -365,6 +366,8 @@ mail_process_set_environment(struct settings *set, const char *mail,
 		env_put("MAILDIR_COPY_WITH_HARDLINKS=1");
 	if (set->maildir_copy_preserve_filename)
 		env_put("MAILDIR_COPY_PRESERVE_FILENAME=1");
+	if (set->maildir_very_dirty_syncs)
+		env_put("MAILDIR_VERY_DIRTY_SYNCS=1");
 	if (set->mail_debug)
 		env_put("DEBUG=1");
 	if (set->mail_full_filesystem_access)
@@ -381,7 +384,7 @@ mail_process_set_environment(struct settings *set, const char *mail,
 	   (e.g. epoll_ctl() gives EPERM). */
 	if (set->shutdown_clients && !exec_mail)
 		env_put("STDERR_CLOSE_SHUTDOWN=1");
-	(void)umask(set->umask);
+	(void)umask(0077);
 
 	env_put(t_strconcat("LOCK_METHOD=", set->lock_method, NULL));
 	env_put(t_strconcat("MBOX_READ_LOCKS=", set->mbox_read_locks, NULL));
@@ -552,7 +555,7 @@ create_mail_process(enum process_type process_type, struct settings *set,
 {
 	const struct var_expand_table *var_expand_table;
 	const char *p, *addr, *mail, *chroot_dir, *home_dir, *full_home_dir;
-	const char *system_user, *master_user;
+	const char *system_groups_user, *master_user;
 	struct mail_process_group *process_group;
 	char title[1024];
 	struct log_io *log;
@@ -575,7 +578,8 @@ create_mail_process(enum process_type process_type, struct settings *set,
 	}
 
 	t_array_init(&extra_args, 16);
-	mail = home_dir = chroot_dir = system_user = ""; master_user = NULL;
+	mail = home_dir = chroot_dir = system_groups_user = "";
+	master_user = NULL;
 	uid = (uid_t)-1; gid = (gid_t)-1; nice_value = 0;
 	home_given = FALSE;
 	for (; *args != NULL; args++) {
@@ -588,8 +592,8 @@ create_mail_process(enum process_type process_type, struct settings *set,
 			chroot_dir = *args + 7;
 		else if (strncmp(*args, "nice=", 5) == 0)
 			nice_value = atoi(*args + 5);
-		else if (strncmp(*args, "system_user=", 12) == 0)
-			system_user = *args + 12;
+		else if (strncmp(*args, "system_groups_user=", 12) == 0)
+			system_groups_user = *args + 12;
 		else if (strncmp(*args, "uid=", 4) == 0) {
 			if (uid != (uid_t)-1) {
 				i_error("uid specified multiple times for %s",
@@ -756,20 +760,10 @@ create_mail_process(enum process_type process_type, struct settings *set,
 
 	child_process_init_env();
 
-	/* move the client socket into stdin and stdout fds, log to stderr */
-	if (dup2(dump_capability ? null_fd : request->fd, 0) < 0)
-		i_fatal("dup2(stdin) failed: %m");
-	if (dup2(request->fd, 1) < 0)
-		i_fatal("dup2(stdout) failed: %m");
-	if (dup2(log_fd, 2) < 0)
-		i_fatal("dup2(stderr) failed: %m");
-
-	for (i = 0; i < 3; i++)
-		fd_close_on_exec(i, FALSE);
-
 	/* setup environment - set the most important environment first
 	   (paranoia about filling up environment without noticing) */
-	restrict_access_set_env(system_user, uid, gid, set->mail_priv_gid_t,
+	restrict_access_set_env(system_groups_user, uid, gid,
+				set->mail_priv_gid_t,
 				dump_capability ? "" : chroot_dir,
 				set->first_valid_gid, set->last_valid_gid,
 				set->mail_access_groups);
@@ -816,8 +810,13 @@ create_mail_process(enum process_type process_type, struct settings *set,
 				!(ENOTFOUND(chdir_errno) ||
 				  chdir_errno == EINTR))) {
 			errno = chdir_errno;
-			i_fatal("chdir(%s) failed with uid %s: %m",
-				full_home_dir, dec2str(uid));
+			if (errno != EACCES) {
+				i_fatal("chdir(%s) failed with uid %s: %m",
+					full_home_dir, dec2str(uid));
+			} else {
+				i_fatal("%s", eacces_error_get("chdir",
+							       full_home_dir));
+			}
 		}
 	}
 	if (ret < 0) {
@@ -892,15 +891,27 @@ create_mail_process(enum process_type process_type, struct settings *set,
 		i_snprintf(title, sizeof(title), "[%s %s]", user, addr);
 	}
 
-	/* make sure we don't leak syslog fd, but do it last so that
-	   any errors above will be logged */
+	/* make sure we don't leak syslog fd. try to do it as late as possible,
+	   but also before dup2()s in case syslog fd is one of them. */
 	closelog();
+
+	/* move the client socket into stdin and stdout fds, log to stderr */
+	if (dup2(dump_capability ? null_fd : request->fd, 0) < 0)
+		i_fatal("dup2(stdin) failed: %m");
+	if (dup2(request->fd, 1) < 0)
+		i_fatal("dup2(stdout) failed: %m");
+	if (dup2(log_fd, 2) < 0)
+		i_fatal("dup2(stderr) failed: %m");
+
+	for (i = 0; i < 3; i++)
+		fd_close_on_exec(i, FALSE);
 
 	if (set->mail_drop_priv_before_exec) {
 		restrict_access_by_env(TRUE);
 		/* privileged GID is now only in saved-GID. if we want to
-		   preserve it accross exec, it needs to be temporarily
-		   in effective gid */
+		   preserve it across exec, it needs to be temporarily
+		   in effective gid. unfortunately this also causes kernel
+		   to think we're a setgid-program. */
 		restrict_access_use_priv_gid();
 	}
 

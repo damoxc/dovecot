@@ -259,9 +259,9 @@ mail_index_transaction_get_view(struct mail_index_transaction *t);
 bool mail_index_transaction_is_expunged(struct mail_index_transaction *t,
 					uint32_t seq);
 
-/* Returns a view to transaction. Currently this differs from normal view only
-   in that it contains newly appended messages in transaction. The view can
-   still be used after transaction has been committed. */
+/* Returns a view containing the mailbox state after changes in transaction
+   are applied. The view can still be used after transaction has been
+   committed. */
 struct mail_index_view *
 mail_index_transaction_open_updated_view(struct mail_index_transaction *t);
 
@@ -363,6 +363,12 @@ void mail_index_lookup_keywords(struct mail_index_view *view, uint32_t seq,
 /* Return keywords from given map. */
 void mail_index_map_lookup_keywords(struct mail_index_map *map, uint32_t seq,
 				    ARRAY_TYPE(keyword_indexes) *keyword_idx);
+/* mail_index_lookup[_keywords]() returns the latest flag changes.
+   This function instead attempts to return the flags and keywords done by the
+   last view sync. */
+void mail_index_lookup_view_flags(struct mail_index_view *view, uint32_t seq,
+				  enum mail_flags *flags_r,
+				  ARRAY_TYPE(keyword_indexes) *keyword_idx);
 /* Returns the UID for given message. May be slightly faster than
    mail_index_lookup()->uid. */
 void mail_index_lookup_uid(struct mail_index_view *view, uint32_t seq,

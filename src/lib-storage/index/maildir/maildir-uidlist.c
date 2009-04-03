@@ -166,7 +166,7 @@ static int maildir_uidlist_lock_timeout(struct maildir_uidlist *uidlist,
 		}
 		/* the control dir doesn't exist. create it unless the whole
 		   mailbox was just deleted. */
-		if (maildir_set_deleted(uidlist->mbox))
+		if (!maildir_set_deleted(uidlist->mbox))
 			return -1;
 	}
 
@@ -215,6 +215,17 @@ void maildir_uidlist_unlock(struct maildir_uidlist *uidlist)
 	(void)file_dotlock_delete(&uidlist->dotlock);
 }
 
+static bool dotlock_callback(unsigned int secs_left, bool stale, void *context)
+{
+	struct index_mailbox *ibox = context;
+
+	index_storage_lock_notify(ibox, stale ?
+				  MAILBOX_LOCK_NOTIFY_MAILBOX_OVERRIDE :
+				  MAILBOX_LOCK_NOTIFY_MAILBOX_ABORT,
+				  secs_left);
+	return TRUE;
+}
+
 struct maildir_uidlist *
 maildir_uidlist_init_readonly(struct index_mailbox *ibox)
 {
@@ -246,6 +257,8 @@ maildir_uidlist_init_readonly(struct index_mailbox *ibox)
 		MAILDIR_UIDLIST_LOCK_STALE_TIMEOUT + 2;
 	uidlist->dotlock_settings.stale_timeout =
 		MAILDIR_UIDLIST_LOCK_STALE_TIMEOUT;
+	uidlist->dotlock_settings.callback = dotlock_callback;
+	uidlist->dotlock_settings.context = ibox;
 
 	return uidlist;
 }
@@ -913,13 +926,12 @@ maildir_uidlist_lookup_ext(struct maildir_uidlist *uidlist, uint32_t uid,
 	const struct maildir_uidlist_rec *rec;
 	unsigned int idx;
 	const unsigned char *p;
-	const char *value;
 
 	rec = maildir_uidlist_lookup_rec(uidlist, uid, &idx);
 	if (rec == NULL || rec->extensions == NULL)
 		return NULL;
 
-	p = rec->extensions; value = NULL;
+	p = rec->extensions;
 	while (*p != '\0') {
 		/* <key><value>\0 */
 		if (*p == (char)key)
@@ -1121,7 +1133,7 @@ static int maildir_uidlist_recreate(struct maildir_uidlist *uidlist)
 		}
 		/* the control dir doesn't exist. create it unless the whole
 		   mailbox was just deleted. */
-		if (maildir_set_deleted(uidlist->mbox))
+		if (!maildir_set_deleted(uidlist->mbox))
 			return -1;
 	}
 
@@ -1326,6 +1338,11 @@ static int maildir_uidlist_sync_lock(struct maildir_uidlist *uidlist,
 		*locked_r = TRUE;
 	}
 	return 1;
+}
+
+void maildir_uidlist_set_all_nonsynced(struct maildir_uidlist *uidlist)
+{
+	maildir_uidlist_mark_all(uidlist, TRUE);
 }
 
 int maildir_uidlist_sync_init(struct maildir_uidlist *uidlist,

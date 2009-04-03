@@ -20,7 +20,7 @@
 #include <sys/stat.h>
 
 #define ACL_ESTALE_RETRY_COUNT NFS_ESTALE_RETRY_COUNT
-#define ACL_VFILE_DEFAULT_CACHE_SECS (60*5)
+#define ACL_VFILE_DEFAULT_CACHE_SECS 30
 
 #define VALIDITY_MTIME_NOTFOUND 0
 #define VALIDITY_MTIME_NOACCESS -1
@@ -152,8 +152,7 @@ acl_backend_vfile_object_init(struct acl_backend *_backend,
 
 	if (storage == NULL) {
 		/* the default ACL for mailbox list */
-		dir = mailbox_list_get_path(_backend->list, NULL,
-					    MAILBOX_LIST_PATH_TYPE_DIR);
+		dir = NULL;
 	} else {
 		dir = acl_backend_vfile_get_local_dir(storage, name);
 	}
@@ -186,7 +185,7 @@ acl_backend_vfile_exists(struct acl_backend_vfile *backend, const char *path,
 
 	validity->last_check = ioloop_time;
 	if (stat(path, &st) < 0) {
-		if (errno == ENOENT) {
+		if (errno == ENOENT || errno == ENOTDIR) {
 			validity->last_mtime = VALIDITY_MTIME_NOTFOUND;
 			return 0;
 		}
@@ -458,7 +457,7 @@ acl_backend_vfile_read(struct acl_object_vfile *aclobj,
 
 	fd = nfs_safe_open(path, O_RDONLY);
 	if (fd == -1) {
-		if (errno == ENOENT) {
+		if (errno == ENOENT || errno == ENOTDIR) {
 			if (aclobj->aclobj.backend->debug)
 				i_info("acl vfile: file %s not found", path);
 			validity->last_mtime = VALIDITY_MTIME_NOTFOUND;
@@ -593,7 +592,7 @@ acl_backend_vfile_refresh(struct acl_object *aclobj, const char *path,
 
 	validity->last_check = ioloop_time;
 	if (stat(path, &st) < 0) {
-		if (errno == ENOENT) {
+		if (errno == ENOENT || errno == ENOTDIR) {
 			/* if the file used to exist, we have to re-read it */
 			return validity->last_mtime != VALIDITY_MTIME_NOTFOUND;
 		} 
@@ -846,7 +845,8 @@ static int acl_backend_vfile_update_begin(struct acl_object_vfile *aclobj,
 	int fd;
 
 	/* first lock the ACL file */
-	mailbox_list_get_permissions(_aclobj->backend->list, &mode, &gid);
+	mailbox_list_get_permissions(_aclobj->backend->list, _aclobj->name,
+				     &mode, &gid);
 	fd = file_dotlock_open_mode(&dotlock_set, aclobj->local_path, 0,
 				    mode, (uid_t)-1, gid, dotlock_r);
 	if (fd == -1) {
@@ -1127,7 +1127,6 @@ acl_backend_vfile_object_list_init(struct acl_object *_aclobj)
 	struct acl_object_vfile *aclobj =
 		(struct acl_object_vfile *)_aclobj;
 	struct acl_object_list_iter *iter;
-	struct mail_namespace *ns;
 
 	iter = i_new(struct acl_object_list_iter, 1);
 	iter->aclobj = _aclobj;
@@ -1137,12 +1136,6 @@ acl_backend_vfile_object_list_init(struct acl_object *_aclobj)
 		   rights read into memory */
 		acl_cache_flush(_aclobj->backend->cache, _aclobj->name);
 	}
-
-	/* be sure to return owner for private namespaces.
-	   (other namespaces don't have an owner) */
-	ns = mailbox_list_get_namespace(_aclobj->backend->list);
-	if (ns->type != NAMESPACE_PRIVATE)
-		iter->returned_owner = TRUE;
 
 	if (_aclobj->backend->v.object_refresh_cache(_aclobj) < 0)
 		iter->failed = TRUE;
@@ -1157,26 +1150,10 @@ acl_backend_vfile_object_list_next(struct acl_object_list_iter *iter,
 		(struct acl_object_vfile *)iter->aclobj;
 	const struct acl_rights *rights;
 
-	if (iter->idx == array_count(&aclobj->rights)) {
-		struct acl_backend *backend = iter->aclobj->backend;
-
-		if (iter->returned_owner)
-			return 0;
-
-		/* return missing owner based on the default ACLs */
-		iter->returned_owner = TRUE;
-		memset(rights_r, 0, sizeof(*rights_r));
-		rights_r->id_type = ACL_ID_OWNER;
-		rights_r->rights =
-			acl_backend_mask_get_names(backend,
-						   backend->default_aclmask,
-						   pool_datastack_create());
-		return 1;
-	}
+	if (iter->idx == array_count(&aclobj->rights))
+		return 0;
 
 	rights = array_idx(&aclobj->rights, iter->idx++);
-	if (rights->id_type == ACL_ID_OWNER && rights->rights != NULL)
-		iter->returned_owner = TRUE;
 	*rights_r = *rights;
 	return 1;
 }

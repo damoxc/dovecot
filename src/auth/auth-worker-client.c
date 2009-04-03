@@ -98,8 +98,6 @@ static void verify_plain_callback(enum passdb_result result,
 		auth_stream_reply_add(reply, NULL,
 				      request->passdb_password == NULL ? "" :
 				      request->passdb_password);
-		if (request->no_password)
-			auth_stream_reply_add(reply, "nopassword", NULL);
 		if (request->extra_fields != NULL) {
 			const char *fields =
 				auth_stream_reply_export(request->extra_fields);
@@ -267,6 +265,7 @@ auth_worker_handle_passl(struct auth_worker_client *client,
 		return;
 	}
 
+	auth_request->prefer_plain_credentials = TRUE;
 	auth_request->passdb->passdb->iface.
 		lookup_credentials(auth_request, lookup_credentials_callback);
 }

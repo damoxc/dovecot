@@ -128,9 +128,8 @@ imap_acl_write_right(string_t *dest, string_t *tmp,
 {
 	const char *const *rights = neg ? right->neg_rights : right->rights;
 
-	if (neg) str_append_c(dest,'-');
-
 	str_truncate(tmp, 0);
+	if (neg) str_append_c(tmp,'-');
 	if (right->global)
 		str_append(tmp, IMAP_ACL_GLOBAL_PREFIX);
 	switch (right->id_type) {
@@ -163,32 +162,90 @@ imap_acl_write_right(string_t *dest, string_t *tmp,
 	imap_acl_write_rights_list(dest, rights);
 }
 
-static int imap_acl_write_aclobj(string_t *dest, struct acl_object *aclobj)
+static int
+imap_acl_write_aclobj(string_t *dest, struct acl_backend *backend,
+		      struct acl_object *aclobj, bool convert_owner,
+		      bool add_default)
 {
 	struct acl_object_list_iter *iter;
 	struct acl_rights rights;
 	string_t *tmp;
+	const char *username;
+	unsigned int orig_len = str_len(dest);
+	bool owner, seen_owner = FALSE, seen_positive_owner = FALSE;
 	int ret;
+
+	username = acl_backend_get_acl_username(backend);
+	if (username == NULL)
+		convert_owner = FALSE;
 
 	tmp = t_str_new(128);
 	iter = acl_object_list_init(aclobj);
 	while ((ret = acl_object_list_next(iter, &rights)) > 0) {
-		str_append_c(dest, ' ');
-		if (rights.rights != NULL)
+		if (rights.id_type == ACL_ID_USER &&
+		    acl_backend_user_name_equals(backend, rights.identifier))
+			owner = TRUE;
+		else if (rights.id_type == ACL_ID_OWNER) {
+			owner = TRUE;
+			if (convert_owner) {
+				rights.id_type = ACL_ID_USER;
+				rights.identifier = username;
+			}
+		} else {
+			owner = FALSE;
+		}
+
+		if (owner) {
+			if (seen_owner && convert_owner) {
+				/* oops, we have both owner and user=myself.
+				   can't do the conversion, so try again. */
+				str_truncate(dest, orig_len);
+				return imap_acl_write_aclobj(dest, backend,
+							     aclobj, FALSE,
+							     add_default);
+			}
+			seen_owner = TRUE;
+			if (rights.rights != NULL)
+				seen_positive_owner = TRUE;
+		}
+
+		if (rights.rights != NULL) {
+			str_append_c(dest, ' ');
 			imap_acl_write_right(dest, tmp, &rights, FALSE);
-		if (rights.neg_rights != NULL)
+		}
+		if (rights.neg_rights != NULL) {
+			str_append_c(dest, ' ');
 			imap_acl_write_right(dest, tmp, &rights, TRUE);
+		}
 	}
 	acl_object_list_deinit(&iter);
+
+	if (!seen_positive_owner && username != NULL && add_default) {
+		/* no positive owner rights returned, write default ACLs */
+		memset(&rights, 0, sizeof(rights));
+		if (!convert_owner) {
+			rights.id_type = ACL_ID_OWNER;
+		} else {
+			rights.id_type = ACL_ID_USER;
+			rights.identifier = username;
+		}
+		rights.rights = acl_object_get_default_rights(aclobj);
+		if (rights.rights != NULL) {
+			str_append_c(dest, ' ');
+			imap_acl_write_right(dest, tmp, &rights, FALSE);
+		}
+	}
 	return ret;
 }
 
 static bool cmd_getacl(struct client_command_context *cmd)
 {
+	struct acl_backend *backend;
+	struct mail_namespace *ns;
+	struct mail_storage *storage;
 	struct mailbox *box;
 	const char *mailbox;
 	string_t *str;
-	unsigned int len;
 	int ret;
 
 	if (!client_read_string_args(cmd, 1, &mailbox)) {
@@ -203,9 +260,13 @@ static bool cmd_getacl(struct client_command_context *cmd)
 	str = t_str_new(128);
 	str_append(str, "* ACL ");
 	imap_quote_append_string(str, mailbox, FALSE);
-	len = str_len(str);
 
-	ret = imap_acl_write_aclobj(str, acl_mailbox_get_aclobj(box));
+	storage = mailbox_get_storage(box);
+	backend = acl_storage_get_backend(storage);
+	ns = mail_storage_get_namespace(storage);
+	ret = imap_acl_write_aclobj(str, backend,
+				    acl_mailbox_get_aclobj(box), TRUE,
+				    ns->type == NAMESPACE_PRIVATE);
 	if (ret == 0) {
 		client_send_line(cmd->client, str_c(str));
 		client_send_tagline(cmd, "OK Getacl completed.");
@@ -303,6 +364,10 @@ static int
 imap_acl_letters_parse(const char *letters, const char *const **rights_r,
 		       const char **error_r)
 {
+	static const char *acl_k = MAIL_ACL_CREATE;
+	static const char *acl_x = MAIL_ACL_DELETE;
+	static const char *acl_e = MAIL_ACL_EXPUNGE;
+	static const char *acl_t = MAIL_ACL_WRITE_DELETED;
 	ARRAY_TYPE(const_string) rights;
 	unsigned int i;
 
@@ -316,9 +381,22 @@ imap_acl_letters_parse(const char *letters, const char *const **rights_r,
 			}
 		}
 		if (imap_acl_letter_map[i].name == NULL) {
-			*error_r = t_strdup_printf("Invalid ACL right: %c",
-						   *letters);
-			return -1;
+			/* Handling of obsolete rights as virtual
+			   rights according to RFC 4314 */
+			switch (*letters) {
+			case 'c':
+				array_append(&rights, &acl_k, 1);
+				array_append(&rights, &acl_x, 1);
+				break;
+			case 'd':
+				array_append(&rights, &acl_e, 1);
+				array_append(&rights, &acl_t, 1);
+				break;
+			default:
+				*error_r = t_strdup_printf(
+					"Invalid ACL right: %c", *letters);
+				return -1;
+			}
 		}
 	}
 	(void)array_append_space(&rights);
@@ -367,15 +445,56 @@ imap_acl_identifier_parse(const char *id, struct acl_rights *rights,
 	return 0;
 }
 
+static void imap_acl_update_ensure_keep_admins(struct acl_rights_update *update)
+{
+	static const char *acl_admin = MAIL_ACL_ADMIN;
+	const char *const *rights = update->rights.rights;
+	ARRAY_TYPE(const_string) new_rights;
+	unsigned int i;
+
+	t_array_init(&new_rights, 64);
+	for (i = 0; rights[i] != NULL; i++) {
+		if (strcmp(rights[i], MAIL_ACL_ADMIN) == 0)
+			break;
+		array_append(&new_rights, &rights[i], 1);
+	}
+
+	switch (update->modify_mode) {
+	case ACL_MODIFY_MODE_REMOVE:
+		if (rights[i] == NULL)
+			return;
+
+		/* skip over the ADMIN removal and add the rest */
+		for (i++; rights[i] != NULL; i++)
+			array_append(&new_rights, &rights[i], 1);
+		break;
+	case ACL_MODIFY_MODE_REPLACE:
+		if (rights[i] != NULL)
+			return;
+
+		/* add the missing ADMIN right */
+		array_append(&new_rights, &acl_admin, 1);
+		break;
+	default:
+		return;
+	}
+	(void)array_append_space(&new_rights);
+	update->rights.rights = array_idx(&new_rights, 0);
+}
+
 static bool cmd_setacl(struct client_command_context *cmd)
 {
+	struct mail_namespace *ns;
+	struct mail_storage *storage;
 	struct mailbox *box;
+	struct acl_backend *backend;
 	struct acl_rights_update update;
+	struct acl_rights *r;
 	const char *mailbox, *identifier, *rights, *error;
 	bool negative = FALSE;
 
 	if (!client_read_string_args(cmd, 3, &mailbox, &identifier, &rights) ||
-	    *identifier == '\0' || *rights == '\0') {
+	    *identifier == '\0') {
 		client_send_command_error(cmd, "Invalid arguments.");
 		return TRUE;
 	}
@@ -409,16 +528,47 @@ static bool cmd_setacl(struct client_command_context *cmd)
 		client_send_command_error(cmd, error);
 		return TRUE;
 	}
+	r = &update.rights;
 
 	box = acl_mailbox_open_as_admin(cmd, mailbox);
 	if (box == NULL)
 		return TRUE;
 
-	if (negative) {
+	storage = mailbox_get_storage(box);
+	backend = acl_storage_get_backend(storage);
+	ns = mail_storage_get_namespace(storage);
+	if (ns->type == NAMESPACE_PUBLIC && r->id_type == ACL_ID_OWNER) {
+		client_send_tagline(cmd, "NO Public namespaces have no owner");
+		mailbox_close(&box);
+		return TRUE;
+	}
+
+	if (r->rights[0] == NULL) {
+		if (negative) {
+			update.modify_mode = 0;
+			update.rights.rights = NULL;
+			update.neg_modify_mode = ACL_MODIFY_MODE_CLEAR;
+			update.rights.neg_rights = NULL;
+		} else {
+			update.modify_mode = ACL_MODIFY_MODE_CLEAR;
+			update.rights.rights = NULL;
+			update.neg_modify_mode = 0;
+			update.rights.neg_rights = NULL;
+		}
+	} else if (negative) {
 		update.neg_modify_mode = update.modify_mode;
 		update.modify_mode = ACL_MODIFY_MODE_REMOVE;
 		update.rights.neg_rights = update.rights.rights;
 		update.rights.rights = NULL;
+	} else if (ns->type == NAMESPACE_PRIVATE && r->rights != NULL &&
+		   ((r->id_type == ACL_ID_USER &&
+		     acl_backend_user_name_equals(backend, r->identifier)) ||
+		    (r->id_type == ACL_ID_OWNER &&
+		     strcmp(acl_backend_get_acl_username(backend),
+			    ns->user->username) == 0))) {
+		/* make sure client doesn't (accidentally) remove admin
+		   privileges from its own mailboxes */
+		imap_acl_update_ensure_keep_admins(&update);
 	}
 
 	if (acl_object_update(acl_mailbox_get_aclobj(box), &update) < 0)

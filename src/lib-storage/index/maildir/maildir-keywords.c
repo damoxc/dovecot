@@ -47,6 +47,7 @@ struct maildir_keywords_sync_ctx {
 	const ARRAY_TYPE(keywords) *keywords;
 	ARRAY_DEFINE(idx_to_chr, char);
 	unsigned int chridx_to_idx[MAILDIR_MAX_KEYWORDS];
+	bool readonly;
 };
 
 struct maildir_keywords *maildir_keywords_init(struct maildir_mailbox *mbox)
@@ -371,7 +372,7 @@ static int maildir_keywords_commit(struct maildir_keywords *mk)
 		}
 		/* the control dir doesn't exist. create it unless the whole
 		   mailbox was just deleted. */
-		if (maildir_set_deleted(mk->mbox))
+		if (!maildir_set_deleted(mk->mbox))
 			return -1;
 	}
 
@@ -401,6 +402,17 @@ maildir_keywords_sync_init(struct maildir_keywords *mk,
 	ctx->index = index;
 	ctx->keywords = mail_index_get_keywords(index);
 	i_array_init(&ctx->idx_to_chr, MAILDIR_MAX_KEYWORDS);
+	return ctx;
+}
+
+struct maildir_keywords_sync_ctx *
+maildir_keywords_sync_init_readonly(struct maildir_keywords *mk,
+				    struct mail_index *index)
+{
+	struct maildir_keywords_sync_ctx *ctx;
+
+	ctx = maildir_keywords_sync_init(mk, index);
+	ctx->readonly = TRUE;
 	return ctx;
 }
 
@@ -455,13 +467,17 @@ char maildir_keywords_idx_char(struct maildir_keywords_sync_ctx *ctx,
 	const char *const *name_p;
 	char *chr_p;
 	unsigned int chridx;
+	int ret;
 
 	chr_p = array_idx_modifiable(&ctx->idx_to_chr, idx);
 	if (*chr_p != '\0')
 		return *chr_p;
 
 	name_p = array_idx(ctx->keywords, idx);
-	if (maildir_keywords_lookup_or_create(ctx->mk, *name_p, &chridx) <= 0)
+	ret = !ctx->readonly ?
+		maildir_keywords_lookup_or_create(ctx->mk, *name_p, &chridx) :
+		maildir_keywords_lookup(ctx->mk, *name_p, &chridx);
+	if (ret <= 0)
 		return '\0';
 
 	*chr_p = chridx + MAILDIR_KEYWORD_FIRST;

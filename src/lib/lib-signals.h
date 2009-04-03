@@ -3,7 +3,10 @@
 
 #include <signal.h>
 
-typedef void signal_handler_t(int signo, void *context);
+typedef void signal_handler_t(const siginfo_t *si, void *context);
+
+/* Convert si_code to string */
+const char *lib_signal_code_to_str(int signo, int si_code);
 
 /* Set signal handler for specific signal. If delayed is TRUE, the handler
    will be called later, ie. not as a real signal handler. */

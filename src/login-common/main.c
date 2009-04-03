@@ -67,12 +67,16 @@ void main_unref(void)
 	}
 }
 
-static void sig_die(int signo, void *context ATTR_UNUSED)
+static void sig_die(const siginfo_t *si, void *context ATTR_UNUSED)
 {
 	/* warn about being killed because of some signal, except SIGINT (^C)
 	   which is too common at least while testing :) */
-	if (signo != SIGINT)
-		i_warning("Killed with signal %d", signo);
+	if (si->si_signo != SIGINT) {
+		i_warning("Killed with signal %d (by pid=%s uid=%s code=%s)",
+			  si->si_signo, dec2str(si->si_pid),
+			  dec2str(si->si_uid),
+			  lib_signal_code_to_str(si->si_signo, si->si_code));
+	}
 	io_loop_stop(ioloop);
 }
 
@@ -265,6 +269,13 @@ static void drop_privileges(unsigned int *max_fds_r)
 				     value == NULL ? LOG_MAIL : atoi(value));
 	}
 
+	value = getenv("DOVECOT_VERSION");
+	if (value != NULL && strcmp(value, PACKAGE_VERSION) != 0) {
+		i_fatal("Dovecot version mismatch: "
+			"Master is v%s, login is v"PACKAGE_VERSION" "
+			"(if you don't care, set version_ignore=yes)", value);
+	}
+
 	value = getenv("LOGIN_DIR");
 	if (value == NULL)
 		i_fatal("LOGIN_DIR environment missing");
@@ -301,13 +312,6 @@ static void drop_privileges(unsigned int *max_fds_r)
 static void main_init(void)
 {
 	const char *value;
-
-	value = getenv("DOVECOT_VERSION");
-	if (value != NULL && strcmp(value, PACKAGE_VERSION) != 0) {
-		i_fatal("Dovecot version mismatch: "
-			"Master is v%s, login is v"PACKAGE_VERSION" "
-			"(if you don't care, set version_ignore=yes)", value);
-	}
 
 	lib_signals_init();
         lib_signals_set_handler(SIGINT, TRUE, sig_die, NULL);
@@ -435,6 +439,9 @@ int main(int argc ATTR_UNUSED, char *argv[], char *envp[])
 	}
 
 	drop_privileges(&max_fds);
+
+	if (argv[1] != NULL && strcmp(argv[1], "-D") == 0)
+		restrict_access_allow_coredumps(TRUE);
 
 	process_title_init(argv, envp);
 	ioloop = io_loop_create();
