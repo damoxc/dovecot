@@ -34,10 +34,14 @@ static void proctitle_hack_init(char *argv[], char *env[])
 		if (argv[i] == last)
 			last = argv[i] + strlen(argv[i]) + 1;
 	}
-	clear_env = last == env[0];
-	for (i = 0; env[i] != NULL; i++) {
-		if (env[i] == last)
-			last = env[i] + strlen(env[i]) + 1;
+	if (env[0] == NULL)
+		clear_env = FALSE;
+	else {
+		clear_env = last == env[0];
+		for (i = 0; env[i] != NULL; i++) {
+			if (env[i] == last)
+				last = env[i] + strlen(env[i]) + 1;
+		}
 	}
 
 	process_title = argv[0];
