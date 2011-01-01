@@ -240,13 +240,8 @@ maildir_list_get_mailbox_name_status(struct mailbox_list *_list,
 		return 0;
 	}
 
-	if (!mailbox_list_is_valid_create_name(_list, name)) {
-		*status = MAILBOX_NAME_INVALID;
-		return 0;
-	}
-
 	if (ENOTFOUND(errno) || errno == EACCES) {
-		*status = MAILBOX_NAME_VALID;
+		*status = MAILBOX_NAME_NONEXISTENT;
 		return 0;
 	} else {
 		mailbox_list_set_critical(_list, "stat(%s) failed: %m", path);
@@ -289,7 +284,7 @@ maildir_list_create_maildirfolder_file(struct mailbox_list *list,
 
 	/* Maildir++ spec wants that maildirfolder named file is created for
 	   all subfolders. */
-	mailbox_list_get_permissions(list, NULL, &mode, &gid, &gid_origin);
+	mailbox_list_get_root_permissions(list, &mode, &gid, &gid_origin);
 
 	path = t_strconcat(dir, "/" MAILDIR_SUBFOLDER_FILENAME, NULL);
 	old_mask = umask(0);
@@ -352,8 +347,8 @@ maildir_list_create_mailbox_dir(struct mailbox_list *list, const char *name,
 
 	root_dir = mailbox_list_get_path(list, NULL,
 					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	mailbox_list_get_dir_permissions(list, NULL, &mode,
-					 &gid, &gid_origin);
+	mailbox_list_get_root_dir_permissions(list, &mode,
+					      &gid, &gid_origin);
 	if (mkdir_parents_chgrp(path, mode, gid, gid_origin) == 0) {
 		/* ok */
 	} else if (errno == EEXIST) {
@@ -440,7 +435,7 @@ static int maildir_list_delete_dir(struct mailbox_list *list, const char *name)
 	if (stat(path, &st) == 0) {
 		mailbox_list_set_error(list, MAIL_ERROR_EXISTS,
 				       "Mailbox exists");
-	} else if (errno == ENOENT) {
+	} else if (errno == ENOENT || errno == ENOTDIR) {
 		mailbox_list_set_error(list, MAIL_ERROR_NOTFOUND,
 			T_MAIL_ERR_MAILBOX_NOT_FOUND(name));
 	} else {

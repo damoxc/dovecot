@@ -13,6 +13,7 @@
 #include "mail-search-build.h"
 #include "mail-storage-private.h"
 #include "fts-api-private.h"
+#include "fts-mailbox.h"
 #include "fts-storage.h"
 #include "fts-plugin.h"
 
@@ -395,8 +396,8 @@ static int fts_build_init_virtual_next(struct fts_search_context *fctx)
 		ret = strcmp(vname, last_uids[uidi].mailbox);
 		if (ret == 0) {
 			/* match. check also that uidvalidity matches. */
-			mailbox_get_status(boxes[boxi].box, STATUS_UIDVALIDITY,
-					   &status);
+			mailbox_get_open_status(boxes[boxi].box,
+						STATUS_UIDVALIDITY, &status);
 			if (status.uidvalidity != last_uids[uidi].uidvalidity) {
 				uidi++;
 				continue;
@@ -453,7 +454,7 @@ static int fts_build_init_virtual(struct fts_search_context *fctx)
 	int ret;
 
 	t_array_init(&mailboxes, 64);
-	mailbox_get_virtual_backend_boxes(fctx->t->box, &mailboxes, TRUE);
+	fts_mailbox_get_virtual_backend_boxes(fctx->t->box, &mailboxes, TRUE);
 	boxes = array_get_modifiable(&mailboxes, &box_count);
 
 	vctx->pool = pool_alloconly_create("fts virtual build", 1024);
@@ -500,8 +501,8 @@ static int fts_build_init(struct fts_search_context *fctx)
 	struct mailbox_status status;
 	int ret;
 
-	mailbox_get_status(fctx->t->box, STATUS_MESSAGES | STATUS_UIDNEXT,
-			   &status);
+	mailbox_get_open_status(fctx->t->box, STATUS_MESSAGES | STATUS_UIDNEXT,
+				&status);
 	if (status.messages == fctx->fbox->last_messages_count &&
 	    status.uidnext == fctx->fbox->last_uidnext) {
 		/* no new messages since last check */
@@ -539,8 +540,8 @@ static int fts_build_deinit(struct fts_storage_build_context **_ctx)
 		ret = -1;
 
 	if (ret == 0) {
-		mailbox_get_status(box, STATUS_MESSAGES | STATUS_UIDNEXT,
-				   &status);
+		mailbox_get_open_status(box, STATUS_MESSAGES | STATUS_UIDNEXT,
+					&status);
 		fbox->last_messages_count = status.messages;
 		fbox->last_uidnext = status.uidnext;
 	}
@@ -777,7 +778,8 @@ static bool search_nonindexed(struct mail_search_context *ctx)
 	struct fts_mailbox *fbox = FTS_CONTEXT(ctx->transaction->box);
 	struct mailbox_status status;
 
-	mailbox_get_status(ctx->transaction->box, STATUS_MESSAGES, &status);
+	mailbox_get_open_status(ctx->transaction->box,
+				STATUS_MESSAGES, &status);
 
 	fctx->seqs_set = FALSE;
 	ctx->seq = fctx->first_nonindexed_seq - 1;

@@ -14,8 +14,9 @@
 /* If syncing takes longer than this, log a warning. */
 #define MAILDIR_SYNC_TIME_WARN_SECS 60
 
-struct maildir_mailbox;
+enum maildir_uidlist_rec_flag;
 
+struct maildir_mailbox;
 struct maildir_sync_context;
 struct maildir_keywords_sync_ctx;
 struct maildir_index_sync_context;
@@ -41,6 +42,10 @@ maildir_sync_get_keywords_sync_ctx(struct maildir_index_sync_context *ctx);
 void maildir_sync_notify(struct maildir_sync_context *ctx);
 void maildir_sync_set_new_msgs_count(struct maildir_index_sync_context *ctx,
 				     unsigned int count);
+
+int maildir_sync_lookup(struct maildir_mailbox *mbox, uint32_t uid,
+			enum maildir_uidlist_rec_flag *flags_r,
+			const char **fname_r);
 
 int maildir_list_index_has_changed(struct mailbox *box,
 				   struct mail_index_view *list_view,

@@ -226,9 +226,9 @@ int imap_sync_deinit(struct imap_sync_context *ctx,
 		i_free(ctx);
 		return -1;
 	}
-	mailbox_get_status(ctx->box, STATUS_UIDVALIDITY |
-			   STATUS_MESSAGES | STATUS_RECENT |
-			   STATUS_HIGHESTMODSEQ, &status);
+	mailbox_get_open_status(ctx->box, STATUS_UIDVALIDITY |
+				STATUS_MESSAGES | STATUS_RECENT |
+				STATUS_HIGHESTMODSEQ, &status);
 
 	ret = mailbox_transaction_commit(&ctx->t);
 

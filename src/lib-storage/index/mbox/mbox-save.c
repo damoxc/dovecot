@@ -255,13 +255,13 @@ static int
 mbox_save_init_file(struct mbox_save_context *ctx,
 		    struct mbox_transaction_context *t, bool want_mail)
 {
-	struct mailbox_transaction_context *_t = &t->ictx.mailbox_ctx;
+	struct mailbox_transaction_context *_t = &t->t;
 	struct mbox_mailbox *mbox = ctx->mbox;
 	struct mail_storage *storage = &mbox->storage->storage;
 	bool empty = FALSE;
 	int ret;
 
-	if (ctx->mbox->box.backend_readonly) {
+	if (mbox_is_backend_readonly(ctx->mbox)) {
 		mail_storage_set_error(storage, MAIL_ERROR_PERM,
 				       "Read-only mbox");
 		return -1;
@@ -770,7 +770,8 @@ int mbox_transaction_save_commit_pre(struct mail_save_context *_ctx)
 
 		buf.modtime = st.st_mtime;
 		buf.actime = ctx->orig_atime;
-		if (utime(mbox->box.path, &buf) < 0 && errno != EPERM)
+		if (utime(mailbox_get_path(&mbox->box), &buf) < 0 &&
+		    errno != EPERM)
 			mbox_set_syscall_error(mbox, "utime()");
 	}
 

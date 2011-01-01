@@ -101,10 +101,6 @@ mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.mail_vfuncs = &mdbox_mail_vfuncs;
 
 	index_storage_mailbox_alloc(&mbox->box, name, flags, DBOX_INDEX_PREFIX);
-	mail_index_set_fsync_mode(mbox->box.index,
-				  storage->set->parsed_fsync_mode,
-				  MAIL_INDEX_SYNC_TYPE_APPEND |
-				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
 
 	ibox = INDEX_STORAGE_CONTEXT(&mbox->box);
 	ibox->save_commit_pre = mdbox_transaction_save_commit_pre;
@@ -114,6 +110,16 @@ mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 		MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY;
 
 	mbox->storage = (struct mdbox_storage *)storage;
+	return &mbox->box;
+}
+
+static int mdbox_mailbox_open(struct mailbox *box)
+{
+	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
+
+	if (dbox_mailbox_open(box) < 0)
+		return -1;
+
 	mbox->ext_id =
 		mail_index_ext_register(mbox->box.index, "mdbox", 0,
 					sizeof(struct mdbox_mail_index_record),
@@ -124,7 +130,7 @@ mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->guid_ext_id =
 		mail_index_ext_register(mbox->box.index, "guid",
 					0, MAIL_GUID_128_SIZE, 1);
-	return &mbox->box;
+	return 0;
 }
 
 static void mdbox_mailbox_close(struct mailbox *box)
@@ -149,7 +155,7 @@ int mdbox_read_header(struct mdbox_mailbox *mbox,
 	    (!mbox->creating || data_size != 0)) {
 		mail_storage_set_critical(&mbox->storage->storage.storage,
 			"mdbox %s: Invalid dbox header size: %"PRIuSIZE_T,
-			mbox->box.path, data_size);
+			mailbox_get_path(&mbox->box), data_size);
 		mdbox_storage_set_corrupted(mbox->storage);
 		return -1;
 	}
@@ -294,9 +300,9 @@ static void mdbox_set_file_corrupted(struct dbox_file *file)
 }
 
 static int
-mdbox_mailbox_get_guid(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE])
+mdbox_mailbox_get_guid(struct mdbox_mailbox *mbox,
+		       uint8_t guid[MAIL_GUID_128_SIZE])
 {
-	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
 	struct mdbox_index_header hdr;
 
 	if (mdbox_read_header(mbox, &hdr) < 0)
@@ -304,12 +310,26 @@ mdbox_mailbox_get_guid(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE])
 
 	if (mail_guid_128_is_empty(hdr.mailbox_guid)) {
 		/* regenerate it */
-		if (mdbox_write_index_header(box, NULL, NULL) < 0 ||
+		if (mdbox_write_index_header(&mbox->box, NULL, NULL) < 0 ||
 		    mdbox_read_header(mbox, &hdr) < 0)
 			return -1;
 	}
 	memcpy(guid, hdr.mailbox_guid, MAIL_GUID_128_SIZE);
 	return 0;
+}
+
+static int
+mdbox_mailbox_get_metadata(struct mailbox *box,
+			   enum mailbox_metadata_items items,
+			   struct mailbox_metadata *metadata_r)
+{
+	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
+
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		if (mdbox_mailbox_get_guid(mbox, metadata_r->guid) < 0)
+			return -1;
+	}
+	return index_mailbox_get_metadata(box, items, metadata_r);
 }
 
 static int
@@ -389,7 +409,7 @@ struct mailbox mdbox_mailbox = {
 		index_storage_is_readonly,
 		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
-		dbox_mailbox_open,
+		mdbox_mailbox_open,
 		mdbox_mailbox_close,
 		index_storage_mailbox_free,
 		dbox_mailbox_create,
@@ -397,7 +417,7 @@ struct mailbox mdbox_mailbox = {
 		mdbox_mailbox_delete,
 		index_storage_mailbox_rename,
 		index_storage_get_status,
-		mdbox_mailbox_get_guid,
+		mdbox_mailbox_get_metadata,
 		NULL,
 		NULL,
 		mdbox_storage_sync_init,
@@ -408,21 +428,8 @@ struct mailbox mdbox_mailbox = {
 		index_transaction_begin,
 		index_transaction_commit,
 		index_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		NULL,
-		NULL,
 		NULL,
 		dbox_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		index_storage_search_init,
 		index_storage_search_deinit,
 		index_storage_search_next_nonblock,
@@ -433,7 +440,6 @@ struct mailbox mdbox_mailbox = {
 		mdbox_save_finish,
 		mdbox_save_cancel,
 		mdbox_copy,
-		NULL,
 		index_storage_is_inconsistent
 	}
 };

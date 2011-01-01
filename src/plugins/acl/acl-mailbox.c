@@ -64,6 +64,7 @@ static bool acl_is_readonly(struct mailbox *box)
 {
 	struct acl_mailbox *abox = ACL_CONTEXT(box);
 	enum acl_storage_rights save_right;
+	enum mail_flags private_flags_mask;
 
 	if (abox->module_ctx.super.is_readonly(box))
 		return TRUE;
@@ -78,10 +79,12 @@ static bool acl_is_readonly(struct mailbox *box)
 	/* Next up is the "shared flag rights" */
 	if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE) > 0)
 		return FALSE;
-	if ((box->private_flags_mask & MAIL_DELETED) == 0 &&
+
+	private_flags_mask = mailbox_get_private_flags_mask(box);
+	if ((private_flags_mask & MAIL_DELETED) == 0 &&
 	    acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_DELETED) > 0)
 		return FALSE;
-	if ((box->private_flags_mask & MAIL_SEEN) == 0 &&
+	if ((private_flags_mask & MAIL_SEEN) == 0 &&
 	    acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_SEEN) > 0)
 		return FALSE;
 
@@ -425,35 +428,6 @@ acl_transaction_commit(struct mailbox_transaction_context *ctx,
 	return abox->module_ctx.super.transaction_commit(ctx, changes_r);
 }
 
-static int
-acl_keywords_create(struct mailbox *box, const char *const keywords[],
-		    struct mail_keywords **keywords_r, bool skip_invalid)
-{
-	struct acl_mailbox *abox = ACL_CONTEXT(box);
-	int ret;
-
-	ret = acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE);
-	if (ret < 0) {
-		if (!skip_invalid)
-			return -1;
-		/* we can't return failure. assume we don't have permissions. */
-		ret = 0;
-	}
-
-	if (ret == 0) {
-		/* no permission to update any flags. just return empty
-		   keywords list. */
-		const char *null = NULL;
-
-		return abox->module_ctx.super.keywords_create(box, &null,
-							      keywords_r,
-							      skip_invalid);
-	}
-
-	return abox->module_ctx.super.keywords_create(box, keywords,
-						      keywords_r, skip_invalid);
-}
-
 static int acl_mailbox_open_check_acl(struct mailbox *box)
 {
 	struct acl_mailbox *abox = ACL_CONTEXT(box);
@@ -526,7 +500,6 @@ void acl_mailbox_allocated(struct mailbox *box)
 		v->delete = acl_mailbox_delete;
 		v->rename = acl_mailbox_rename;
 		v->save_begin = acl_save_begin;
-		v->keywords_create = acl_keywords_create;
 		v->copy = acl_copy;
 		v->transaction_commit = acl_transaction_commit;
 	}

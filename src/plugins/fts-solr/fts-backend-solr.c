@@ -7,6 +7,7 @@
 #include "unichar.h"
 #include "mail-storage-private.h"
 #include "mail-namespace.h"
+#include "fts-mailbox.h"
 #include "solr-connection.h"
 #include "fts-solr-plugin.h"
 
@@ -297,7 +298,7 @@ static int fts_backend_solr_get_last_uid_fallback(struct fts_backend *backend,
 
 	box_name = fts_box_get_root(box, &ns);
 
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 	str_printfa(str, "uidv:%u+box:", status.uidvalidity);
 	solr_quote_http(str, box_name);
 	solr_add_ns_query_http(str, backend, ns);
@@ -339,7 +340,7 @@ static int fts_backend_solr_get_last_uid(struct fts_backend *backend,
 
 	box_name = fts_box_get_root(box, &ns);
 
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 	str_printfa(str, "uidv:%u+box:", status.uidvalidity);
 	solr_quote_http(str, box_name);
 	solr_add_ns_query_http(str, backend, ns);
@@ -452,7 +453,7 @@ fts_backend_solr_filter_mailboxes(struct fts_backend *_backend,
 
 	t_array_init(&includes_arr, 16);
 	t_array_init(&excludes_arr, 16);
-	mailbox_get_virtual_box_patterns(box, &includes_arr, &excludes_arr);
+	fts_mailbox_get_virtual_box_patterns(box, &includes_arr, &excludes_arr);
 	includes = array_get(&includes_arr, &inc_count);
 	excludes = array_get(&excludes_arr, &exc_count);
 	i_assert(inc_count > 0);
@@ -538,7 +539,7 @@ fts_backend_solr_build_init(struct fts_backend *backend, uint32_t *last_uid_r,
 	ctx->ctx.backend = backend;
 	ctx->cmd = str_new(default_pool, SOLR_CMDBUF_SIZE);
 
-	mailbox_get_status(backend->box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(backend->box, STATUS_UIDVALIDITY, &status);
 	ctx->uid_validity = status.uidvalidity;
 
 	*ctx_r = &ctx->ctx;
@@ -736,7 +737,7 @@ fts_backend_solr_expunge(struct fts_backend *backend, struct mail *mail)
 {
 	struct mailbox_status status;
 
-	mailbox_get_status(mail->box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(mail->box, STATUS_UIDVALIDITY, &status);
 
 	T_BEGIN {
 		string_t *cmd;
@@ -783,8 +784,8 @@ static bool solr_virtual_uid_map(const char *ns_prefix, const char *mailbox,
 	for (; ns != NULL; ns = ns->alias_chain_next) {
 		vname = convert_inbox ? ns->prefix :
 			mail_namespace_get_vname(ns, ctx->vname, mailbox);
-		if (mailbox_get_virtual_uid(ctx->box, vname, uidvalidity,
-					    *uid, uid))
+		if (fts_mailbox_get_virtual_uid(ctx->box, vname, uidvalidity,
+						*uid, uid))
 			return TRUE;
 	}
 	return FALSE;
@@ -806,7 +807,7 @@ static int fts_backend_solr_lookup(struct fts_backend_lookup_context *ctx,
 	bool virtual;
 
 	virtual = strcmp(box->storage->name, "virtual") == 0;
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 
 	str = t_str_new(256);
 	if (!virtual) {

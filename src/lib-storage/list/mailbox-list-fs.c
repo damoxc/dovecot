@@ -254,16 +254,8 @@ fs_list_get_mailbox_name_status(struct mailbox_list *_list, const char *name,
 		errno = ENOENT;
 	}
 
-	if (!mailbox_list_is_valid_create_name(_list, name)) {
-		*status = MAILBOX_NAME_INVALID;
-		return 0;
-	}
-
 	if (ENOTFOUND(errno) || errno == EACCES) {
-		*status = MAILBOX_NAME_VALID;
-		return 0;
-	} else if (errno == ENOTDIR) {
-		*status = MAILBOX_NAME_NOINFERIORS;
+		*status = MAILBOX_NAME_NONEXISTENT;
 		return 0;
 	} else {
 		mailbox_list_set_critical(_list, "stat(%s) failed: %m", path);
@@ -339,8 +331,7 @@ fs_list_create_mailbox_dir(struct mailbox_list *list, const char *name,
 		path = t_strdup_until(path, p);
 	}
 
-	mailbox_list_get_dir_permissions(list, NULL, &mode,
-					 &gid, &gid_origin);
+	mailbox_list_get_root_dir_permissions(list, &mode, &gid, &gid_origin);
 	if (mkdir_parents_chgrp(path, mode, gid, gid_origin) == 0)
 		return 0;
 	else if (errno == EEXIST) {
@@ -434,7 +425,7 @@ static int fs_list_delete_dir(struct mailbox_list *list, const char *name)
 	if (fs_list_rmdir(list, name, path) == 0)
 		return 0;
 
-	if (errno == ENOENT) {
+	if (errno == ENOENT || errno == ENOTDIR) {
 		mailbox_list_set_error(list, MAIL_ERROR_NOTFOUND,
 			T_MAIL_ERR_MAILBOX_NOT_FOUND(name));
 	} else if (errno == ENOTEMPTY || errno == EEXIST) {
@@ -541,8 +532,8 @@ static int fs_list_rename_mailbox(struct mailbox_list *oldlist,
 	/* create the hierarchy */
 	p = strrchr(newpath, '/');
 	if (p != NULL) {
-		mailbox_list_get_dir_permissions(newlist, NULL, &mode,
-						 &gid, &origin);
+		mailbox_list_get_root_dir_permissions(newlist, &mode,
+						      &gid, &origin);
 		p = t_strdup_until(newpath, p);
 		if (mkdir_parents_chgrp(p, mode, gid, origin) < 0 &&
 		    errno != EEXIST) {

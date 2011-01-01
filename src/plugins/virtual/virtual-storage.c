@@ -29,6 +29,7 @@ struct virtual_mailbox_list {
 
 extern struct mail_storage virtual_storage;
 extern struct mailbox virtual_mailbox;
+extern struct virtual_mailbox_vfuncs virtual_mailbox_vfuncs;
 
 struct virtual_storage_module virtual_storage_module =
 	MODULE_CONTEXT_INIT(&mail_storage_module_register);
@@ -234,6 +235,7 @@ virtual_mailbox_alloc(struct mail_storage *_storage, struct mailbox_list *list,
 	mbox->box.storage = _storage;
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &virtual_mail_vfuncs;
+	mbox->vfuncs = virtual_mailbox_vfuncs;
 
 	index_storage_mailbox_alloc(&mbox->box, name, flags,
 				    VIRTUAL_INDEX_PREFIX);
@@ -333,12 +335,16 @@ virtual_mailbox_update(struct mailbox *box,
 }
 
 static int
-virtual_mailbox_get_guid(struct mailbox *box,
-			 uint8_t guid[MAIL_GUID_128_SIZE] ATTR_UNUSED)
+virtual_mailbox_get_metadata(struct mailbox *box,
+			     enum mailbox_metadata_items items,
+			     struct mailbox_metadata *metadata_r)
 {
-	mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
-			       "Virtual mailboxes have no GUIDs");
-	return -1;
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
+				       "Virtual mailboxes have no GUIDs");
+		return -1;
+	}
+	return index_mailbox_get_metadata(box, items, metadata_r);
 }
 
 static void
@@ -435,7 +441,7 @@ virtual_get_virtual_uid(struct mailbox *box, const char *backend_mailbox,
 	if (bbox == NULL)
 		return FALSE;
 
-	mailbox_get_status(bbox->box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(bbox->box, STATUS_UIDVALIDITY, &status);
 	if (status.uidvalidity != backend_uidvalidity)
 		return FALSE;
 
@@ -515,7 +521,7 @@ struct mailbox virtual_mailbox = {
 		index_storage_mailbox_delete,
 		index_storage_mailbox_rename,
 		index_storage_get_status,
-		virtual_mailbox_get_guid,
+		virtual_mailbox_get_metadata,
 		NULL,
 		NULL,
 		virtual_storage_sync_init,
@@ -526,21 +532,8 @@ struct mailbox virtual_mailbox = {
 		virtual_transaction_begin,
 		virtual_transaction_commit,
 		virtual_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		virtual_get_virtual_uid,
-		virtual_get_virtual_backend_boxes,
-		virtual_get_virtual_box_patterns,
+		NULL,
 		virtual_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		virtual_search_init,
 		virtual_search_deinit,
 		virtual_search_next_nonblock,
@@ -551,7 +544,12 @@ struct mailbox virtual_mailbox = {
 		virtual_save_finish,
 		virtual_save_cancel,
 		mail_storage_copy,
-		NULL,
 		virtual_is_inconsistent
 	}
+};
+
+struct virtual_mailbox_vfuncs virtual_mailbox_vfuncs = {
+	virtual_get_virtual_uid,
+	virtual_get_virtual_backend_boxes,
+	virtual_get_virtual_box_patterns
 };
