@@ -78,6 +78,9 @@ struct maildir_mailbox {
 
 	struct timeout *keep_lock_to;
 
+	/* Filled lazily by mailbox_get_private_flags_mask() */
+	enum mail_flags _private_flags_mask;
+
 	/* maildir sync: */
 	struct maildir_uidlist *uidlist;
 	struct maildir_keywords *keywords;
@@ -87,6 +90,9 @@ struct maildir_mailbox {
 
 	unsigned int synced:1;
 	unsigned int syncing_commit:1;
+	unsigned int private_flags_mask_set:1;
+	unsigned int backend_readonly:1;
+	unsigned int backend_readonly_set:1;
 };
 
 extern struct mail_vfuncs maildir_mail_vfuncs;
@@ -111,6 +117,7 @@ int maildir_file_do(struct maildir_mailbox *mbox, uint32_t uid,
 bool maildir_set_deleted(struct mailbox *box);
 uint32_t maildir_get_uidvalidity_next(struct mailbox_list *list);
 int maildir_lose_unexpected_dir(struct mail_storage *storage, const char *path);
+bool maildir_is_backend_readonly(struct maildir_mailbox *mbox);
 
 struct mail_save_context *
 maildir_save_alloc(struct mailbox_transaction_context *_t);

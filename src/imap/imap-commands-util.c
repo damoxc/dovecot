@@ -8,29 +8,21 @@
 #include "imap-resp-code.h"
 #include "imap-parser.h"
 #include "imap-sync.h"
+#include "imap-utf7.h"
 #include "imap-util.h"
 #include "mail-storage.h"
 #include "mail-namespace.h"
 #include "imap-commands-util.h"
 
-/* Maximum length for mailbox name, including it's path. This isn't fully
-   exact since the user can create folder hierarchy with small names, then
-   rename them to larger names. Mail storages should set more strict limits
-   to them, mbox/maildir currently allow paths only up to PATH_MAX. */
-#define MAILBOX_MAX_NAME_LEN 512
-
 struct mail_namespace *
-client_find_namespace(struct client_command_context *cmd, const char *mailbox,
-		      const char **storage_name_r,
-		      enum mailbox_name_status *mailbox_status_r)
+client_find_namespace(struct client_command_context *cmd, const char **mailbox)
 {
 	struct mail_namespace *namespaces = cmd->client->user->namespaces;
 	struct mail_namespace *ns;
-	const char *storage_name, *p;
-	unsigned int storage_name_len;
+	unsigned int name_len;
+	string_t *utf8_name;
 
-	storage_name = mailbox;
-	ns = mail_namespace_find(namespaces, &storage_name);
+	ns = mail_namespace_find(namespaces, *mailbox);
 	if (ns == NULL) {
 		client_send_tagline(cmd, t_strdup_printf(
 			"NO Client tried to access nonexistent namespace. "
@@ -39,99 +31,22 @@ client_find_namespace(struct client_command_context *cmd, const char *mailbox,
 		return NULL;
 	}
 
-	if (mailbox_status_r == NULL) {
-		*storage_name_r = storage_name;
-		return ns;
-	}
-
-	/* make sure it even looks valid */
-	if (*storage_name == '\0' && !(*mailbox != '\0' && ns->list)) {
-		client_send_tagline(cmd, "NO Empty mailbox name.");
-		return NULL;
-	}
-
-	storage_name_len = strlen(storage_name);
+	name_len = strlen(*mailbox);
 	if ((cmd->client->set->parsed_workarounds &
 	     		WORKAROUND_TB_EXTRA_MAILBOX_SEP) != 0 &&
-	    storage_name_len > 0 &&
-	    storage_name[storage_name_len-1] == ns->real_sep) {
+	    name_len > 0 &&
+	    (*mailbox)[name_len-1] == mail_namespace_get_sep(ns)) {
 		/* drop the extra trailing hierarchy separator */
-		storage_name = t_strndup(storage_name, storage_name_len-1);
+		*mailbox = t_strndup(*mailbox, name_len-1);
 	}
 
-	if (ns->real_sep != ns->sep && ns->prefix_len < strlen(mailbox)) {
-		/* make sure there are no real separators used in the mailbox
-		   name. */
-		mailbox += ns->prefix_len;
-		for (p = mailbox; *p != '\0'; p++) {
-			if (*p == ns->real_sep) {
-				client_send_tagline(cmd, t_strdup_printf(
-					"NO Character not allowed "
-					"in mailbox name: '%c'",
-					ns->real_sep));
-				return NULL;
-			}
-		}
-	}
-
-	/* make sure two hierarchy separators aren't next to each others */
-	for (p = storage_name+1; *p != '\0'; p++) {
-		if (p[0] == ns->real_sep && p[-1] == ns->real_sep) {
-			client_send_tagline(cmd, "NO Invalid mailbox name.");
-			return NULL;
-		}
-	}
-
-	if (storage_name_len > MAILBOX_MAX_NAME_LEN) {
-		client_send_tagline(cmd, "NO Mailbox name too long.");
+	utf8_name = t_str_new(64);
+	if (imap_utf7_to_utf8(*mailbox, utf8_name) < 0) {
+		client_send_tagline(cmd, "NO Mailbox name is not valid mUTF-7");
 		return NULL;
 	}
-
-	/* check what our storage thinks of it */
-	if (mailbox_list_get_mailbox_name_status(ns->list, storage_name,
-						 mailbox_status_r) < 0) {
-		client_send_list_error(cmd, ns->list);
-		return NULL;
-	}
-	*storage_name_r = storage_name;
+	*mailbox = str_c(utf8_name);
 	return ns;
-}
-
-void client_fail_mailbox_name_status(struct client_command_context *cmd,
-				     const char *mailbox_name,
-				     const char *resp_code,
-				     enum mailbox_name_status status)
-{
-	switch (status) {
-	case MAILBOX_NAME_EXISTS_MAILBOX:
-	case MAILBOX_NAME_EXISTS_DIR:
-		client_send_tagline(cmd, t_strconcat(
-			"NO [", IMAP_RESP_CODE_ALREADYEXISTS,
-			"] Mailbox already exists: ",
-			str_sanitize(mailbox_name, MAILBOX_MAX_NAME_LEN),
-			NULL));
-		break;
-	case MAILBOX_NAME_VALID:
-		if (resp_code == NULL)
-			resp_code = "";
-		else
-			resp_code = t_strconcat("[", resp_code, "] ", NULL);
-		client_send_tagline(cmd, t_strconcat(
-			"NO ", resp_code, "Mailbox doesn't exist: ",
-			str_sanitize(mailbox_name, MAILBOX_MAX_NAME_LEN),
-			NULL));
-		break;
-	case MAILBOX_NAME_INVALID:
-		client_send_tagline(cmd, t_strconcat(
-			"NO Invalid mailbox name: ",
-			str_sanitize(mailbox_name, MAILBOX_MAX_NAME_LEN),
-			NULL));
-		break;
-	case MAILBOX_NAME_NOINFERIORS:
-		client_send_tagline(cmd,
-			"NO Parent mailbox doesn't allow child mailboxes.");
-		break;
-	}
 }
 
 bool client_verify_open_mailbox(struct client_command_context *cmd)
@@ -142,6 +57,47 @@ bool client_verify_open_mailbox(struct client_command_context *cmd)
 		client_send_tagline(cmd, "BAD No mailbox selected.");
 		return FALSE;
 	}
+}
+
+int client_open_save_dest_box(struct client_command_context *cmd,
+			      const char *name, struct mailbox **destbox_r)
+{
+	struct mail_namespace *ns;
+	struct mailbox *box;
+	const char *error_string;
+	enum mail_error error;
+
+	ns = client_find_namespace(cmd, &name);
+	if (ns == NULL)
+		return -1;
+
+	if (cmd->client->mailbox != NULL &&
+	    mailbox_equals(cmd->client->mailbox, ns, name)) {
+		*destbox_r = cmd->client->mailbox;
+		return 0;
+	}
+	box = mailbox_alloc(ns->list, name,
+			    MAILBOX_FLAG_SAVEONLY | MAILBOX_FLAG_KEEP_RECENT);
+	if (mailbox_open(box) < 0) {
+		error_string = mailbox_get_last_error(box, &error);
+		if (error == MAIL_ERROR_NOTFOUND) {
+			client_send_tagline(cmd,  t_strdup_printf(
+				"NO [TRYCREATE] %s", error_string));
+		} else {
+			client_send_storage_error(cmd, mailbox_get_storage(box));
+		}
+		mailbox_free(&box);
+		return -1;
+	}
+	if (cmd->client->enabled_features != 0) {
+		if (mailbox_enable(box, cmd->client->enabled_features) < 0) {
+			client_send_storage_error(cmd, mailbox_get_storage(box));
+			mailbox_free(&box);
+			return -1;
+		}
+	}
+	*destbox_r = box;
+	return 0;
 }
 
 const char *
@@ -368,7 +324,7 @@ bool mailbox_equals(const struct mailbox *box1,
 	if (ns1 != ns2)
 		return FALSE;
 
-        name1 = mailbox_get_name(box1);
+        name1 = mailbox_get_vname(box1);
 	if (strcmp(name1, name2) == 0)
 		return TRUE;
 

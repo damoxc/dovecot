@@ -6,7 +6,6 @@
 #include "ostream.h"
 #include "str.h"
 #include "message-size.h"
-#include "imap-utf7.h"
 #include "imap-util.h"
 #include "mail-user.h"
 #include "mail-storage.h"
@@ -47,27 +46,22 @@ static int fetch_user(struct fetch_cmd_context *ctx)
 static int fetch_mailbox(struct fetch_cmd_context *ctx)
 {
 	const char *value;
-	string_t *str = t_str_new(128);
 
 	if (mail_get_special(ctx->mail, MAIL_FETCH_MAILBOX_NAME, &value) < 0)
 		return -1;
 
-	if (imap_utf7_to_utf8(value, str) == 0)
-		doveadm_print(str_c(str));
-	else {
-		/* not a valid mUTF-7 name, fallback to showing it as-is */
-		doveadm_print(value);
-	}
+	doveadm_print(value);
 	return 0;
 }
 
 static int fetch_mailbox_guid(struct fetch_cmd_context *ctx)
 {
-	uint8_t guid[MAIL_GUID_128_SIZE];
+	struct mailbox_metadata metadata;
 
-	if (mailbox_get_guid(ctx->mail->box, guid) < 0)
+	if (mailbox_get_metadata(ctx->mail->box, MAILBOX_METADATA_GUID,
+				 &metadata) < 0)
 		return -1;
-	doveadm_print(mail_guid_128_to_string(guid));
+	doveadm_print(mail_guid_128_to_string(metadata.guid));
 	return 0;
 }
 
@@ -386,12 +380,9 @@ static void cmd_fetch_mail(struct fetch_cmd_context *ctx)
 	array_foreach(&ctx->fields, field) {
 		ctx->cur_field = field;
 		if (field->print(ctx) < 0) {
-			struct mail_storage *storage =
-				mailbox_get_storage(mail->box);
-
 			i_error("fetch(%s) failed for box=%s uid=%u: %s",
 				field->name, mailbox_get_vname(mail->box),
-				mail->uid, mail_storage_get_last_error(storage, NULL));
+				mail->uid, mailbox_get_last_error(mail->box, NULL));
 		}
 	}
 }

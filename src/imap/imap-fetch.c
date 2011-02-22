@@ -9,6 +9,7 @@
 #include "message-send.h"
 #include "message-size.h"
 #include "imap-date.h"
+#include "imap-utf7.h"
 #include "mail-search-build.h"
 #include "imap-commands.h"
 #include "imap-quote.h"
@@ -159,7 +160,7 @@ expunges_drop_known(struct imap_fetch_context *ctx, struct mail *mail,
 	i_assert(array_count(ctx->qresync_sample_uidset) == count);
 	i_assert(count > 0);
 
-	mailbox_get_status(ctx->box, STATUS_MESSAGES, &status);
+	mailbox_get_open_status(ctx->box, STATUS_MESSAGES, &status);
 
 	/* FIXME: we could do removals from the middle as well */
 	for (i = 0; i < count && seqs[i] <= status.messages; i++) {
@@ -245,7 +246,7 @@ static int get_expunges_fallback(struct imap_fetch_context *ctx,
 					  uid_filter[i].seq2);
 	}
 
-	mailbox_get_status(ctx->box, STATUS_UIDNEXT, &status);
+	mailbox_get_open_status(ctx->box, STATUS_UIDNEXT, &status);
 	seq_range_array_remove_range(expunged_uids, status.uidnext,
 				     (uint32_t)-1);
 
@@ -751,7 +752,7 @@ static bool
 fetch_modseq_init(struct imap_fetch_context *ctx, const char *name,
 		  const struct imap_arg **args ATTR_UNUSED)
 {
-	client_enable(ctx->client, MAILBOX_FEATURE_CONDSTORE);
+	(void)client_enable(ctx->client, MAILBOX_FEATURE_CONDSTORE);
 	imap_fetch_add_handler(ctx, TRUE, FALSE, name, NULL,
 			       fetch_modseq, NULL);
 	return TRUE;
@@ -797,12 +798,18 @@ fetch_guid_init(struct imap_fetch_context *ctx ATTR_UNUSED, const char *name,
 static int fetch_x_mailbox(struct imap_fetch_context *ctx, struct mail *mail,
 			   void *context ATTR_UNUSED)
 {
-	const char *str;
+	const char *name;
+	string_t *mutf7_name;
 
-	if (mail_get_special(mail, MAIL_FETCH_MAILBOX_NAME, &str) < 0)
+	if (mail_get_special(mail, MAIL_FETCH_MAILBOX_NAME, &name) < 0)
 		i_panic("mailbox name not returned");
+
+	mutf7_name = t_str_new(strlen(name)*2);
+	if (imap_utf8_to_utf7(name, mutf7_name) < 0)
+		i_panic("FETCH: Mailbox name not UTF-8: %s", name);
+
 	str_append(ctx->cur_str, "X-MAILBOX ");
-	imap_quote_append_string(ctx->cur_str, str, FALSE);
+	imap_quote_append_string(ctx->cur_str, str_c(mutf7_name), FALSE);
 	str_append_c(ctx->cur_str, ' ');
 	return 1;
 }

@@ -24,33 +24,30 @@ dest_mailbox_open_or_create(struct import_cmd_context *ctx,
 	struct mail_namespace *ns;
 	struct mailbox *box;
 	enum mail_error error;
-	const char *errstr, *storage_name;
+	const char *errstr;
 
 	if (*ctx->dest_parent != '\0') {
 		/* prefix destination mailbox name with given parent mailbox */
-		storage_name = ctx->dest_parent;
-		ns = mail_namespace_find(user->namespaces, &storage_name);
+		ns = mail_namespace_find(user->namespaces, ctx->dest_parent);
 		if (ns == NULL) {
 			i_error("Can't find namespace for parent mailbox %s",
 				ctx->dest_parent);
 			return -1;
 		}
 		name = t_strdup_printf("%s%c%s", ctx->dest_parent,
-				       ns->sep, name);
+				       mail_namespace_get_sep(ns), name);
 	}
 
-	storage_name = name;
-	ns = mail_namespace_find(user->namespaces, &storage_name);
+	ns = mail_namespace_find(user->namespaces, name);
 	if (ns == NULL) {
 		i_error("Can't find namespace for mailbox %s", name);
 		return -1;
 	}
 
-	box = mailbox_alloc(ns->list, storage_name, MAILBOX_FLAG_SAVEONLY |
+	box = mailbox_alloc(ns->list, name, MAILBOX_FLAG_SAVEONLY |
 			    MAILBOX_FLAG_KEEP_RECENT);
 	if (mailbox_create(box, NULL, FALSE) < 0) {
-		errstr = mail_storage_get_last_error(mailbox_get_storage(box),
-						     &error);
+		errstr = mailbox_get_last_error(box, &error);
 		if (error != MAIL_ERROR_EXISTS) {
 			i_error("Couldn't create mailbox %s: %s", name, errstr);
 			mailbox_free(&box);
@@ -59,8 +56,7 @@ dest_mailbox_open_or_create(struct import_cmd_context *ctx,
 	}
 	if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FULL_READ) < 0) {
 		i_error("Syncing mailbox %s failed: %s", name,
-			mail_storage_get_last_error(mailbox_get_storage(box),
-						    NULL));
+			mailbox_get_last_error(box, NULL));
 		mailbox_free(&box);
 		return -1;
 	}
@@ -72,7 +68,6 @@ static int
 cmd_import_box_contents(struct doveadm_mail_iter *iter, struct mail *src_mail,
 			struct mailbox *dest_box)
 {
-	struct mail_storage *dest_storage = mailbox_get_storage(dest_box);
 	struct mail_save_context *save_ctx;
 	struct mailbox_transaction_context *dest_trans;
 	const char *mailbox = mailbox_get_vname(dest_box);
@@ -89,14 +84,14 @@ cmd_import_box_contents(struct doveadm_mail_iter *iter, struct mail *src_mail,
 		if (mailbox_copy(&save_ctx, src_mail) < 0) {
 			i_error("Copying box=%s uid=%u failed: %s",
 				mailbox, src_mail->uid,
-				mail_storage_get_last_error(dest_storage, NULL));
+				mailbox_get_last_error(dest_box, NULL));
 			ret = -1;
 		}
 	} while (doveadm_mail_iter_next(iter, src_mail));
 
 	if (mailbox_transaction_commit(&dest_trans) < 0) {
 		i_error("Committing copied mails to %s failed: %s", mailbox,
-			mail_storage_get_last_error(dest_storage, NULL));
+			mailbox_get_last_error(dest_box, NULL));
 		ret = -1;
 	}
 	return ret;

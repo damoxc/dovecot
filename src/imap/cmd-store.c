@@ -62,8 +62,8 @@ store_parse_modifiers(struct imap_store_context *ctx,
 							  "Invalid modseq");
 				return FALSE;
 			}
-			client_enable(ctx->cmd->client,
-				      MAILBOX_FEATURE_CONDSTORE);
+			(void)client_enable(ctx->cmd->client,
+					    MAILBOX_FEATURE_CONDSTORE);
 		} else {
 			client_send_command_error(ctx->cmd,
 						  "Unknown STORE modifier");
@@ -201,7 +201,7 @@ bool cmd_store(struct client_command_context *cmd)
 	mail_free(&mail);
 
 	if (ctx.keywords != NULL)
-		mailbox_keywords_unref(client->mailbox, &ctx.keywords);
+		mailbox_keywords_unref(&ctx.keywords);
 
 	ret = mailbox_search_deinit(&search_ctx);
 	if (ret < 0)

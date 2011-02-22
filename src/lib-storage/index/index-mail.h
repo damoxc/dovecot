@@ -96,6 +96,7 @@ struct index_mail_data {
 	ARRAY_TYPE(keywords) keywords;
 	ARRAY_TYPE(keyword_indexes) keyword_indexes;
 
+	unsigned int initialized:1;
 	unsigned int save_sent_date:1;
 	unsigned int sent_date_parsed:1;
 	unsigned int save_envelope:1;
@@ -120,11 +121,10 @@ struct index_mail {
 	struct index_mailbox_context *ibox;
 
 	pool_t data_pool;
-	struct index_transaction_context *trans;
 	uint32_t uid_validity;
 
 	enum mail_fetch_field wanted_fields;
-	struct index_header_lookup_ctx *wanted_headers;
+	struct mailbox_header_lookup_ctx *wanted_headers;
 
 	int pop3_state;
 

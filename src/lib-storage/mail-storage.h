@@ -56,6 +56,12 @@ enum mailbox_feature {
 	MAILBOX_FEATURE_QRESYNC		= 0x02
 };
 
+enum mailbox_existence {
+	MAILBOX_EXISTENCE_NONE,
+	MAILBOX_EXISTENCE_NOSELECT,
+	MAILBOX_EXISTENCE_SELECT
+};
+
 enum mailbox_status_items {
 	STATUS_MESSAGES		= 0x01,
 	STATUS_RECENT		= 0x02,
@@ -64,9 +70,13 @@ enum mailbox_status_items {
 	STATUS_UNSEEN		= 0x10,
 	STATUS_FIRST_UNSEEN_SEQ	= 0x20,
 	STATUS_KEYWORDS		= 0x40,
-	STATUS_HIGHESTMODSEQ	= 0x80,
-	STATUS_CACHE_FIELDS	= 0x100,
-	STATUS_VIRTUAL_SIZE	= 0x200
+	STATUS_HIGHESTMODSEQ	= 0x80
+};
+
+enum mailbox_metadata_items {
+	MAILBOX_METADATA_GUID		= 0x01,
+	MAILBOX_METADATA_VIRTUAL_SIZE	= 0x02,
+	MAILBOX_METADATA_CACHE_FIELDS	= 0x04
 };
 
 enum mailbox_search_result_flags {
@@ -185,15 +195,19 @@ struct mailbox_status {
 
 	uint32_t first_unseen_seq;
 	uint64_t highest_modseq;
-	/* sum of virtual size of all messages in mailbox */
-	uint64_t virtual_size;
 
 	const ARRAY_TYPE(keywords) *keywords;
-	/* Fields that have "temp" or "yes" caching decision. */
-	const ARRAY_TYPE(const_string) *cache_fields;
 
 	/* Modseqs aren't permanent (index is in memory) */
 	unsigned int nonpermanent_modseqs:1;
+};
+
+struct mailbox_metadata {
+	uint8_t guid[MAIL_GUID_128_SIZE];
+	/* sum of virtual size of all messages in mailbox */
+	uint64_t virtual_size;
+	/* Fields that have "temp" or "yes" caching decision. */
+	const ARRAY_TYPE(const_string) *cache_fields;
 };
 
 struct mailbox_update {
@@ -321,6 +335,11 @@ int mail_storage_purge(struct mail_storage *storage);
 /* Returns the error message of last occurred error. */
 const char *mail_storage_get_last_error(struct mail_storage *storage,
 					enum mail_error *error_r);
+/* Wrapper for mail_storage_get_last_error(); */
+const char *mailbox_get_last_error(struct mailbox *box,
+				   enum mail_error *error_r);
+/* Wrapper for mail_storage_get_last_error(); */
+enum mail_error mailbox_get_last_mail_error(struct mailbox *box);
 
 /* Returns TRUE if mailboxes are files. */
 bool mail_storage_is_mailbox_file(struct mail_storage *storage) ATTR_PURE;
@@ -328,8 +347,10 @@ bool mail_storage_is_mailbox_file(struct mail_storage *storage) ATTR_PURE;
 /* Initialize mailbox without actually opening any files or verifying that
    it exists. Note that append and copy may open the selected mailbox again
    with possibly different readonly-state. */
-struct mailbox *mailbox_alloc(struct mailbox_list *list, const char *name,
+struct mailbox *mailbox_alloc(struct mailbox_list *list, const char *vname,
 			      enum mailbox_flags flags);
+/* Get mailbox existence state */
+int mailbox_exists(struct mailbox *box, enum mailbox_existence *existence_r);
 /* Open the mailbox. If this function isn't called explicitly, it's also called
    internally by lib-storage when necessary. */
 int mailbox_open(struct mailbox *box);
@@ -357,6 +378,9 @@ int mailbox_delete(struct mailbox *box);
    fails, the error is set to src's storage. */
 int mailbox_rename(struct mailbox *src, struct mailbox *dest,
 		   bool rename_children);
+/* Subscribe/unsubscribe mailbox. Subscribing to
+   nonexistent mailboxes is optional. */
+int mailbox_set_subscribed(struct mailbox *box, bool set);
 
 /* Enable the given feature for the mailbox. */
 int mailbox_enable(struct mailbox *box, enum mailbox_feature features);
@@ -393,11 +417,19 @@ bool mailbox_backends_equal(const struct mailbox *box1,
    do forced CLOSE. */
 bool mailbox_is_inconsistent(struct mailbox *box);
 
-/* Gets the mailbox status information. */
-void mailbox_get_status(struct mailbox *box, enum mailbox_status_items items,
-			struct mailbox_status *status_r);
-/* Get mailbox GUID, creating it if necessary. */
-int mailbox_get_guid(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE]);
+/* Gets the mailbox status information, opening the mailbox if necessary. */
+int mailbox_get_status(struct mailbox *box, enum mailbox_status_items items,
+		       struct mailbox_status *status_r);
+/* Gets the mailbox status, requires that mailbox is already opened. */
+void mailbox_get_open_status(struct mailbox *box,
+			     enum mailbox_status_items items,
+			     struct mailbox_status *status_r);
+/* Gets mailbox metadata */
+int mailbox_get_metadata(struct mailbox *box, enum mailbox_metadata_items items,
+			 struct mailbox_metadata *metadata_r);
+/* Returns a mask of flags that are private to user in this mailbox
+   (as opposed to flags shared between users). */
+enum mail_flags mailbox_get_private_flags_mask(struct mailbox *box);
 
 /* Synchronize the mailbox. */
 struct mailbox_sync_context *
@@ -461,22 +493,6 @@ void mailbox_get_uid_range(struct mailbox *box,
 bool mailbox_get_expunges(struct mailbox *box, uint64_t prev_modseq,
 			  const ARRAY_TYPE(seq_range) *uids_filter,
 			  ARRAY_TYPE(mailbox_expunge_rec) *expunges);
-/* If box is a virtual mailbox, look up UID for the given backend message.
-   Returns TRUE if found, FALSE if not. */
-bool mailbox_get_virtual_uid(struct mailbox *box, const char *backend_mailbox,
-			     uint32_t backend_uidvalidity,
-			     uint32_t backend_uid, uint32_t *uid_r);
-/* If box is a virtual mailbox, return all backend mailboxes. If
-   only_with_msgs=TRUE, return only those mailboxes that have at least one
-   message existing in the virtual mailbox. */
-void mailbox_get_virtual_backend_boxes(struct mailbox *box,
-				       ARRAY_TYPE(mailboxes) *mailboxes,
-				       bool only_with_msgs);
-/* If mailbox is a virtual mailbox, return all mailbox list patterns that
-   are used to figure out which mailboxes belong to the virtual mailbox. */
-void mailbox_get_virtual_box_patterns(struct mailbox *box,
-				ARRAY_TYPE(mailbox_virtual_patterns) *includes,
-				ARRAY_TYPE(mailbox_virtual_patterns) *excludes);
 
 /* Initialize new search request. charset specifies the character set used in
    the search argument strings. If sort_program is non-NULL, the messages are
@@ -532,9 +548,8 @@ mailbox_keywords_create_valid(struct mailbox *box,
 struct mail_keywords *
 mailbox_keywords_create_from_indexes(struct mailbox *box,
 				     const ARRAY_TYPE(keyword_indexes) *idx);
-void mailbox_keywords_ref(struct mailbox *box, struct mail_keywords *keywords);
-void mailbox_keywords_unref(struct mailbox *box,
-			    struct mail_keywords **keywords);
+void mailbox_keywords_ref(struct mail_keywords *keywords);
+void mailbox_keywords_unref(struct mail_keywords **keywords);
 /* Returns TRUE if keyword is valid, FALSE and error if not. */
 bool mailbox_keyword_is_valid(struct mailbox *box, const char *keyword,
 			      const char **error_r);

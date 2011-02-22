@@ -12,7 +12,9 @@
 #include "mail-namespace.h"
 #include "mail-search-build.h"
 #include "mail-storage-private.h"
+#include "mailbox-list-private.h"
 #include "fts-api-private.h"
+#include "fts-mailbox.h"
 #include "fts-storage.h"
 #include "fts-plugin.h"
 
@@ -347,13 +349,10 @@ static int mailbox_name_cmp(const struct fts_orig_mailboxes *box1,
 	int ret;
 
 	T_BEGIN {
-		string_t *tmp1, *tmp2;
 		const char *vname1, *vname2;
 
-		tmp1 = t_str_new(128);
-		tmp2 = t_str_new(128);
-		vname1 = mail_namespace_get_vname(box1->ns, tmp1, box1->name);
-		vname2 = mail_namespace_get_vname(box2->ns, tmp2, box2->name);
+		vname1 = mailbox_list_get_vname(box1->ns->list, box1->name);
+		vname2 = mailbox_list_get_vname(box2->ns->list, box2->name);
 		ret = strcmp(vname1, vname2);
 	} T_END;
 	return ret;
@@ -373,8 +372,6 @@ static int fts_build_init_virtual_next(struct fts_search_context *fctx)
 	const struct fts_orig_mailboxes *boxes;
 	const struct fts_backend_uid_map *last_uids;
 	unsigned int boxi, uidi, box_count, last_uid_count;
-	const char *vname;
-	string_t *tmp;
 	int ret, vret = 0;
 
 	if (vctx->pool == NULL)
@@ -386,17 +383,20 @@ static int fts_build_init_virtual_next(struct fts_search_context *fctx)
 	boxes = array_get(&vctx->orig_mailboxes, &box_count);
 	last_uids = array_get(&vctx->last_uids, &last_uid_count);
 
-	tmp = t_str_new(256);
 	boxi = vctx->boxi;
 	uidi = vctx->uidi;
 	while (vret == 0 && boxi < box_count && uidi < last_uid_count) {
-		vname = mail_namespace_get_vname(boxes[boxi].ns, tmp,
-						 boxes[boxi].name);
-		ret = strcmp(vname, last_uids[uidi].mailbox);
+		T_BEGIN {
+			const char *vname;
+
+			vname = mailbox_list_get_vname(boxes[boxi].ns->list,
+						       boxes[boxi].name);
+			ret = strcmp(vname, last_uids[uidi].mailbox);
+		} T_END;
 		if (ret == 0) {
 			/* match. check also that uidvalidity matches. */
-			mailbox_get_status(boxes[boxi].box, STATUS_UIDVALIDITY,
-					   &status);
+			mailbox_get_open_status(boxes[boxi].box,
+						STATUS_UIDVALIDITY, &status);
 			if (status.uidvalidity != last_uids[uidi].uidvalidity) {
 				uidi++;
 				continue;
@@ -453,7 +453,7 @@ static int fts_build_init_virtual(struct fts_search_context *fctx)
 	int ret;
 
 	t_array_init(&mailboxes, 64);
-	mailbox_get_virtual_backend_boxes(fctx->t->box, &mailboxes, TRUE);
+	fts_mailbox_get_virtual_backend_boxes(fctx->t->box, &mailboxes, TRUE);
 	boxes = array_get_modifiable(&mailboxes, &box_count);
 
 	vctx->pool = pool_alloconly_create("fts virtual build", 1024);
@@ -500,8 +500,8 @@ static int fts_build_init(struct fts_search_context *fctx)
 	struct mailbox_status status;
 	int ret;
 
-	mailbox_get_status(fctx->t->box, STATUS_MESSAGES | STATUS_UIDNEXT,
-			   &status);
+	mailbox_get_open_status(fctx->t->box, STATUS_MESSAGES | STATUS_UIDNEXT,
+				&status);
 	if (status.messages == fctx->fbox->last_messages_count &&
 	    status.uidnext == fctx->fbox->last_uidnext) {
 		/* no new messages since last check */
@@ -539,8 +539,8 @@ static int fts_build_deinit(struct fts_storage_build_context **_ctx)
 		ret = -1;
 
 	if (ret == 0) {
-		mailbox_get_status(box, STATUS_MESSAGES | STATUS_UIDNEXT,
-				   &status);
+		mailbox_get_open_status(box, STATUS_MESSAGES | STATUS_UIDNEXT,
+					&status);
 		fbox->last_messages_count = status.messages;
 		fbox->last_uidnext = status.uidnext;
 	}
@@ -777,7 +777,8 @@ static bool search_nonindexed(struct mail_search_context *ctx)
 	struct fts_mailbox *fbox = FTS_CONTEXT(ctx->transaction->box);
 	struct mailbox_status status;
 
-	mailbox_get_status(ctx->transaction->box, STATUS_MESSAGES, &status);
+	mailbox_get_open_status(ctx->transaction->box,
+				STATUS_MESSAGES, &status);
 
 	fctx->seqs_set = FALSE;
 	ctx->seq = fctx->first_nonindexed_seq - 1;

@@ -90,7 +90,6 @@ acl_mailbox_try_list_fast(struct acl_mailbox_list_iterate_context *ctx)
 	struct mail_namespace *ns = ctx->ctx.list->ns;
 	struct mailbox_list_iter_update_context update_ctx;
 	const char *name;
-	string_t *vname = NULL;
 	int ret;
 
 	if ((ctx->ctx.flags & (MAILBOX_LIST_ITER_RAW_LIST |
@@ -111,7 +110,6 @@ acl_mailbox_try_list_fast(struct acl_mailbox_list_iterate_context *ctx)
 		return;
 
 	/* no LOOKUP right by default, we can optimize this */
-	vname = t_str_new(256);
 	memset(&update_ctx, 0, sizeof(update_ctx));
 	update_ctx.iter_ctx = &ctx->ctx;
 	update_ctx.glob =
@@ -124,9 +122,11 @@ acl_mailbox_try_list_fast(struct acl_mailbox_list_iterate_context *ctx)
 	nonowner_list_ctx = acl_backend_nonowner_lookups_iter_init(backend);
 	while ((ret = acl_backend_nonowner_lookups_iter_next(nonowner_list_ctx,
 							     &name)) > 0) {
-		if (vname != NULL)
-			name = mail_namespace_get_vname(ns, vname, name);
-		mailbox_list_iter_update(&update_ctx, name);
+		T_BEGIN {
+			const char *vname =
+				mailbox_list_get_vname(ns->list, name);
+			mailbox_list_iter_update(&update_ctx, vname);
+		} T_END;
 	}
 	acl_backend_nonowner_lookups_iter_deinit(&nonowner_list_ctx);
 
@@ -171,7 +171,7 @@ acl_mailbox_list_iter_init(struct mailbox_list *list,
 	ctx->ctx.flags = flags;
 
 	inboxcase = (list->ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0;
-	ctx->sep = list->ns->sep;
+	ctx->sep = mail_namespace_get_sep(list->ns);
 	ctx->glob = imap_match_init_multiple(default_pool, patterns,
 					     inboxcase, ctx->sep);
 	/* see if all patterns have only a single '*' and it's at the end.
@@ -220,14 +220,15 @@ acl_mailbox_list_iter_next_info(struct acl_mailbox_list_iterate_context *ctx)
 
 static const char *
 acl_mailbox_list_iter_get_name(struct mailbox_list_iterate_context *ctx,
-			       const char *name)
+			       const char *vname)
 {
 	struct mail_namespace *ns = ctx->list->ns;
+	const char *name;
 	unsigned int len;
 
-	name = mail_namespace_get_storage_name(ns, name);
+	name = mailbox_list_get_storage_name(ns->list, vname);
 	len = strlen(name);
-	if (len > 0 && name[len-1] == ns->real_sep) {
+	if (len > 0 && name[len-1] == mailbox_list_get_hierarchy_sep(ns->list)) {
 		/* name ends with separator. this can happen if doing e.g.
 		   LIST "" foo/% and it lists "foo/". */
 		name = t_strndup(name, len-1);
@@ -407,70 +408,6 @@ acl_mailbox_list_iter_deinit(struct mailbox_list_iterate_context *_ctx)
 	return ret;
 }
 
-static int acl_mailbox_have_any_rights(struct acl_mailbox_list *alist,
-				       const char *name)
-{
-	struct acl_object *aclobj;
-	const char *const *rights;
-	int ret;
-
-	aclobj = acl_object_init_from_name(alist->rights.backend, name);
-	ret = acl_object_get_my_rights(aclobj, pool_datastack_create(),
-				       &rights);
-	acl_object_deinit(&aclobj);
-
-	return ret < 0 ? -1 :
-		(*rights == NULL ? 0 : 1);
-}
-
-static int acl_get_mailbox_name_status(struct mailbox_list *list,
-				       const char *name,
-				       enum mailbox_name_status *status)
-{
-	struct acl_mailbox_list *alist = ACL_LIST_CONTEXT(list);
-	int ret;
-
-	T_BEGIN {
-		ret = acl_mailbox_have_any_rights(alist, name);
-	} T_END;
-	if (ret < 0)
-		return -1;
-
-	if (alist->module_ctx.super.get_mailbox_name_status(list, name,
-							    status) < 0)
-		return -1;
-	if (ret > 0)
-		return 0;
-
-	/* we shouldn't reveal this mailbox's existance */
-	switch (*status) {
-	case MAILBOX_NAME_EXISTS_MAILBOX:
-	case MAILBOX_NAME_EXISTS_DIR:
-		*status = MAILBOX_NAME_VALID;
-		break;
-	case MAILBOX_NAME_VALID:
-	case MAILBOX_NAME_INVALID:
-		break;
-	case MAILBOX_NAME_NOINFERIORS:
-		/* have to check if we are allowed to see the parent */
-		T_BEGIN {
-			ret = acl_mailbox_list_have_right(list, name,
-					TRUE, ACL_STORAGE_RIGHT_LOOKUP, NULL);
-		} T_END;
-
-		if (ret < 0) {
-			mailbox_list_set_internal_error(list);
-			return -1;
-		}
-		if (ret == 0) {
-			/* no permission to see the parent */
-			*status = MAILBOX_NAME_VALID;
-		}
-		break;
-	}
-	return 0;
-}
-
 static int
 acl_mailbox_list_create_dir(struct mailbox_list *list, const char *name,
 			    enum mailbox_dir_create_type type)
@@ -548,7 +485,6 @@ static void acl_mailbox_list_init_default(struct mailbox_list *list)
 	v->iter_init = acl_mailbox_list_iter_init;
 	v->iter_next = acl_mailbox_list_iter_next;
 	v->iter_deinit = acl_mailbox_list_iter_deinit;
-	v->get_mailbox_name_status = acl_get_mailbox_name_status;
 	v->create_mailbox_dir = acl_mailbox_list_create_dir;
 
 	MODULE_CONTEXT_SET(list, acl_mailbox_list_module, alist);

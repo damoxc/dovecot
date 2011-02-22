@@ -1,6 +1,8 @@
 /* Copyright (c) 2006-2010 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "array.h"
+#include "imap-match.h"
 #include "mailbox-list-private.h"
 
 #define MAILBOX_LIST_NAME_NONE "none"
@@ -53,6 +55,11 @@ none_is_valid_create_name(struct mailbox_list *list ATTR_UNUSED,
 	return FALSE;
 }
 
+static char none_list_get_hierarchy_sep(struct mailbox_list *list ATTR_UNUSED)
+{
+	return '/';
+}
+
 static const char *
 none_list_get_path(struct mailbox_list *list ATTR_UNUSED,
 		   const char *name ATTR_UNUSED,
@@ -63,24 +70,18 @@ none_list_get_path(struct mailbox_list *list ATTR_UNUSED,
 	return NULL;
 }
 
-static int
-none_list_get_mailbox_name_status(struct mailbox_list *list,
-				  const char *name,
-				  enum mailbox_name_status *status)
-{
-	if (strcasecmp(name, "INBOX") == 0 &&
-	    (list->ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0)
-		*status = MAILBOX_NAME_EXISTS_MAILBOX;
-	else
-		*status = MAILBOX_NAME_VALID;
-	return 0;
-}
-
 static const char *
 none_list_get_temp_prefix(struct mailbox_list *list ATTR_UNUSED,
 			  bool global ATTR_UNUSED)
 {
 	return GLOBAL_TEMP_PREFIX;
+}
+
+static int
+none_list_subscriptions_refresh(struct mailbox_list *src_list ATTR_UNUSED,
+				struct mailbox_list *dest_list ATTR_UNUSED)
+{
+	return 0;
 }
 
 static int none_list_set_subscribed(struct mailbox_list *list,
@@ -128,7 +129,7 @@ none_list_rename_mailbox(struct mailbox_list *oldlist,
 
 static struct mailbox_list_iterate_context *
 none_list_iter_init(struct mailbox_list *list,
-		    const char *const *patterns ATTR_UNUSED,
+		    const char *const *patterns,
 		    enum mailbox_list_iter_flags flags)
 {
 	struct noop_list_iterate_context *ctx;
@@ -136,6 +137,9 @@ none_list_iter_init(struct mailbox_list *list,
 	ctx = i_new(struct noop_list_iterate_context, 1);
 	ctx->ctx.list = list;
 	ctx->ctx.flags = flags;
+	ctx->ctx.glob = imap_match_init_multiple(default_pool, patterns, TRUE,
+						 mail_namespace_get_sep(list->ns));
+	array_create(&ctx->ctx.module_contexts, default_pool, sizeof(void *), 5);
 	if ((list->ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
 		ctx->list_inbox = TRUE;
 		ctx->inbox_info.ns = list->ns;
@@ -147,6 +151,8 @@ none_list_iter_init(struct mailbox_list *list,
 static int
 none_list_iter_deinit(struct mailbox_list_iterate_context *ctx)
 {
+	array_free(&ctx->module_contexts);
+	imap_match_deinit(&ctx->glob);
 	i_free(ctx);
 	return 0;
 }
@@ -178,7 +184,6 @@ none_list_get_mailbox_flags(struct mailbox_list *list ATTR_UNUSED,
 
 struct mailbox_list none_mailbox_list = {
 	.name = MAILBOX_LIST_NAME_NONE,
-	.hierarchy_sep = '/',
 	.props = MAILBOX_LIST_PROP_NO_ROOT,
 	.mailbox_name_max_length = MAILBOX_LIST_NAME_MAX_LENGTH,
 
@@ -189,8 +194,10 @@ struct mailbox_list none_mailbox_list = {
 		none_is_valid_pattern,
 		none_is_valid_existing_name,
 		none_is_valid_create_name,
+		none_list_get_hierarchy_sep,
+		mailbox_list_default_get_vname,
+		mailbox_list_default_get_storage_name,
 		none_list_get_path,
-		none_list_get_mailbox_name_status,
 		none_list_get_temp_prefix,
 		NULL,
 		none_list_iter_init,
@@ -198,6 +205,7 @@ struct mailbox_list none_mailbox_list = {
 		none_list_iter_deinit,
 		none_list_get_mailbox_flags,
 		NULL,
+		none_list_subscriptions_refresh,
 		none_list_set_subscribed,
 		none_list_create_mailbox_dir,
 		none_list_delete_mailbox,

@@ -38,7 +38,7 @@ struct mail_storage_vfuncs {
 
 	struct mailbox *(*mailbox_alloc)(struct mail_storage *storage,
 					 struct mailbox_list *list,
-					 const char *name,
+					 const char *vname,
 					 enum mailbox_flags flags);
 	int (*purge)(struct mail_storage *storage);
 };
@@ -56,7 +56,9 @@ enum mail_storage_class_flags {
 	/* mailbox_open_stream() is supported */
 	MAIL_STORAGE_CLASS_FLAG_OPEN_STREAMS	= 0x04,
 	/* never use quota for this storage (e.g. virtual mailboxes) */
-	MAIL_STORAGE_CLASS_FLAG_NOQUOTA		= 0x08
+	MAIL_STORAGE_CLASS_FLAG_NOQUOTA		= 0x08,
+	/* Storage doesn't need a mail root directory */
+	MAIL_STORAGE_CLASS_FLAG_NO_ROOT		= 0x10
 };
 
 struct mail_storage {
@@ -83,6 +85,7 @@ struct mail_storage {
 	struct mail_user *user;
 	const char *temp_path_prefix;
 	const struct mail_storage_settings *set;
+	uint32_t list_sync_ext_id;
 
 	enum mail_storage_flags flags;
 
@@ -103,6 +106,7 @@ struct mailbox_vfuncs {
 	bool (*allow_new_keywords)(struct mailbox *box);
 
 	int (*enable)(struct mailbox *box, enum mailbox_feature features);
+	int (*exists)(struct mailbox *box, enum mailbox_existence *existence_r);
 	int (*open)(struct mailbox *box);
 	void (*close)(struct mailbox *box);
 	void (*free)(struct mailbox *box);
@@ -114,19 +118,21 @@ struct mailbox_vfuncs {
 	int (*rename)(struct mailbox *src, struct mailbox *dest,
 		      bool rename_children);
 
-	void (*get_status)(struct mailbox *box, enum mailbox_status_items items,
-			   struct mailbox_status *status_r);
-	int (*get_guid)(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE]);
+	int (*get_status)(struct mailbox *box, enum mailbox_status_items items,
+			  struct mailbox_status *status_r);
+	int (*get_metadata)(struct mailbox *box,
+			    enum mailbox_metadata_items items,
+			    struct mailbox_metadata *metadata_r);
 
 	/* Lookup sync extension record and figure out if it mailbox has
 	   changed since. Returns 1 = yes, 0 = no, -1 = error. */
 	int (*list_index_has_changed)(struct mailbox *box,
 				      struct mail_index_view *list_view,
 				      uint32_t seq);
-	/* Update the sync extension record. Returns 0 = ok, -1 = error. */
-	int (*list_index_update_sync)(struct mailbox *box,
-				      struct mail_index_transaction *trans,
-				      uint32_t seq);
+	/* Update the sync extension record. */
+	void (*list_index_update_sync)(struct mailbox *box,
+				       struct mail_index_transaction *trans,
+				       uint32_t seq);
 
 	struct mailbox_sync_context *
 		(*sync_init)(struct mailbox *box,
@@ -150,50 +156,13 @@ struct mailbox_vfuncs {
 	int (*transaction_commit)(struct mailbox_transaction_context *t,
 				  struct mail_transaction_commit_changes *changes_r);
 	void (*transaction_rollback)(struct mailbox_transaction_context *t);
-	void (*transaction_set_max_modseq)(struct mailbox_transaction_context *t,
-					   uint64_t max_modseq,
-					   ARRAY_TYPE(seq_range) *seqs);
 
-	int (*keywords_create)(struct mailbox *box,
-			       const char *const keywords[],
-			       struct mail_keywords **keywords_r,
-			       bool skip_invalid);
-	struct mail_keywords *
-		(*keywords_create_from_indexes)(struct mailbox *box,
-						const ARRAY_TYPE(keyword_indexes) *idx);
-	void (*keywords_ref)(struct mail_keywords *keywords);
-	void (*keywords_unref)(struct mail_keywords *keywords);
-	bool (*keyword_is_valid)(struct mailbox *box, const char *keyword,
-				 const char **error_r);
-
-	void (*get_seq_range)(struct mailbox *box, uint32_t uid1, uint32_t uid2,
-			      uint32_t *seq1_r, uint32_t *seq2_r);
-	void (*get_uid_range)(struct mailbox *box,
-			      const ARRAY_TYPE(seq_range) *seqs,
-			      ARRAY_TYPE(seq_range) *uids);
-	bool (*get_expunges)(struct mailbox *box, uint64_t prev_modseq,
-			     const ARRAY_TYPE(seq_range) *uids_filter,
-			     ARRAY_TYPE(mailbox_expunge_rec) *expunges);
-	bool (*get_virtual_uid)(struct mailbox *box,
-				const char *backend_mailbox,
-				uint32_t backend_uidvalidity,
-				uint32_t backend_uid, uint32_t *uid_r);
-	void (*get_virtual_backend_boxes)(struct mailbox *box,
-					  ARRAY_TYPE(mailboxes) *mailboxes,
-					  bool only_with_msgs);
-	void (*get_virtual_box_patterns)(struct mailbox *box,
-				ARRAY_TYPE(mailbox_virtual_patterns) *includes,
-				ARRAY_TYPE(mailbox_virtual_patterns) *excludes);
+	enum mail_flags (*get_private_flags_mask)(struct mailbox *box);
 
 	struct mail *
 		(*mail_alloc)(struct mailbox_transaction_context *t,
 			      enum mail_fetch_field wanted_fields,
 			      struct mailbox_header_lookup_ctx *wanted_headers);
-
-	struct mailbox_header_lookup_ctx *
-		(*header_lookup_init)(struct mailbox *box,
-				      const char *const headers[]);
-	void (*header_lookup_deinit)(struct mailbox_header_lookup_ctx *ctx);
 
 	struct mail_search_context *
 	(*search_init)(struct mailbox_transaction_context *t,
@@ -212,9 +181,6 @@ struct mailbox_vfuncs {
 	int (*save_finish)(struct mail_save_context *ctx);
 	void (*save_cancel)(struct mail_save_context *ctx);
 	int (*copy)(struct mail_save_context *ctx, struct mail *mail);
-	/* returns TRUE if message part is an attachment. */
-	bool (*save_is_attachment)(struct mail_save_context *ctx,
-				   const struct mail_attachment_part *part);
 
 	bool (*is_inconsistent)(struct mailbox *box);
 };
@@ -224,8 +190,20 @@ union mailbox_module_context {
 	struct mail_storage_module_register *reg;
 };
 
+struct mailbox_permissions {
+	/* mode and GID to use for newly created files/dirs */
+	mode_t file_create_mode, dir_create_mode;
+	gid_t file_create_gid;
+	/* origin (e.g. path) where the file_create_gid was got from */
+	const char *file_create_gid_origin;
+
+	bool mail_index_permissions_set;
+};
+
 struct mailbox {
 	const char *name;
+	/* mailbox's virtual name (from mail_namespace_get_vname()) */
+	const char *vname;
 	struct mail_storage *storage;
 	struct mailbox_list *list;
 
@@ -233,30 +211,23 @@ struct mailbox {
 /* private: */
 	pool_t pool;
 
+	/* these won't be set until mailbox is opened: */
 	struct mail_index *index;
 	struct mail_index_view *view;
 	struct mail_cache *cache;
+	/* Filled lazily by mailbox_get_permissions() */
+	struct mailbox_permissions _perm;
+	/* Filled lazily by mailbox_get_path() */
+	const char *_path;
 
 	/* default vfuncs for new struct mails. */
 	const struct mail_vfuncs *mail_vfuncs;
 
-	/* mailbox's MAILBOX_LIST_PATH_TYPE_MAILBOX */
-	const char *path;
-	/* mailbox's virtual name (from mail_namespace_get_vname()) */
-	const char *vname;
 	struct istream *input;
+	const char *index_prefix;
 	enum mailbox_flags flags;
 	unsigned int transaction_count;
 	enum mailbox_feature enabled_features;
-
-	/* User's private flags if this is a shared mailbox */
-	enum mail_flags private_flags_mask;
-
-	/* mode and GID to use for newly created files/dirs */
-	mode_t file_create_mode, dir_create_mode;
-	gid_t file_create_gid;
-	/* origin (e.g. path) where the file_create_gid was got from */
-	const char *file_create_gid_origin;
 
 	/* Mailbox notification settings: */
 	unsigned int notify_min_interval;
@@ -274,8 +245,6 @@ struct mailbox {
 	unsigned int opened:1;
 	/* Mailbox was deleted while we had it open. */
 	unsigned int mailbox_deleted:1;
-	/* we've discovered there aren't enough permissions to modify mailbox */
-	unsigned int backend_readonly:1;
 	/* Mailbox is being deleted */
 	unsigned int deleting:1;
 	/* Mailbox was already marked as deleted within this allocation. */
@@ -353,6 +322,12 @@ struct mail_private {
 	pool_t pool;
 	ARRAY_DEFINE(module_contexts, union mail_module_context *);
 
+	/* temporary extra wanted fields/headers that should be looked up
+	   automatically if possible. for example sort_program fields during
+	   search. */
+	enum mail_fetch_field extra_wanted_fields;
+	struct mailbox_header_lookup_ctx *extra_wanted_headers;
+
 	/* these statistics are never reset by mail-storage API: */
 
 	unsigned long stats_open_lookup_count;
@@ -383,9 +358,16 @@ struct mailbox_transaction_context {
 	struct mailbox *box;
 	enum mailbox_transaction_flags flags;
 
+	union mail_index_transaction_module_context module_ctx;
+	struct mail_index_transaction_vfuncs super;
+	int mail_ref_count;
+
 	struct mail_index_transaction *itrans;
 	/* view contains all changes done within this transaction */
 	struct mail_index_view *view;
+
+	struct mail_cache_view *cache_view;
+	struct mail_cache_transaction_ctx *cache_trans;
 
 	struct mail_transaction_commit_changes *changes;
 	ARRAY_DEFINE(module_contexts,
@@ -438,6 +420,10 @@ struct mail_save_context {
 
 	struct mail_save_attachment *attach;
 
+	/* returns TRUE if message part is an attachment. */
+	bool (*part_is_attachment)(struct mail_save_context *ctx,
+				   const struct mail_attachment_part *part);
+
 	/* we came here from mailbox_copy() */
 	unsigned int copying:1;
 };
@@ -448,8 +434,12 @@ struct mailbox_sync_context {
 
 struct mailbox_header_lookup_ctx {
 	struct mailbox *box;
-	const char *const *headers;
+	pool_t pool;
 	int refcount;
+
+	unsigned int count;
+	const char *const *name;
+	unsigned int *idx;
 };
 
 /* Modules should use do "my_id = mail_storage_module_id++" and
@@ -484,6 +474,11 @@ int mail_set_aborted(struct mail *mail);
 void mail_set_expunged(struct mail *mail);
 void mailbox_set_deleted(struct mailbox *box);
 int mailbox_mark_index_deleted(struct mailbox *box, bool del);
+/* Easy wrapper for getting mailbox's MAILBOX_LIST_PATH_TYPE_MAILBOX */
+const char *mailbox_get_path(struct mailbox *box) ATTR_PURE;
+/* Get mailbox permissions. */
+const struct mailbox_permissions *mailbox_get_permissions(struct mailbox *box);
+/* Force permissions to be refreshed on next lookup */
 void mailbox_refresh_permissions(struct mailbox *box);
 
 /* Returns -1 if error, 0 if failed with EEXIST, 1 if ok */

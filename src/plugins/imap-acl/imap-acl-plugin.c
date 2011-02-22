@@ -57,8 +57,6 @@ acl_mailbox_open_as_admin(struct client_command_context *cmd, const char *name)
 {
 	struct mail_namespace *ns;
 	struct mailbox *box;
-	const char *storage_name;
-	enum mailbox_name_status status;
 	int ret;
 
 	if (ACL_USER_CONTEXT(cmd->client->user) == NULL) {
@@ -66,22 +64,13 @@ acl_mailbox_open_as_admin(struct client_command_context *cmd, const char *name)
 		return NULL;
 	}
 
-	ns = client_find_namespace(cmd, name, &storage_name, &status);
+	ns = client_find_namespace(cmd, &name);
 	if (ns == NULL)
 		return NULL;
 
-	switch (status) {
-	case MAILBOX_NAME_INVALID:
-	case MAILBOX_NAME_VALID:
-		client_fail_mailbox_name_status(cmd, name, NULL, status);
-		return NULL;
-	default:
-		break;
-	}
-
 	/* Force opening the mailbox so that we can give a nicer error message
 	   if mailbox isn't selectable but is listable. */
-	box = mailbox_alloc(ns->list, storage_name, ACL_MAILBOX_FLAGS |
+	box = mailbox_alloc(ns->list, name, ACL_MAILBOX_FLAGS |
 			    MAILBOX_FLAG_IGNORE_ACLS);
 	ret = acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_ADMIN);
 	if (ret > 0)
@@ -318,7 +307,7 @@ static bool cmd_myrights(struct client_command_context *cmd)
 {
 	struct mail_namespace *ns;
 	struct mailbox *box;
-	const char *mailbox, *storage_name;
+	const char *mailbox;
 	const char *const *rights;
 	string_t *str;
 
@@ -330,11 +319,11 @@ static bool cmd_myrights(struct client_command_context *cmd)
 		return TRUE;
 	}
 
-	ns = client_find_namespace(cmd, mailbox, &storage_name, NULL);
+	ns = client_find_namespace(cmd, &mailbox);
 	if (ns == NULL)
 		return TRUE;
 
-	box = mailbox_alloc(ns->list, storage_name,
+	box = mailbox_alloc(ns->list, mailbox,
 			    ACL_MAILBOX_FLAGS | MAILBOX_FLAG_IGNORE_ACLS);
 	if (acl_object_get_my_rights(acl_mailbox_get_aclobj(box),
 				     pool_datastack_create(), &rights) < 0) {

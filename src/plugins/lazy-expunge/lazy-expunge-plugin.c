@@ -83,8 +83,7 @@ mailbox_open_or_create(struct mailbox_list *list, const char *name,
 		return box;
 	}
 
-	*error_r = mail_storage_get_last_error(mailbox_get_storage(box),
-					       &error);
+	*error_r = mailbox_get_last_error(box, &error);
 	if (error != MAIL_ERROR_NOTFOUND) {
 		mailbox_free(&box);
 		return NULL;
@@ -93,8 +92,7 @@ mailbox_open_or_create(struct mailbox_list *list, const char *name,
 	/* try creating and re-opening it. */
 	if (mailbox_create(box, NULL, FALSE) < 0 ||
 	    mailbox_open(box) < 0) {
-		*error_r = mail_storage_get_last_error(mailbox_get_storage(box),
-						       NULL);
+		*error_r = mailbox_get_last_error(box, NULL);
 		mailbox_free(&box);
 		return NULL;
 	}
@@ -237,14 +235,15 @@ mailbox_move(struct mailbox *src_box, struct mailbox_list *dest_list,
 	struct mailbox *dest_box;
 	const char *dir, *origin;
 	enum mail_error error;
-	mode_t mode;
+	mode_t file_mode, dir_mode;
 	gid_t gid;
 	int ret;
 
 	/* make sure the destination root directory exists */
-	mailbox_list_get_dir_permissions(dest_list, NULL, &mode, &gid, &origin);
+	mailbox_list_get_root_permissions(dest_list, &file_mode, &dir_mode,
+					  &gid, &origin);
 	dir = mailbox_list_get_path(dest_list, NULL, MAILBOX_LIST_PATH_TYPE_DIR);
-	if (mkdir_parents_chgrp(dir, mode, gid, origin) < 0 &&
+	if (mkdir_parents_chgrp(dir, dir_mode, gid, origin) < 0 &&
 	    errno != EEXIST) {
 		mail_storage_set_critical(src_box->storage,
 			"mkdir_parents(%s) failed: %m", dir);
@@ -263,7 +262,7 @@ mailbox_move(struct mailbox *src_box, struct mailbox_list *dest_list,
 			break;
 		mailbox_free(&dest_box);
 
-		mail_storage_get_last_error(src_box->storage, &error);
+		error = mailbox_get_last_mail_error(src_box);
 		switch (error) {
 		case MAIL_ERROR_EXISTS:
 			break;
@@ -292,12 +291,11 @@ mailbox_move_all_mails(struct mailbox *src_box, const char *dest_name)
 	struct mail_save_context *save_ctx;
 	struct mail *mail;
 	const char *errstr;
-	enum mail_error error;
 	int ret;
 
 	dest_box = mailbox_alloc(src_box->list, dest_name, 0);
 	if (mailbox_open(dest_box) < 0) {
-		errstr = mail_storage_get_last_error(dest_box->storage, &error);
+		errstr = mailbox_get_last_error(dest_box, NULL);
 		i_error("lazy_expunge: Couldn't open DELETE dest mailbox "
 			"%s: %s", dest_name, errstr);
 		mailbox_free(&dest_box);
@@ -366,7 +364,6 @@ static int lazy_expunge_mailbox_delete(struct mailbox *box)
 	struct mail_namespace *expunge_ns, *dest_ns;
 	struct mailbox *expunge_box;
 	const char *destname, *str;
-	enum mail_error error;
 	struct tm *tm;
 	char timestamp[256];
 	int ret;
@@ -412,7 +409,7 @@ static int lazy_expunge_mailbox_delete(struct mailbox *box)
 	   since it's not really deleted in the lazy-expunge namespace,
 	   we might want to change it again. so mark the index undeleted. */
 	if (mailbox_open(expunge_box) < 0) {
-		str = mail_storage_get_last_error(expunge_box->storage, &error);
+		str = mailbox_get_last_error(expunge_box, NULL);
 		i_error("lazy_expunge: Couldn't open DELETEd mailbox "
 			"%s: %s", expunge_box->name, str);
 		mailbox_free(&expunge_box);

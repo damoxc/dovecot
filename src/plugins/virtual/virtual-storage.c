@@ -20,20 +20,12 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#define VIRTUAL_LIST_CONTEXT(obj) \
-	MODULE_CONTEXT(obj, virtual_mailbox_list_module)
-
-struct virtual_mailbox_list {
-	union mailbox_list_module_context module_ctx;
-};
-
 extern struct mail_storage virtual_storage;
 extern struct mailbox virtual_mailbox;
+extern struct virtual_mailbox_vfuncs virtual_mailbox_vfuncs;
 
 struct virtual_storage_module virtual_storage_module =
 	MODULE_CONTEXT_INIT(&mail_storage_module_register);
-static MODULE_CONTEXT_DEFINE_INIT(virtual_mailbox_list_module,
-				  &mailbox_list_module_register);
 
 static bool ns_is_visible(struct mail_namespace *ns)
 {
@@ -48,7 +40,8 @@ static const char *get_user_visible_mailbox_name(struct mailbox *box)
 		return box->vname;
 	else {
 		return t_strdup_printf("<hidden>%c%s",
-				       box->list->hierarchy_sep, box->name);
+				       mail_namespace_get_sep(box->list->ns),
+				       box->vname);
 	}
 }
 
@@ -58,7 +51,7 @@ void virtual_box_copy_error(struct mailbox *dest, struct mailbox *src)
 	enum mail_error error;
 
 	name = get_user_visible_mailbox_name(src);
-	str = mail_storage_get_last_error(src->storage, &error);
+	str = mailbox_get_last_error(src, &error);
 
 	str = t_strdup_printf("%s (for backend mailbox %s)", str, name);
 	mail_storage_set_error(dest->storage, error, str);
@@ -138,8 +131,7 @@ static int virtual_backend_box_open_failed(struct virtual_mailbox *mbox,
 	enum mail_error error;
 	const char *str, *name;
 
-	str = mail_storage_get_last_error(mailbox_get_storage(bbox->box),
-					  &error);
+	str = mailbox_get_last_error(bbox->box, &error);
 	name = t_strdup(get_user_visible_mailbox_name(bbox->box));
 	mailbox_free(&bbox->box);
 	if (error == MAIL_ERROR_NOTFOUND) {
@@ -176,7 +168,7 @@ static int virtual_backend_box_open(struct virtual_mailbox *mbox,
 	flags |= MAILBOX_FLAG_KEEP_RECENT;
 
 	mailbox = bbox->name;
-	ns = mail_namespace_find(user->namespaces, &mailbox);
+	ns = mail_namespace_find(user->namespaces, mailbox);
 	bbox->box = mailbox_alloc(ns->list, mailbox, flags);
 
 	if (mailbox_open(bbox->box) < 0)
@@ -221,7 +213,7 @@ static int virtual_mailboxes_open(struct virtual_mailbox *mbox,
 
 static struct mailbox *
 virtual_mailbox_alloc(struct mail_storage *_storage, struct mailbox_list *list,
-		      const char *name, enum mailbox_flags flags)
+		      const char *vname, enum mailbox_flags flags)
 {
 	struct virtual_storage *storage = (struct virtual_storage *)_storage;
 	struct virtual_mailbox *mbox;
@@ -234,8 +226,9 @@ virtual_mailbox_alloc(struct mail_storage *_storage, struct mailbox_list *list,
 	mbox->box.storage = _storage;
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &virtual_mail_vfuncs;
+	mbox->vfuncs = virtual_mailbox_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, name, flags,
+	index_storage_mailbox_alloc(&mbox->box, vname, flags,
 				    VIRTUAL_INDEX_PREFIX);
 
 	mbox->storage = storage;
@@ -269,6 +262,13 @@ static void virtual_mailbox_close_internal(struct virtual_mailbox *mbox)
 		array_free(&bboxes[i]->uids);
 	}
 	i_free_and_null(mbox->vseq_lookup_prev_mailbox);
+}
+
+static int virtual_mailbox_exists(struct mailbox *box,
+				  enum mailbox_existence *existence_r)
+{
+	return index_storage_mailbox_exists_full(box, VIRTUAL_CONFIG_FNAME,
+						 existence_r);
 }
 
 static int virtual_mailbox_open(struct mailbox *box)
@@ -333,12 +333,16 @@ virtual_mailbox_update(struct mailbox *box,
 }
 
 static int
-virtual_mailbox_get_guid(struct mailbox *box,
-			 uint8_t guid[MAIL_GUID_128_SIZE] ATTR_UNUSED)
+virtual_mailbox_get_metadata(struct mailbox *box,
+			     enum mailbox_metadata_items items,
+			     struct mailbox_metadata *metadata_r)
 {
-	mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
-			       "Virtual mailboxes have no GUIDs");
-	return -1;
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
+				       "Virtual mailboxes have no GUIDs");
+		return -1;
+	}
+	return index_mailbox_get_metadata(box, items, metadata_r);
 }
 
 static void
@@ -364,46 +368,6 @@ static void virtual_notify_changes(struct mailbox *box)
 					       virtual_notify_callback, box);
 		}
 	}
-}
-
-static int
-virtual_list_get_mailbox_flags(struct mailbox_list *list,
-			       const char *dir, const char *fname,
-			       enum mailbox_list_file_type type,
-			       struct stat *st_r,
-			       enum mailbox_info_flags *flags)
-{
-	struct virtual_mailbox_list *mlist = VIRTUAL_LIST_CONTEXT(list);
-	struct stat st2;
-	const char *virtual_path;
-	int ret;
-
-	ret = mlist->module_ctx.super.
-		get_mailbox_flags(list, dir, fname, type, st_r, flags);
-	if (ret <= 0 || MAILBOX_INFO_FLAGS_FINISHED(*flags))
-		return ret;
-
-	/* see if it's a selectable mailbox */
-	virtual_path = t_strconcat(dir, "/", fname, "/"VIRTUAL_CONFIG_FNAME,
-				   NULL);
-	if (stat(virtual_path, &st2) < 0)
-		*flags |= MAILBOX_NOSELECT;
-	return ret;
-}
-
-static void virtual_storage_add_list(struct mail_storage *storage ATTR_UNUSED,
-				     struct mailbox_list *list)
-{
-	struct mailbox_list_vfuncs *v = list->vlast;
-	struct virtual_mailbox_list *mlist;
-
-	mlist = p_new(list->pool, struct virtual_mailbox_list, 1);
-	mlist->module_ctx.super = *v;
-	list->vlast = &mlist->module_ctx.super;
-
-	v->get_mailbox_flags = virtual_list_get_mailbox_flags;
-
-	MODULE_CONTEXT_SET(list, virtual_mailbox_list_module, mlist);
 }
 
 static int virtual_backend_uidmap_cmp(const uint32_t *uid,
@@ -435,7 +399,7 @@ virtual_get_virtual_uid(struct mailbox *box, const char *backend_mailbox,
 	if (bbox == NULL)
 		return FALSE;
 
-	mailbox_get_status(bbox->box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(bbox->box, STATUS_UIDVALIDITY, &status);
 	if (status.uidvalidity != backend_uidvalidity)
 		return FALSE;
 
@@ -494,7 +458,7 @@ struct mail_storage virtual_storage = {
 		virtual_storage_alloc,
 		NULL,
 		NULL,
-		virtual_storage_add_list,
+		NULL,
 		virtual_storage_get_list_settings,
 		NULL,
 		virtual_mailbox_alloc,
@@ -507,6 +471,7 @@ struct mailbox virtual_mailbox = {
 		index_storage_is_readonly,
 		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
+		virtual_mailbox_exists,
 		virtual_mailbox_open,
 		virtual_mailbox_close,
 		virtual_mailbox_free,
@@ -515,7 +480,7 @@ struct mailbox virtual_mailbox = {
 		index_storage_mailbox_delete,
 		index_storage_mailbox_rename,
 		index_storage_get_status,
-		virtual_mailbox_get_guid,
+		virtual_mailbox_get_metadata,
 		NULL,
 		NULL,
 		virtual_storage_sync_init,
@@ -526,21 +491,8 @@ struct mailbox virtual_mailbox = {
 		virtual_transaction_begin,
 		virtual_transaction_commit,
 		virtual_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		virtual_get_virtual_uid,
-		virtual_get_virtual_backend_boxes,
-		virtual_get_virtual_box_patterns,
+		NULL,
 		virtual_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		virtual_search_init,
 		virtual_search_deinit,
 		virtual_search_next_nonblock,
@@ -551,7 +503,12 @@ struct mailbox virtual_mailbox = {
 		virtual_save_finish,
 		virtual_save_cancel,
 		mail_storage_copy,
-		NULL,
 		virtual_is_inconsistent
 	}
+};
+
+struct virtual_mailbox_vfuncs virtual_mailbox_vfuncs = {
+	virtual_get_virtual_uid,
+	virtual_get_virtual_backend_boxes,
+	virtual_get_virtual_box_patterns
 };

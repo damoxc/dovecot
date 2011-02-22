@@ -1,4 +1,31 @@
- - imap -O -o plugin/foo=bar doesn't add foo because of -O
+ - check:
+    - dsyncing between two namespace separators is probably broken..
+ - remove mail_deliver_session after all, do all the stuff transparently
+   by hooking into mailbox_copy().
+     - use this hook also to do the mail deduplication: 1) sort all destination
+       users, 2) create mail_user only once for each user, 3) remember in
+       src_mail the previously copied mail, 4) use that for mailbox_copy()ing
+       to following recipients
+ - notify_sync() could have "what changed" struct with old/new flags
+ - mailbox deletion could really be "rmdir", which fails if everything isn't
+   already expunged. IMAP DELETE could fail with "mailbox changed during
+   deletion, aborting" if new messages arrive
+     - if doing any changes, figure out how to handle symlinked mailboxes
+ - maildir: copy dovecot-shared file from parent mailbox, not root.
+ - is mail_index_sync_have_any() really necessary? especially that it returns
+   TRUE for ext rec changes ... why?...
+ - mailbox listing to use UTF8 everywhere
+    - move namespace sep vs. real_sep check from imap client_find_namespace()
+      to lib-storage mailbox name validity check
+ - rewrite autocreate plugin by making it list virtual mailbox names and only
+   lazily autocreate create them when mailbox is opened
+ - login-common API change to fix compiling with
+   LDFLAGS="-Wl,--as-needed -Wl,--no-undefined"
+ - if global ACL path points to a file instead of a directory, read all of
+   them from there. support wildcards in names.
+ - remove 3 unnecessary stat() calls when opening mailbox. they all come from
+   mailbox_list_get_permissions_full()
+
  - master passdb preserves userdb_* extra fields. should it preserve
    non-userdb_* extra fields too?
  - imap, pop3: if client init fails, wait a second or two before disconnecting

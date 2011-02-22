@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([Dovecot],[2.0.9],[dovecot@dovecot.org])
+AC_INIT([Dovecot],[2.1.UNSTABLE],[dovecot@dovecot.org])
 AC_CONFIG_SRCDIR([src])
 
 AM_INIT_AUTOMAKE([foreign])
@@ -244,7 +244,7 @@ AS_HELP_STRING([--with-storages], [Build with specified mail storage formats (ma
 		AC_MSG_ERROR([--with-storages needs storage list as parameter])
 	fi
 	mail_storages="shared `echo "$withval"|sed 's/,/ /g'`" ],
-	mail_storages="shared maildir mbox sdbox mdbox cydir")
+	mail_storages="shared maildir mbox sdbox mdbox cydir imapc")
 AC_SUBST(mail_storages)
 
 DC_DOVECOT_MODULEDIR
@@ -2429,6 +2429,7 @@ dbox_common_libs='$(top_builddir)/src/lib-storage/index/dbox-common/libstorage_d
 sdbox_libs='$(top_builddir)/src/lib-storage/index/dbox-single/libstorage_dbox_single.la'
 mdbox_libs='$(top_builddir)/src/lib-storage/index/dbox-multi/libstorage_dbox_multi.la'
 cydir_libs='$(top_builddir)/src/lib-storage/index/cydir/libstorage_cydir.la'
+imapc_libs='$(top_builddir)/src/lib-storage/index/imapc/libstorage_imapc.la $(top_builddir)/src/lib-ssl-iostream/libssl_iostream.la'
 raw_libs='$(top_builddir)/src/lib-storage/index/raw/libstorage_raw.la'
 shared_libs='$(top_builddir)/src/lib-storage/index/shared/libstorage_shared.la'
 
@@ -2439,6 +2440,8 @@ LINKED_STORAGE_LIBS=
 mail_storages="$mail_storages raw"
 # drop duplicates
 mail_storages=`(for i in $mail_storages; do echo $i; done)|sort|uniq|xargs echo`
+
+mailbox_list_drivers="maildir imapdir none fs shared"
 have_sdbox=no
 for storage in $mail_storages; do
   LINKED_STORAGE_LIBS="$LINKED_STORAGE_LIBS `eval echo \\$${storage}_libs`"
@@ -2449,8 +2452,12 @@ for storage in $mail_storages; do
     LINKED_STORAGE_LIBS="$LINKED_STORAGE_LIBS $dbox_common_libs"
     dbox_common_libs=""
   fi
+  if test $storage = imapc; then
+    mailbox_list_drivers="$mailbox_list_drivers imapc"
+  fi
 done
 AC_SUBST(LINKED_STORAGE_LIBS)
+AC_SUBST(mailbox_list_drivers)
 AC_DEFINE_UNQUOTED(MAIL_STORAGES, "$mail_storages", List of compiled in mail storages)
 
 if test $have_sdbox = yes; then
@@ -2663,10 +2670,12 @@ src/lib-ntlm/Makefile
 src/lib-otp/Makefile
 src/lib-dovecot/Makefile
 src/lib-settings/Makefile
+src/lib-ssl-iostream/Makefile
 src/lib-test/Makefile
 src/lib-storage/Makefile
 src/lib-storage/list/Makefile
 src/lib-storage/index/Makefile
+src/lib-storage/index/imapc/Makefile
 src/lib-storage/index/maildir/Makefile
 src/lib-storage/index/mbox/Makefile
 src/lib-storage/index/dbox-common/Makefile
@@ -2747,3 +2756,6 @@ echo "SQL drivers .... :$sql_drivers"
 if test "$not_sql_drivers" != ""; then
   echo "                 :$not_sql_drivers"
 fi
+
+echo
+echo "NOTE: This is the UNSTABLE development branch of Dovecot v2.1."

@@ -13,6 +13,7 @@ LIBDOVECOT_SUBDIRS = \
 SUBDIRS = \
 	lib-test \
 	$(LIBDOVECOT_SUBDIRS) \
+	lib-ssl-iostream \
 	lib-dovecot \
 	lib-index \
 	lib-storage \

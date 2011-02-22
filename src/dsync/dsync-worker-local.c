@@ -13,6 +13,7 @@
 #include "mail-namespace.h"
 #include "mail-storage.h"
 #include "mail-search-build.h"
+#include "mailbox-list-private.h"
 #include "dsync-worker-private.h"
 
 #include <ctype.h>
@@ -48,7 +49,7 @@ struct local_dsync_worker_msg_iter {
 struct local_dsync_mailbox {
 	struct mail_namespace *ns;
 	mailbox_guid_t guid;
-	const char *storage_name;
+	const char *name;
 };
 
 struct local_dsync_mailbox_change {
@@ -442,8 +443,7 @@ local_worker_mailbox_iter_init(struct dsync_worker *_worker)
 
 static void
 local_dsync_worker_add_mailbox(struct local_dsync_worker *worker,
-			       struct mail_namespace *ns,
-			       const char *storage_name,
+			       struct mail_namespace *ns, const char *name,
 			       const mailbox_guid_t *guid)
 {
 	struct local_dsync_mailbox *lbox;
@@ -451,7 +451,7 @@ local_dsync_worker_add_mailbox(struct local_dsync_worker *worker,
 	lbox = p_new(worker->pool, struct local_dsync_mailbox, 1);
 	lbox->ns = ns;
 	memcpy(lbox->guid.guid, guid->guid, sizeof(lbox->guid.guid));
-	lbox->storage_name = p_strdup(worker->pool, storage_name);
+	lbox->name = p_strdup(worker->pool, name);
 
 	hash_table_insert(worker->mailbox_hash, &lbox->guid, lbox);
 }
@@ -510,13 +510,18 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 		(struct local_dsync_worker_mailbox_iter *)_iter;
 	struct local_dsync_worker *worker =
 		(struct local_dsync_worker *)_iter->worker;
-	enum mailbox_flags flags =
+	const enum mailbox_flags flags =
 		MAILBOX_FLAG_READONLY | MAILBOX_FLAG_KEEP_RECENT;
+	const enum mailbox_status_items status_items =
+		STATUS_UIDNEXT | STATUS_UIDVALIDITY |
+		STATUS_HIGHESTMODSEQ;
+	const enum mailbox_metadata_items metadata_items =
+		MAILBOX_METADATA_CACHE_FIELDS | MAILBOX_METADATA_GUID;
 	const struct mailbox_info *info;
 	const char *storage_name;
 	struct mailbox *box;
 	struct mailbox_status status;
-	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	struct mailbox_metadata metadata;
 	struct local_dsync_mailbox_change *change;
 	struct local_dsync_dir_change *dir_change, change_lookup;
 	struct local_dsync_mailbox *old_lbox;
@@ -530,9 +535,9 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 		return iter_next_deleted(iter, worker, dsync_box_r);
 
 	dsync_box_r->name = info->name;
-	dsync_box_r->name_sep = info->ns->sep;
+	dsync_box_r->name_sep = mail_namespace_get_sep(info->ns);
 
-	storage_name = mail_namespace_get_storage_name(info->ns, info->name);
+	storage_name = mailbox_list_get_storage_name(info->ns->list, info->name);
 	dsync_str_sha_to_guid(storage_name, &dsync_box_r->name_sha1);
 
 	/* get last change timestamp */
@@ -548,33 +553,28 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 
 	if ((info->flags & MAILBOX_NOSELECT) != 0) {
 		dsync_box_r->flags |= DSYNC_MAILBOX_FLAG_NOSELECT;
-		local_dsync_worker_add_mailbox(worker, info->ns, storage_name,
+		local_dsync_worker_add_mailbox(worker, info->ns, info->name,
 					       &dsync_box_r->name_sha1);
 		return 1;
 	}
 
-	box = mailbox_alloc(info->ns->list, storage_name, flags);
-	if (mailbox_sync(box, 0) < 0 ||
-	    mailbox_get_guid(box, mailbox_guid) < 0) {
-		struct mail_storage *storage = mailbox_get_storage(box);
-
+	box = mailbox_alloc(info->ns->list, info->name, flags);
+	if (mailbox_get_status(box, status_items, &status) < 0 ||
+	    mailbox_get_metadata(box, metadata_items, &metadata) < 0) {
 		i_error("Failed to sync mailbox %s: %s", info->name,
-			mail_storage_get_last_error(storage, NULL));
+			mailbox_get_last_error(box, NULL));
 		mailbox_free(&box);
 		_iter->failed = TRUE;
 		return -1;
 	}
 
-	mailbox_get_status(box, STATUS_UIDNEXT | STATUS_UIDVALIDITY |
-			   STATUS_HIGHESTMODSEQ | STATUS_CACHE_FIELDS, &status);
-
-	change = hash_table_lookup(worker->mailbox_changes_hash, mailbox_guid);
+	change = hash_table_lookup(worker->mailbox_changes_hash, metadata.guid);
 	if (change != NULL) {
 		/* it shouldn't be marked as deleted, but drop it to be sure */
 		change->deleted_mailbox = FALSE;
 	}
 
-	memcpy(dsync_box_r->mailbox_guid.guid, mailbox_guid,
+	memcpy(dsync_box_r->mailbox_guid.guid, metadata.guid,
 	       sizeof(dsync_box_r->mailbox_guid.guid));
 	dsync_box_r->uid_validity = status.uidvalidity;
 	dsync_box_r->uid_next = status.uidnext;
@@ -582,7 +582,7 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 	dsync_box_r->highest_modseq = status.highest_modseq;
 
 	p_clear(iter->ret_pool);
-	fields = array_get(status.cache_fields, &field_count);
+	fields = array_get(metadata.cache_fields, &field_count);
 	p_array_init(&dsync_box_r->cache_fields, iter->ret_pool, field_count);
 	for (i = 0; i < field_count; i++) {
 		const char *field_name = p_strdup(iter->ret_pool, fields[i]);
@@ -596,12 +596,12 @@ local_worker_mailbox_iter_next(struct dsync_worker_mailbox_iter *_iter,
 		i_error("Mailboxes don't have unique GUIDs: "
 			"%s is shared by %s and %s",
 			dsync_guid_to_str(&dsync_box_r->mailbox_guid),
-			old_lbox->storage_name, storage_name);
+			old_lbox->name, info->name);
 		mailbox_free(&box);
 		_iter->failed = TRUE;
 		return -1;
 	}
-	local_dsync_worker_add_mailbox(worker, info->ns, storage_name,
+	local_dsync_worker_add_mailbox(worker, info->ns, info->name,
 				       &dsync_box_r->mailbox_guid);
 	mailbox_free(&box);
 	return 1;
@@ -642,18 +642,6 @@ local_worker_subs_iter_init(struct dsync_worker *_worker)
 	return &iter->iter;
 }
 
-static struct mail_namespace *
-find_subscription_ns(struct local_dsync_worker *worker, const char *vname)
-{
-	struct mail_namespace *const *nsp;
-
-	array_foreach(&worker->subs_namespaces, nsp) {
-		if (strncmp((*nsp)->prefix, vname, (*nsp)->prefix_len) == 0)
-			return *nsp;
-	}
-	return NULL;
-}
-
 static int
 local_worker_subs_iter_next(struct dsync_worker_subs_iter *_iter,
 			    struct dsync_worker_subscription *rec_r)
@@ -664,7 +652,6 @@ local_worker_subs_iter_next(struct dsync_worker_subs_iter *_iter,
 		(struct local_dsync_worker *)_iter->worker;
 	struct local_dsync_dir_change *change, change_lookup;
 	const struct mailbox_info *info;
-	struct mail_namespace *subs_ns;
 	const char *storage_name;
 
 	memset(rec_r, 0, sizeof(*rec_r));
@@ -673,13 +660,7 @@ local_worker_subs_iter_next(struct dsync_worker_subs_iter *_iter,
 	if (info == NULL)
 		return -1;
 
-	subs_ns = find_subscription_ns(worker, info->name);
-	if (subs_ns == NULL)
-		subs_ns = info->ns;
-	storage_name = mail_namespace_get_storage_name(subs_ns, info->name);
-	if (subs_ns != info->ns)
-		storage_name = t_strconcat(subs_ns->prefix, storage_name, NULL);
-
+	storage_name = mailbox_list_get_storage_name(info->ns->list, info->name);
 	dsync_str_sha_to_guid(storage_name, &change_lookup.name_sha1);
 	change_lookup.list = info->ns->list;
 
@@ -748,36 +729,27 @@ local_worker_set_subscribed(struct dsync_worker *_worker,
 {
 	struct local_dsync_worker *worker =
 		(struct local_dsync_worker *)_worker;
-	struct mail_namespace *ns, *subs_ns;
-	const char *storage_name;
+	struct mail_namespace *ns;
+	struct mailbox *box;
 
-	storage_name = name;
-	ns = mail_namespace_find(worker->user->namespaces,
-				 &storage_name);
+	ns = mail_namespace_find(worker->user->namespaces, name);
 	if (ns == NULL) {
 		i_error("Can't find namespace for mailbox %s", name);
 		return;
 	}
 
-	subs_ns = find_subscription_ns(worker, name);
-	if (subs_ns != NULL) {
-		/* subscription is being written to a different namespace
-		   than where the mailbox exists. */
-		storage_name = mail_namespace_get_storage_name(subs_ns, name);
-		storage_name = t_strconcat(subs_ns->prefix, storage_name, NULL);
-		/* drop the common prefix */
-		i_assert(strncmp(ns->prefix, storage_name,
-				 strlen(ns->prefix)) == 0);
-		storage_name += strlen(ns->prefix);
-	}
+	box = mailbox_alloc(ns->list, name, 0);
+	ns = mailbox_get_namespace(box);
 
 	mailbox_list_set_changelog_timestamp(ns->list, last_change);
-	if (mailbox_list_set_subscribed(ns->list, storage_name, set) < 0) {
+	if (mailbox_set_subscribed(box, set) < 0) {
 		dsync_worker_set_failure(_worker);
 		i_error("Can't update subscription %s: %s", name,
-			mailbox_list_get_last_error(ns->list, NULL));
+			mail_storage_get_last_error(mailbox_get_storage(box),
+						    NULL));
 	}
 	mailbox_list_set_changelog_timestamp(ns->list, (time_t)-1);
+	mailbox_free(&box);
 }
 
 static int local_mailbox_open(struct local_dsync_worker *worker,
@@ -787,7 +759,7 @@ static int local_mailbox_open(struct local_dsync_worker *worker,
 	enum mailbox_flags flags = MAILBOX_FLAG_KEEP_RECENT;
 	struct local_dsync_mailbox *lbox;
 	struct mailbox *box;
-	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	struct mailbox_metadata metadata;
 
 	lbox = hash_table_lookup(worker->mailbox_hash, guid);
 	if (lbox == NULL) {
@@ -796,21 +768,19 @@ static int local_mailbox_open(struct local_dsync_worker *worker,
 		return -1;
 	}
 
-	box = mailbox_alloc(lbox->ns->list, lbox->storage_name, flags);
+	box = mailbox_alloc(lbox->ns->list, lbox->name, flags);
 	if (mailbox_sync(box, 0) < 0 ||
-	    mailbox_get_guid(box, mailbox_guid) < 0) {
-		struct mail_storage *storage = mailbox_get_storage(box);
-
-		i_error("Failed to sync mailbox %s: %s", lbox->storage_name,
-			mail_storage_get_last_error(storage, NULL));
+	    mailbox_get_metadata(box, MAILBOX_METADATA_GUID, &metadata) < 0) {
+		i_error("Failed to sync mailbox %s: %s", lbox->name,
+			mailbox_get_last_error(box, NULL));
 		mailbox_free(&box);
 		return -1;
 	}
 
-	if (memcmp(mailbox_guid, guid->guid, sizeof(guid->guid)) != 0) {
+	if (memcmp(metadata.guid, guid->guid, sizeof(guid->guid)) != 0) {
 		i_error("Mailbox %s changed its GUID (%s -> %s)",
-			lbox->storage_name, dsync_guid_to_str(guid),
-			mail_guid_128_to_string(mailbox_guid));
+			lbox->name, dsync_guid_to_str(guid),
+			mail_guid_128_to_string(metadata.guid));
 		mailbox_free(&box);
 		return -1;
 	}
@@ -859,11 +829,8 @@ iter_local_mailbox_close(struct local_dsync_worker_msg_iter *iter)
 	iter->expunges_set = FALSE;
 	mail_free(&iter->mail);
 	if (mailbox_search_deinit(&iter->search_ctx) < 0) {
-		struct mail_storage *storage =
-			mailbox_get_storage(iter->mail->box);
-
 		i_error("msg search failed: %s",
-			mail_storage_get_last_error(storage, NULL));
+			mailbox_get_last_error(iter->mail->box, NULL));
 		iter->iter.failed = TRUE;
 	}
 	(void)mailbox_transaction_commit(&trans);
@@ -935,7 +902,7 @@ iter_local_mailbox_next_expunge(struct local_dsync_worker_msg_iter *iter,
 	array_clear(&iter->expunges);
 	iter->expunges_set = TRUE;
 
-	mailbox_get_status(box, STATUS_UIDNEXT, &status);
+	mailbox_get_open_status(box, STATUS_UIDNEXT, &status);
 	if (prev_uid + 1 >= status.uidnext) {
 		/* no expunged messages at the end of mailbox */
 		return FALSE;
@@ -983,11 +950,8 @@ local_worker_msg_iter_next(struct dsync_worker_msg_iter *_iter,
 
 	if (mail_get_special(iter->mail, MAIL_FETCH_GUID, &guid) < 0) {
 		if (!iter->mail->expunged) {
-			struct mail_storage *storage =
-				mailbox_get_storage(iter->mail->box);
-
 			i_error("msg guid lookup failed: %s",
-				mail_storage_get_last_error(storage, NULL));
+				mailbox_get_last_error(iter->mail->box, NULL));
 			_iter->failed = TRUE;
 			return -1;
 		}
@@ -1081,16 +1045,19 @@ local_worker_convert_mailbox_name(struct local_dsync_worker *worker,
 				  const struct dsync_mailbox *dsync_box,
 				  bool creating)
 {
-	if (dsync_box->name_sep != ns->sep) {
+	char list_sep, ns_sep = mail_namespace_get_sep(ns);
+
+	if (dsync_box->name_sep != ns_sep) {
 		/* mailbox names use different separators. convert them. */
 		name = mailbox_name_convert(worker, name,
-					    dsync_box->name_sep, ns->sep);
+					    dsync_box->name_sep, ns_sep);
 	}
 	if (creating) {
+		list_sep = mailbox_list_get_hierarchy_sep(ns->list);
 		if (!mailbox_list_is_valid_create_name(ns->list, name)) {
 			/* change any real separators to alt separators,
 			   drop any potentially invalid characters */
-			name = mailbox_name_cleanup(name, ns->real_sep,
+			name = mailbox_name_cleanup(name, list_sep,
 						    worker->alt_char);
 		}
 		if (!mailbox_list_is_valid_create_name(ns->list, name)) {
@@ -1129,17 +1096,16 @@ local_worker_mailbox_alloc(struct local_dsync_worker *worker,
 				  &dsync_box->mailbox_guid);
 	if (lbox != NULL) {
 		/* use the existing known mailbox name */
-		return mailbox_alloc(lbox->ns->list, lbox->storage_name, 0);
+		return mailbox_alloc(lbox->ns->list, lbox->name, 0);
 	}
 
-	name = dsync_box->name;
-	ns = mail_namespace_find(worker->user->namespaces, &name);
+	ns = mail_namespace_find(worker->user->namespaces, dsync_box->name);
 	if (ns == NULL) {
 		i_error("Can't find namespace for mailbox %s", dsync_box->name);
 		return NULL;
 	}
 
-	name = local_worker_convert_mailbox_name(worker, name, ns,
+	name = local_worker_convert_mailbox_name(worker, dsync_box->name, ns,
 						 dsync_box, creating);
 	if (!dsync_mailbox_is_noselect(dsync_box)) {
 		local_dsync_worker_add_mailbox(worker, ns, name,
@@ -1195,8 +1161,7 @@ local_worker_create_allocated_mailbox(struct local_dsync_worker *worker,
 	}
 
 	if (mailbox_create(box, &update, FALSE) < 0) {
-		errstr = mail_storage_get_last_error(mailbox_get_storage(box),
-						     &error);
+		errstr = mailbox_get_last_error(box, &error);
 		if (error == MAIL_ERROR_EXISTS) {
 			/* mailbox already exists */
 			return 0;
@@ -1272,12 +1237,10 @@ local_worker_delete_mailbox(struct dsync_worker *_worker,
 
 	mailbox_list_set_changelog_timestamp(lbox->ns->list,
 					     dsync_box->last_change);
-	box = mailbox_alloc(lbox->ns->list, lbox->storage_name, 0);
+	box = mailbox_alloc(lbox->ns->list, lbox->name, 0);
 	if (mailbox_delete(box) < 0) {
-		struct mail_storage *storage = mailbox_get_storage(box);
-
-		i_error("Can't delete mailbox %s: %s", lbox->storage_name,
-			mail_storage_get_last_error(storage, NULL));
+		i_error("Can't delete mailbox %s: %s", lbox->name,
+			mailbox_get_last_error(box, NULL));
 		dsync_worker_set_failure(_worker);
 	}
 	mailbox_free(&box);
@@ -1293,8 +1256,8 @@ local_worker_delete_dir(struct dsync_worker *_worker,
 	struct mail_namespace *ns;
 	const char *storage_name;
 
-	storage_name = dsync_box->name;
-	ns = mail_namespace_find(worker->user->namespaces, &storage_name);
+	ns = mail_namespace_find(worker->user->namespaces, dsync_box->name);
+	storage_name = mailbox_list_get_storage_name(ns->list, dsync_box->name);
 
 	mailbox_list_set_changelog_timestamp(ns->list, dsync_box->last_change);
 	if (mailbox_list_delete_dir(ns->list, storage_name) < 0) {
@@ -1328,23 +1291,21 @@ local_worker_rename_mailbox(struct dsync_worker *_worker,
 	list = lbox->ns->list;
 	newname = local_worker_convert_mailbox_name(worker, dsync_box->name,
 						    lbox->ns, dsync_box, TRUE);
-	if (strcmp(lbox->storage_name, newname) == 0) {
+	if (strcmp(lbox->name, newname) == 0) {
 		/* nothing changed after all. probably because some characters
 		   in mailbox name weren't valid. */
 		return;
 	}
 
 	mailbox_list_set_changelog_timestamp(list, dsync_box->last_change);
-	old_box = mailbox_alloc(list, lbox->storage_name, 0);
+	old_box = mailbox_alloc(list, lbox->name, 0);
 	new_box = mailbox_alloc(list, newname, 0);
 	if (mailbox_rename(old_box, new_box, FALSE) < 0) {
-		struct mail_storage *storage = mailbox_get_storage(old_box);
-
-		i_error("Can't rename mailbox %s to %s: %s", lbox->storage_name,
-			newname, mail_storage_get_last_error(storage, NULL));
+		i_error("Can't rename mailbox %s to %s: %s", lbox->name,
+			newname, mailbox_get_last_error(old_box, NULL));
 		dsync_worker_set_failure(_worker);
 	} else {
-		lbox->storage_name = p_strdup(worker->pool, newname);
+		lbox->name = p_strdup(worker->pool, newname);
 	}
 	mailbox_free(&old_box);
 	mailbox_free(&new_box);
@@ -1445,8 +1406,7 @@ local_worker_update_mailbox(struct dsync_worker *_worker,
 	if (mailbox_update(box, &update) < 0) {
 		dsync_worker_set_failure(_worker);
 		i_error("Can't update mailbox %s: %s", dsync_box->name,
-			mail_storage_get_last_error(mailbox_get_storage(box),
-						    NULL));
+			mailbox_get_last_error(box, NULL));
 	}
 	mailbox_free(&box);
 
@@ -1525,7 +1485,7 @@ local_worker_msg_update_metadata(struct dsync_worker *_worker,
 		keywords = mailbox_keywords_create_valid(worker->mail->box,
 							 msg->keywords);
 		mail_update_keywords(worker->mail, MODIFY_REPLACE, keywords);
-		mailbox_keywords_unref(worker->mail->box, &keywords);
+		mailbox_keywords_unref(&keywords);
 		mail_update_modseq(worker->mail, msg->modseq);
 	}
 }
@@ -1576,7 +1536,7 @@ local_worker_msg_save_set_metadata(struct local_dsync_worker *worker,
 		mailbox_keywords_create_valid(box, msg->keywords);
 	mailbox_save_set_flags(save_ctx, msg->flags, keywords);
 	if (keywords != NULL)
-		mailbox_keywords_unref(box, &keywords);
+		mailbox_keywords_unref(&keywords);
 	mailbox_save_set_uid(save_ctx, msg->uid);
 	mailbox_save_set_save_date(save_ctx, msg->save_date);
 	mailbox_save_set_min_modseq(save_ctx, msg->modseq);
@@ -1668,12 +1628,9 @@ local_worker_save_msg_continue(struct local_dsync_worker *worker)
 	} else {
 		i_assert(worker->save_input->eof);
 		if (mailbox_save_finish(&worker->save_ctx) < 0) {
-			struct mail_storage *storage =
-				mailbox_get_storage(dest_box);
-
 			i_error("Can't save message to mailbox %s: %s",
 				mailbox_get_vname(dest_box),
-				mail_storage_get_last_error(storage, NULL));
+				mailbox_get_last_error(dest_box, NULL));
 			dsync_worker_set_failure(&worker->worker);
 		}
 	}
@@ -1703,7 +1660,8 @@ local_worker_msg_save(struct dsync_worker *_worker,
 	i_assert(worker->save_input == NULL);
 
 	save_ctx = mailbox_save_alloc(worker->ext_mail->transaction);
-	mailbox_save_set_guid(save_ctx, msg->guid);
+	if (*msg->guid != '\0')
+		mailbox_save_set_guid(save_ctx, msg->guid);
 	local_worker_msg_save_set_metadata(worker, worker->mail->box,
 					   save_ctx, msg);
 	if (*data->pop3_uidl != '\0')
@@ -1712,10 +1670,9 @@ local_worker_msg_save(struct dsync_worker *_worker,
 	mailbox_save_set_received_date(save_ctx, data->received_date, 0);
 
 	if (mailbox_save_begin(&save_ctx, data->input) < 0) {
-		struct mail_storage *storage = mailbox_get_storage(dest_box);
 		i_error("Can't save message to mailbox %s: %s",
 			mailbox_get_vname(dest_box),
-			mail_storage_get_last_error(storage, NULL));
+			mailbox_get_last_error(dest_box, NULL));
 		dsync_worker_set_failure(_worker);
 		callback(context);
 		return;
@@ -1798,7 +1755,10 @@ local_worker_msg_get_next(struct local_dsync_worker *worker,
 		worker->get_mailbox = get->mailbox;
 
 		trans = mailbox_transaction_begin(box, 0);
-		worker->get_mail = mail_alloc(trans, 0, NULL);
+		worker->get_mail = mail_alloc(trans, MAIL_FETCH_UIDL_BACKEND |
+					      MAIL_FETCH_RECEIVED_DATE |
+					      MAIL_FETCH_STREAM_HEADER |
+					      MAIL_FETCH_STREAM_BODY, NULL);
 	}
 
 	if (!mail_set_uid(worker->get_mail, get->uid)) {
@@ -1809,15 +1769,17 @@ local_worker_msg_get_next(struct local_dsync_worker *worker,
 
 	memset(&data, 0, sizeof(data));
 	if (mail_get_special(worker->get_mail, MAIL_FETCH_UIDL_BACKEND,
-			     &data.pop3_uidl) < 0 ||
-	    mail_get_received_date(worker->get_mail, &data.received_date) < 0 ||
+			     &data.pop3_uidl) < 0)
+		data.pop3_uidl = "";
+	else
+		data.pop3_uidl = t_strdup(data.pop3_uidl);
+	if (mail_get_received_date(worker->get_mail, &data.received_date) < 0 ||
 	    mail_get_stream(worker->get_mail, NULL, NULL, &data.input) < 0) {
 		get->callback(worker->get_mail->expunged ?
 			      DSYNC_MSG_GET_RESULT_EXPUNGED :
 			      DSYNC_MSG_GET_RESULT_FAILED, NULL, get->context);
 	} else {
 		worker->reading_mail = TRUE;
-		data.pop3_uidl = t_strdup(data.pop3_uidl);
 		data.input = i_stream_create_limit(data.input, (uoff_t)-1);
 		i_stream_set_destroy_callback(data.input,
 					      local_worker_msg_get_done,

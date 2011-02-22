@@ -18,6 +18,7 @@
 #include "index-sort.h"
 #include "mail-search.h"
 #include "mailbox-search-result-private.h"
+#include "index-search-private.h"
 
 #include <stdlib.h>
 #include <ctype.h>
@@ -37,29 +38,6 @@
 #define SEARCH_MAX_NONBLOCK_USECS 250000
 #define SEARCH_INITIAL_MAX_COST 30000
 #define SEARCH_RECALC_MIN_USECS 50000
-
-struct index_search_context {
-        struct mail_search_context mail_ctx;
-	struct mail_index_view *view;
-	struct mailbox *box;
-
-	uint32_t seq1, seq2;
-	struct mail *mail;
-	struct index_mail *imail;
-	struct mail_thread_context *thread_ctx;
-
-	const char *error;
-
-	struct timeval search_start_time, last_notify;
-	struct timeval last_nonblock_timeval;
-	unsigned long long cost, next_time_check_cost;
-
-	unsigned int failed:1;
-	unsigned int sorted:1;
-	unsigned int have_seqsets:1;
-	unsigned int have_index_args:1;
-	unsigned int have_mailbox_args:1;
-};
 
 struct search_header_context {
         struct index_search_context *index_context;
@@ -88,7 +66,7 @@ static void search_parse_msgset_args(unsigned int messages_count,
 static void search_init_arg(struct mail_search_arg *arg,
 			    struct index_search_context *ctx)
 {
-	uint8_t guid[MAIL_GUID_128_SIZE];
+	struct mailbox_metadata metadata;
 	bool match;
 
 	switch (arg->type) {
@@ -105,12 +83,13 @@ static void search_init_arg(struct mail_search_arg *arg,
 		ctx->have_index_args = TRUE;
 		break;
 	case SEARCH_MAILBOX_GUID:
-		if (mailbox_get_guid(ctx->box, guid) < 0) {
+		if (mailbox_get_metadata(ctx->box, MAILBOX_METADATA_GUID,
+					 &metadata) < 0) {
 			/* result will be unknown */
 			break;
 		}
 
-		match = strcmp(mail_guid_128_to_string(guid),
+		match = strcmp(mail_guid_128_to_string(metadata.guid),
 			       arg->value.str) == 0;
 		if (match != arg->not)
 			arg->match_always = TRUE;
@@ -1061,15 +1040,53 @@ static int search_build_inthreads(struct index_search_context *ctx,
 	return ret;
 }
 
-struct mail_search_context *
-index_storage_search_init(struct mailbox_transaction_context *t,
-			  struct mail_search_args *args,
-			  const enum mail_sort_type *sort_program)
+static void
+wanted_sort_fields_get(struct mailbox *box,
+		       const enum mail_sort_type *sort_program,
+		       enum mail_fetch_field *wanted_fields_r,
+		       struct mailbox_header_lookup_ctx **headers_ctx_r)
 {
-	struct index_search_context *ctx;
+	const char *headers[2];
+
+	*wanted_fields_r = 0;
+	*headers_ctx_r = NULL;
+
+	headers[0] = headers[1] = NULL;
+	switch (sort_program[0] & MAIL_SORT_MASK) {
+	case MAIL_SORT_ARRIVAL:
+		*wanted_fields_r = MAIL_FETCH_RECEIVED_DATE;
+		break;
+	case MAIL_SORT_CC:
+		headers[0] = "Cc";
+		break;
+	case MAIL_SORT_DATE:
+		*wanted_fields_r = MAIL_FETCH_DATE;
+		break;
+	case MAIL_SORT_FROM:
+		headers[0] = "From";
+		break;
+	case MAIL_SORT_SIZE:
+		*wanted_fields_r = MAIL_FETCH_VIRTUAL_SIZE;
+		break;
+	case MAIL_SORT_SUBJECT:
+		headers[0] = "Subject";
+		break;
+	case MAIL_SORT_TO:
+		headers[0] = "To";
+		break;
+	}
+
+	if (headers[0] != NULL)
+		*headers_ctx_r = mailbox_header_lookup_init(box, headers);
+}
+
+void index_storage_search_init_context(struct index_search_context *ctx,
+				       struct mailbox_transaction_context *t,
+				       struct mail_search_args *args,
+				       const enum mail_sort_type *sort_program)
+{
 	struct mailbox_status status;
 
-	ctx = i_new(struct index_search_context, 1);
 	ctx->mail_ctx.transaction = t;
 	ctx->box = t->box;
 	ctx->view = t->view;
@@ -1079,7 +1096,7 @@ index_storage_search_init(struct mailbox_transaction_context *t,
 	if (gettimeofday(&ctx->last_nonblock_timeval, NULL) < 0)
 		i_fatal("gettimeofday() failed: %m");
 
-	mailbox_get_status(t->box, STATUS_MESSAGES, &status);
+	mailbox_get_open_status(t->box, STATUS_MESSAGES, &status);
 	ctx->mail_ctx.progress_max = status.messages;
 
 	i_array_init(&ctx->mail_ctx.results, 5);
@@ -1094,11 +1111,28 @@ index_storage_search_init(struct mailbox_transaction_context *t,
 			ctx->failed = TRUE;
 	}
 
+	if (sort_program != NULL) {
+		wanted_sort_fields_get(ctx->box, sort_program,
+				       &ctx->extra_wanted_fields,
+				       &ctx->extra_wanted_headers);
+	}
+
 	search_get_seqset(ctx, status.messages, args->args);
 	(void)mail_search_args_foreach(args->args, search_init_arg, ctx);
 
 	/* Need to reset results for match_always cases */
 	mail_search_args_reset(ctx->mail_ctx.args->args, FALSE);
+}
+
+struct mail_search_context *
+index_storage_search_init(struct mailbox_transaction_context *t,
+			  struct mail_search_args *args,
+			  const enum mail_sort_type *sort_program)
+{
+	struct index_search_context *ctx;
+
+	ctx = i_new(struct index_search_context, 1);
+	index_storage_search_init_context(ctx, t, args, sort_program);
 	return &ctx->mail_ctx;
 }
 
@@ -1129,6 +1163,8 @@ int index_storage_search_deinit(struct mail_search_context *_ctx)
 	(void)mail_search_args_foreach(ctx->mail_ctx.args->args,
 				       search_arg_deinit, NULL);
 
+	if (ctx->extra_wanted_headers != NULL)
+		mailbox_header_lookup_unref(&ctx->extra_wanted_headers);
 	if (ctx->mail_ctx.sort_program != NULL)
 		index_sort_program_deinit(&ctx->mail_ctx.sort_program);
 	if (ctx->thread_ctx != NULL)
@@ -1148,6 +1184,17 @@ static bool search_match_next(struct index_search_context *ctx)
 	};
 	unsigned int i;
 	int ret = -1;
+
+	if (ctx->recheck_index_args) {
+		/* these were already checked in search_next_update_seq(),
+		   but someone reset the args and we have to recheck them */
+		ret = mail_search_args_foreach(ctx->mail_ctx.args->args,
+					       search_seqset_arg, ctx);
+		if (ctx->have_index_args) {
+			ret = mail_search_args_foreach(ctx->mail_ctx.args->args,
+						       search_index_arg, ctx);
+		}
+	}
 
 	if (ctx->have_mailbox_args) {
 		ret = mail_search_args_foreach(ctx->mail_ctx.args->args,
@@ -1348,6 +1395,8 @@ bool index_storage_search_next_nonblock(struct mail_search_context *_ctx,
 	}
 
 	ctx->mail = mail;
+	mail_private->extra_wanted_fields = ctx->extra_wanted_fields;
+	mail_private->extra_wanted_headers = ctx->extra_wanted_headers;
 
 	if (ioloop_time - ctx->last_notify.tv_sec >=
 	    SEARCH_NOTIFY_INTERVAL_SECS)
@@ -1397,6 +1446,8 @@ bool index_storage_search_next_nonblock(struct mail_search_context *_ctx,
 	ctx->mail = NULL;
 	ctx->imail = NULL;
 	mail_private->stats_track = old_stats_track;
+	mail_private->extra_wanted_fields = 0;
+	mail_private->extra_wanted_headers = NULL;
 
 	if (!match && _ctx->sort_program != NULL &&
 	    !*tryagain_r && !ctx->failed) {

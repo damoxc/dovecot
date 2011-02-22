@@ -6,7 +6,8 @@
 #include "strescape.h"
 #include "unichar.h"
 #include "mail-storage-private.h"
-#include "mail-namespace.h"
+#include "mailbox-list-private.h"
+#include "fts-mailbox.h"
 #include "solr-connection.h"
 #include "fts-solr-plugin.h"
 
@@ -36,7 +37,6 @@ struct solr_fts_backend_build_context {
 struct solr_virtual_uid_map_context {
 	struct fts_backend *backend;
 	struct mailbox *box;
-	string_t *vname;
 };
 
 struct fts_backend_solr_get_last_uids_context {
@@ -45,7 +45,6 @@ struct fts_backend_solr_get_last_uids_context {
 	ARRAY_TYPE(fts_backend_uid_map) *last_uids;
 
 	struct mailbox *box;
-	string_t *vname;
 };
 
 static struct solr_connection *solr_conn = NULL;
@@ -297,7 +296,7 @@ static int fts_backend_solr_get_last_uid_fallback(struct fts_backend *backend,
 
 	box_name = fts_box_get_root(box, &ns);
 
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 	str_printfa(str, "uidv:%u+box:", status.uidvalidity);
 	solr_quote_http(str, box_name);
 	solr_add_ns_query_http(str, backend, ns);
@@ -339,7 +338,7 @@ static int fts_backend_solr_get_last_uid(struct fts_backend *backend,
 
 	box_name = fts_box_get_root(box, &ns);
 
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 	str_printfa(str, "uidv:%u+box:", status.uidvalidity);
 	solr_quote_http(str, box_name);
 	solr_add_ns_query_http(str, backend, ns);
@@ -386,16 +385,15 @@ solr_virtual_get_last_uids(const char *ns_prefix, const char *mailbox,
 	struct fts_backend_solr_get_last_uids_context *ctx = context;
 	struct fts_backend_uid_map *map;
 	struct mail_namespace *ns;
-	const char *vname;
 
 	ns = solr_get_namespaces(ctx->backend, ctx->box, ns_prefix);
-	for (; ns != NULL; ns = ns->alias_chain_next) {
-		vname = mail_namespace_get_vname(ns, ctx->vname, mailbox);
+	for (; ns != NULL; ns = ns->alias_chain_next) T_BEGIN {
+		const char *vname = mailbox_list_get_vname(ns->list, mailbox);
 		map = array_append_space(ctx->last_uids);
 		map->mailbox = p_strdup(ctx->pool, vname);
 		map->uidvalidity = uidvalidity;
 		map->uid = *uid;
-	}
+	} T_END;
 	return FALSE;
 }
 
@@ -406,9 +404,6 @@ solr_add_pattern(string_t *str, const struct mailbox_virtual_pattern *pattern)
 	const char *name, *p;
 
 	name = pattern->pattern;
-	if (!mail_namespace_update_name(pattern->ns, &name))
-		name = mail_namespace_fix_sep(pattern->ns, name);
-
 	fts_box_name_get_root(&ns, &name);
 
 	if (strcmp(name, "*") == 0) {
@@ -452,7 +447,7 @@ fts_backend_solr_filter_mailboxes(struct fts_backend *_backend,
 
 	t_array_init(&includes_arr, 16);
 	t_array_init(&excludes_arr, 16);
-	mailbox_get_virtual_box_patterns(box, &includes_arr, &excludes_arr);
+	fts_mailbox_get_virtual_box_patterns(box, &includes_arr, &excludes_arr);
 	includes = array_get(&includes_arr, &inc_count);
 	excludes = array_get(&excludes_arr, &exc_count);
 	i_assert(inc_count > 0);
@@ -512,7 +507,6 @@ fts_backend_solr_get_all_last_uids(struct fts_backend *backend, pool_t pool,
 	ctx.pool = pool;
 	ctx.last_uids = last_uids;
 	ctx.box = backend->box;
-	ctx.vname = t_str_new(256);
 
 	str = t_str_new(256);
 	str_printfa(str, "fl=uid,box,uidv,ns&rows=%u&q=last_uid:TRUE+user:",
@@ -538,7 +532,7 @@ fts_backend_solr_build_init(struct fts_backend *backend, uint32_t *last_uid_r,
 	ctx->ctx.backend = backend;
 	ctx->cmd = str_new(default_pool, SOLR_CMDBUF_SIZE);
 
-	mailbox_get_status(backend->box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(backend->box, STATUS_UIDVALIDITY, &status);
 	ctx->uid_validity = status.uidvalidity;
 
 	*ctx_r = &ctx->ctx;
@@ -736,7 +730,7 @@ fts_backend_solr_expunge(struct fts_backend *backend, struct mail *mail)
 {
 	struct mailbox_status status;
 
-	mailbox_get_status(mail->box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(mail->box, STATUS_UIDVALIDITY, &status);
 
 	T_BEGIN {
 		string_t *cmd;
@@ -774,17 +768,20 @@ static bool solr_virtual_uid_map(const char *ns_prefix, const char *mailbox,
 {
 	struct solr_virtual_uid_map_context *ctx = context;
 	struct mail_namespace *ns;
-	const char *vname;
-	bool convert_inbox;
+	bool convert_inbox, ret;
 
 	ns = solr_get_namespaces(ctx->backend, ctx->box, ns_prefix);
 	convert_inbox = (ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0 &&
 		strcmp(mailbox, "INBOX") == 0;
 	for (; ns != NULL; ns = ns->alias_chain_next) {
-		vname = convert_inbox ? ns->prefix :
-			mail_namespace_get_vname(ns, ctx->vname, mailbox);
-		if (mailbox_get_virtual_uid(ctx->box, vname, uidvalidity,
-					    *uid, uid))
+		T_BEGIN {
+			const char *vname = convert_inbox ? ns->prefix :
+				mailbox_list_get_vname(ns->list, mailbox);
+			ret = fts_mailbox_get_virtual_uid(ctx->box, vname,
+							  uidvalidity,
+							  *uid, uid);
+		} T_END;
+		if (ret)
 			return TRUE;
 	}
 	return FALSE;
@@ -806,7 +803,7 @@ static int fts_backend_solr_lookup(struct fts_backend_lookup_context *ctx,
 	bool virtual;
 
 	virtual = strcmp(box->storage->name, "virtual") == 0;
-	mailbox_get_status(box, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 
 	str = t_str_new(256);
 	if (!virtual) {
@@ -867,7 +864,6 @@ static int fts_backend_solr_lookup(struct fts_backend_lookup_context *ctx,
 		memset(&uid_map_ctx, 0, sizeof(uid_map_ctx));
 		uid_map_ctx.backend = ctx->backend;
 		uid_map_ctx.box = box;
-		uid_map_ctx.vname = t_str_new(256);
 		return solr_connection_select(solr_conn, str_c(str),
 					      solr_virtual_uid_map,
 					      &uid_map_ctx,

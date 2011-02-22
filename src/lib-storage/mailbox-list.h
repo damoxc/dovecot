@@ -48,16 +48,6 @@ enum mailbox_info_flags {
 	MAILBOX_MATCHED			= 0x40000000
 };
 
-enum mailbox_name_status {
-	/* name points to a selectable mailbox */
-	MAILBOX_NAME_EXISTS_MAILBOX,
-	/* name points to non-selectable mailbox */
-	MAILBOX_NAME_EXISTS_DIR,
-	MAILBOX_NAME_VALID,
-	MAILBOX_NAME_INVALID,
-	MAILBOX_NAME_NOINFERIORS
-};
-
 enum mailbox_list_iter_flags {
 	/* Ignore index file and ACLs (used by ACL plugin internally) */
 	MAILBOX_LIST_ITER_RAW_LIST		= 0x000001,
@@ -169,24 +159,23 @@ struct mail_namespace *
 mailbox_list_get_namespace(const struct mailbox_list *list) ATTR_PURE;
 struct mail_user *
 mailbox_list_get_user(const struct mailbox_list *list) ATTR_PURE;
-int mailbox_list_get_storage(struct mailbox_list **list, const char **name,
+int mailbox_list_get_storage(struct mailbox_list **list, const char *vname,
 			     struct mail_storage **storage_r);
 void mailbox_list_get_closest_storage(struct mailbox_list *list,
 				      struct mail_storage **storage);
+char mailbox_list_get_hierarchy_sep(struct mailbox_list *list);
 
-/* Returns the mode and GID that should be used when creating new files to
-   the specified mailbox, or to mailbox list root if name is NULL. (gid_t)-1 is
-   returned if it's not necessary to change the default gid. */
-void mailbox_list_get_permissions(struct mailbox_list *list,
-				  const char *name,
-				  mode_t *mode_r, gid_t *gid_r,
-				  const char **gid_origin_r);
-/* Like mailbox_list_get_permissions(), but add execute-bits for mode
-   if either read or write bit is set (e.g. 0640 -> 0750). */
-void mailbox_list_get_dir_permissions(struct mailbox_list *list,
-				      const char *name,
-				      mode_t *mode_r, gid_t *gid_r,
-				      const char **gid_origin_r);
+/* Returns the mode and GID that should be used when creating new files and
+   directories to the specified mailbox. (gid_t)-1 is returned if it's not
+   necessary to change the default gid. */
+void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
+				  mode_t *file_mode_r, mode_t *dir_mode_r,
+				  gid_t *gid_r, const char **gid_origin_r);
+/* Like mailbox_list_get_permissions(), but for creating files/dirs to the
+   mail root directory (or even the root dir itself). */
+void mailbox_list_get_root_permissions(struct mailbox_list *list,
+				       mode_t *file_mode_r, mode_t *dir_mode_r,
+				       gid_t *gid_r, const char **gid_origin_r);
 /* Create path's parent directory with proper permissions. Since most
    directories are created lazily, this function can be used to easily create
    them whenever file creation fails with ENOENT. */
@@ -207,10 +196,6 @@ bool mailbox_list_is_valid_create_name(struct mailbox_list *list,
    For INDEX=MEMORY it returns "" as the path. */
 const char *mailbox_list_get_path(struct mailbox_list *list, const char *name,
 				  enum mailbox_list_path_type type);
-/* Returns mailbox name status */
-int mailbox_list_get_mailbox_name_status(struct mailbox_list *list,
-					 const char *name,
-					 enum mailbox_name_status *status);
 /* Returns mailbox's change log, or NULL if it doesn't have one. */
 struct mailbox_log *mailbox_list_get_changelog(struct mailbox_list *list);
 /* Specify timestamp to use when writing mailbox changes to changelog.
@@ -258,6 +243,8 @@ int mailbox_list_iter_deinit(struct mailbox_list_iterate_context **ctx);
    -1 if error. */
 int mailbox_list_mailbox(struct mailbox_list *list, const char *name,
 			 enum mailbox_info_flags *flags_r);
+/* Returns 1 if mailbox has children, 0 if not, -1 if error. */
+int mailbox_has_children(struct mailbox_list *list, const char *name);
 
 /* Subscribe/unsubscribe mailbox. There should be no error when
    subscribing to already subscribed mailbox. Subscribing to
