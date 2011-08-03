@@ -33,7 +33,7 @@ static void mbox_prepare_resync(struct mail *mail)
 static int mbox_mail_seek(struct index_mail *mail)
 {
 	struct mbox_transaction_context *t =
-		(struct mbox_transaction_context *)mail->trans;
+		(struct mbox_transaction_context *)mail->mail.mail.transaction;
 	struct mail *_mail = &mail->mail.mail;
 	struct mbox_mailbox *mbox = (struct mbox_mailbox *)_mail->box;
 	enum mbox_sync_flags sync_flags = 0;
@@ -102,7 +102,7 @@ static int mbox_mail_seek(struct index_mail *mail)
 	if (ret == 0) {
 		mail_storage_set_critical(&mbox->storage->storage,
 			"Losing sync for mail uid=%u in mbox file %s",
-			_mail->uid, mbox->box.path);
+			_mail->uid, mailbox_get_path(&mbox->box));
 	}
 	return 0;
 }
@@ -326,8 +326,8 @@ static int mbox_mail_init_stream(struct index_mail *mail)
 		ret = mbox_mail_get_next_offset(mail, &next_offset);
 		if (ret < 0) {
 			i_warning("mbox %s: Can't find next message offset "
-				  "for uid=%u",
-				  mbox->box.path, mail->mail.mail.uid);
+				  "for uid=%u", mailbox_get_path(&mbox->box),
+				  mail->mail.mail.uid);
 		}
 	}
 	if (ret <= 0)
@@ -365,11 +365,11 @@ static int mbox_mail_get_stream(struct mail *_mail,
 	return index_mail_init_stream(mail, hdr_size, body_size, stream_r);
 }
 
-static void mbox_mail_set_seq(struct mail *_mail, uint32_t seq)
+static void mbox_mail_set_seq(struct mail *_mail, uint32_t seq, bool saving)
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
 
-	index_mail_set_seq(_mail, seq);
+	index_mail_set_seq(_mail, seq, saving);
 	mail->data.dont_cache_fetch_fields |= MAIL_FETCH_PHYSICAL_SIZE;
 }
 
@@ -389,6 +389,7 @@ struct mail_vfuncs mbox_mail_vfuncs = {
 	mbox_mail_set_seq,
 	mbox_mail_set_uid,
 	index_mail_set_uid_cache_updates,
+	index_mail_prefetch,
 
 	index_mail_get_flags,
 	index_mail_get_keywords,

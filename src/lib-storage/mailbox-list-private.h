@@ -34,7 +34,7 @@ struct mailbox_list_vfuncs {
 	struct mailbox_list *(*alloc)(void);
 	void (*deinit)(struct mailbox_list *list);
 
-	int (*get_storage)(struct mailbox_list **list, const char **name,
+	int (*get_storage)(struct mailbox_list **list, const char *vname,
 			   struct mail_storage **storage_r);
 	bool (*is_valid_pattern)(struct mailbox_list *list,
 				 const char *pattern);
@@ -43,11 +43,13 @@ struct mailbox_list_vfuncs {
 	bool (*is_valid_create_name)(struct mailbox_list *list,
 				     const char *name);
 
+	char (*get_hierarchy_sep)(struct mailbox_list *list);
+	const char *(*get_vname)(struct mailbox_list *list,
+				 const char *storage_name);
+	const char *(*get_storage_name)(struct mailbox_list *list,
+					const char *vname);
 	const char *(*get_path)(struct mailbox_list *list, const char *name,
 				enum mailbox_list_path_type type);
-	int (*get_mailbox_name_status)(struct mailbox_list *list,
-				       const char *name,
-				       enum mailbox_name_status *status);
 
 	const char *(*get_temp_prefix)(struct mailbox_list *list, bool global);
 	const char *(*join_refpattern)(struct mailbox_list *list,
@@ -70,12 +72,17 @@ struct mailbox_list_vfuncs {
 	   If it does, mailbox deletion assumes it can safely delete it. */
 	bool (*is_internal_name)(struct mailbox_list *list, const char *name);
 
+	/* Read subscriptions from src_list, but place them into
+	   dest_list->subscriptions. Set errors to dest_list. */
+	int (*subscriptions_refresh)(struct mailbox_list *src_list,
+				     struct mailbox_list *dest_list);
 	int (*set_subscribed)(struct mailbox_list *list,
 			      const char *name, bool set);
 	int (*create_mailbox_dir)(struct mailbox_list *list, const char *name,
 				  enum mailbox_dir_create_type type);
 	int (*delete_mailbox)(struct mailbox_list *list, const char *name);
 	int (*delete_dir)(struct mailbox_list *list, const char *name);
+	int (*delete_symlink)(struct mailbox_list *list, const char *name);
 	int (*rename_mailbox)(struct mailbox_list *oldlist, const char *oldname,
 			      struct mailbox_list *newlist, const char *newname,
 			      bool rename_children);
@@ -92,7 +99,6 @@ union mailbox_list_module_context {
 
 struct mailbox_list {
 	const char *name;
-	char hierarchy_sep;
 	enum mailbox_list_properties props;
 	size_t mailbox_name_max_length;
 
@@ -111,6 +117,9 @@ struct mailbox_list {
 	/* origin (e.g. path) where the file_create_gid was got from */
 	const char *file_create_gid_origin;
 
+	struct mailbox_tree_context *subscriptions;
+	time_t subscriptions_mtime, subscriptions_read_time;
+
 	struct mailbox_log *changelog;
 	time_t changelog_timestamp;
 
@@ -123,10 +132,19 @@ struct mailbox_list {
 	unsigned int index_root_dir_created:1;
 };
 
+union mailbox_list_iterate_module_context {
+	struct mailbox_list_module_register *reg;
+};
+
 struct mailbox_list_iterate_context {
 	struct mailbox_list *list;
 	enum mailbox_list_iter_flags flags;
 	bool failed;
+
+	struct imap_match_glob *glob;
+
+	ARRAY_DEFINE(module_contexts,
+		     union mailbox_list_iterate_module_context *);
 };
 
 struct mailbox_list_iter_update_context {
@@ -150,13 +168,18 @@ void mailbox_lists_deinit(void);
 int mailbox_list_settings_parse(struct mail_user *user, const char *data,
 				struct mailbox_list_settings *set_r,
 				const char **error_r);
+const char *mailbox_list_default_get_storage_name(struct mailbox_list *list,
+						  const char *vname);
+const char *mailbox_list_default_get_vname(struct mailbox_list *list,
+					   const char *storage_name);
 const char *mailbox_list_get_unexpanded_path(struct mailbox_list *list,
 					     enum mailbox_list_path_type type);
+const char *mailbox_list_get_storage_name(struct mailbox_list *list,
+					  const char *vname);
+const char *mailbox_list_get_vname(struct mailbox_list *list, const char *name);
 const char *
 mailbox_list_get_root_path(const struct mailbox_list_settings *set,
 			   enum mailbox_list_path_type type);
-int mailbox_list_mkdir(struct mailbox_list *list, const char *path,
-		       enum mailbox_list_path_type type);
 
 int mailbox_list_delete_index_control(struct mailbox_list *list,
 				      const char *name);

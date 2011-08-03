@@ -255,8 +255,8 @@ maildir_sync_context_new(struct maildir_mailbox *mbox,
 
 	ctx = t_new(struct maildir_sync_context, 1);
 	ctx->mbox = mbox;
-	ctx->new_dir = t_strconcat(mbox->box.path, "/new", NULL);
-	ctx->cur_dir = t_strconcat(mbox->box.path, "/cur", NULL);
+	ctx->new_dir = t_strconcat(mailbox_get_path(&mbox->box), "/new", NULL);
+	ctx->cur_dir = t_strconcat(mailbox_get_path(&mbox->box), "/cur", NULL);
 	ctx->last_touch = ioloop_time;
 	ctx->last_notify = ioloop_time;
 	ctx->flags = flags;
@@ -319,7 +319,8 @@ static int maildir_fix_duplicate(struct maildir_sync_context *ctx,
 	}
 
 	new_fname = maildir_filename_generate();
-	new_path = t_strconcat(ctx->mbox->box.path, "/new/", new_fname, NULL);
+	new_path = t_strconcat(mailbox_get_path(&ctx->mbox->box),
+			       "/new/", new_fname, NULL);
 
 	if (rename(path2, new_path) == 0)
 		i_warning("Fixed a duplicate: %s -> %s", path2, new_fname);
@@ -886,8 +887,8 @@ static int maildir_sync_context(struct maildir_sync_context *ctx, bool forced,
 	}
 
 	if (find_uid != NULL && *find_uid != 0) {
-		ret = maildir_uidlist_lookup_nosync(ctx->mbox->uidlist,
-						    *find_uid, &flags, &fname);
+		ret = maildir_uidlist_lookup(ctx->mbox->uidlist,
+					     *find_uid, &flags, &fname);
 		if (ret < 0)
 			return -1;
 		if (ret == 0) {
@@ -900,6 +901,35 @@ static int maildir_sync_context(struct maildir_sync_context *ctx, bool forced,
 	}
 
 	return maildir_uidlist_sync_deinit(&ctx->uidlist_sync_ctx, TRUE);
+}
+
+int maildir_sync_lookup(struct maildir_mailbox *mbox, uint32_t uid,
+			enum maildir_uidlist_rec_flag *flags_r,
+			const char **fname_r)
+{
+	int ret;
+
+	ret = maildir_uidlist_lookup(mbox->uidlist, uid, flags_r, fname_r);
+	if (ret <= 0) {
+		if (ret < 0)
+			return -1;
+		if (maildir_uidlist_is_open(mbox->uidlist)) {
+			/* refresh uidlist and check again in case it was added
+			   after the last mailbox sync */
+			if (maildir_uidlist_refresh(mbox->uidlist) < 0)
+				return -1;
+		} else {
+			/* the uidlist doesn't exist. */
+			if (maildir_storage_sync_force(mbox, uid) < 0)
+				return -1;
+		}
+
+		/* try again */
+		ret = maildir_uidlist_lookup(mbox->uidlist, uid,
+					     flags_r, fname_r);
+	}
+
+	return ret;
 }
 
 int maildir_storage_sync_force(struct maildir_mailbox *mbox, uint32_t uid)
@@ -993,10 +1023,11 @@ int maildir_sync_is_synced(struct maildir_mailbox *mbox)
 	int ret;
 
 	T_BEGIN {
+		const char *box_path = mailbox_get_path(&mbox->box);
 		const char *new_dir, *cur_dir;
 
-		new_dir = t_strconcat(mbox->box.path, "/new", NULL);
-		cur_dir = t_strconcat(mbox->box.path, "/cur", NULL);
+		new_dir = t_strconcat(box_path, "/new", NULL);
+		cur_dir = t_strconcat(box_path, "/cur", NULL);
 
 		ret = maildir_sync_quick_check(mbox, FALSE, new_dir, cur_dir,
 					       &new_changed, &cur_changed);

@@ -100,6 +100,24 @@ struct virtual_backend_box {
 };
 ARRAY_DEFINE_TYPE(virtual_backend_box, struct virtual_backend_box *);
 
+struct virtual_mailbox_vfuncs {
+	/* convert backend UIDs to virtual UIDs. if some backend UID doesn't
+	   exist in mailbox, it's simply ignored */
+	void (*get_virtual_uids)(struct mailbox *box,
+				 struct mailbox *backend_mailbox,
+				 const ARRAY_TYPE(seq_range) *backend_uids,
+				 ARRAY_TYPE(seq_range) *virtual_uids_r);
+	/* like get_virtual_uids(), but if a backend UID doesn't exist,
+	   convert it to 0. */
+	void (*get_virtual_uid_map)(struct mailbox *box,
+				    struct mailbox *backend_mailbox,
+				    const ARRAY_TYPE(seq_range) *backend_uids,
+				    ARRAY_TYPE(uint32_t) *virtual_uids_r);
+	void (*get_virtual_backend_boxes)(struct mailbox *box,
+					  ARRAY_TYPE(mailboxes) *mailboxes,
+					  bool only_with_msgs);
+};
+
 struct virtual_mailbox {
 	struct mailbox box;
 	struct virtual_storage *storage;
@@ -111,8 +129,7 @@ struct virtual_mailbox {
 	uint32_t highest_mailbox_id;
 	uint32_t search_args_crc32;
 
-	char *vseq_lookup_prev_mailbox;
-	struct virtual_backend_box *vseq_lookup_prev_bbox;
+	struct virtual_backend_box *lookup_prev_bbox;
 	uint32_t sync_virtual_next_uid;
 
 	/* Mailboxes this virtual mailbox consists of, sorted by mailbox_id */
@@ -122,6 +139,8 @@ struct virtual_mailbox {
 
 	ARRAY_TYPE(mailbox_virtual_patterns) list_include_patterns;
 	ARRAY_TYPE(mailbox_virtual_patterns) list_exclude_patterns;
+
+	struct virtual_mailbox_vfuncs vfuncs;
 
 	unsigned int uids_mapped:1;
 	unsigned int sync_initialized:1;
@@ -145,10 +164,12 @@ virtual_backend_box_lookup(struct virtual_mailbox *mbox, uint32_t mailbox_id);
 struct mail_search_context *
 virtual_search_init(struct mailbox_transaction_context *t,
 		    struct mail_search_args *args,
-		    const enum mail_sort_type *sort_program);
+		    const enum mail_sort_type *sort_program,
+		    enum mail_fetch_field wanted_fields,
+		    struct mailbox_header_lookup_ctx *wanted_headers);
 int virtual_search_deinit(struct mail_search_context *ctx);
 bool virtual_search_next_nonblock(struct mail_search_context *ctx,
-				  struct mail *mail, bool *tryagain_r);
+				  struct mail **mail_r, bool *tryagain_r);
 bool virtual_search_next_update_seq(struct mail_search_context *ctx);
 
 struct mail *

@@ -5,11 +5,11 @@
 #include "index-storage.h"
 #include "index-mail.h"
 
-static void index_transaction_free(struct index_transaction_context *t)
+static void index_transaction_free(struct mailbox_transaction_context *t)
 {
 	mail_cache_view_close(t->cache_view);
-	mail_index_view_close(&t->mailbox_ctx.view);
-	array_free(&t->mailbox_ctx.module_contexts);
+	mail_index_view_close(&t->view);
+	array_free(&t->module_contexts);
 	i_free(t);
 }
 
@@ -17,55 +17,52 @@ static int
 index_transaction_index_commit(struct mail_index_transaction *index_trans,
 			       struct mail_index_transaction_commit_result *result_r)
 {
-	struct index_transaction_context *it =
+	struct mailbox_transaction_context *t =
 		MAIL_STORAGE_CONTEXT(index_trans);
-	struct mailbox_transaction_context *t = &it->mailbox_ctx;
-	struct index_mailbox_context *ibox = INDEX_STORAGE_CONTEXT(t->box);
 	int ret = 0;
 
 	if (t->save_ctx != NULL) {
-		if (ibox->save_commit_pre(t->save_ctx) < 0) {
+		if (t->box->v.transaction_save_commit_pre(t->save_ctx) < 0) {
 			t->save_ctx = NULL;
 			ret = -1;
 		}
 	}
 
-	i_assert(it->mail_ref_count == 0);
+	i_assert(t->mail_ref_count == 0);
 	if (ret < 0)
-		it->super.rollback(index_trans);
+		t->super.rollback(index_trans);
 	else {
-		if (it->super.commit(index_trans, result_r) < 0) {
+		if (t->super.commit(index_trans, result_r) < 0) {
 			mail_storage_set_index_error(t->box);
 			ret = -1;
 		}
 	}
 
 	if (t->save_ctx != NULL)
-		ibox->save_commit_post(t->save_ctx, result_r);
+		t->box->v.transaction_save_commit_post(t->save_ctx, result_r);
 
-	index_transaction_free(it);
+	index_transaction_free(t);
 	return ret;
 }
 
-static void index_transaction_index_rollback(struct mail_index_transaction *t)
+static void
+index_transaction_index_rollback(struct mail_index_transaction *index_trans)
 {
-	struct index_transaction_context *it = MAIL_STORAGE_CONTEXT(t);
-	struct index_mailbox_context *ibox =
-		INDEX_STORAGE_CONTEXT(it->mailbox_ctx.box);
+	struct mailbox_transaction_context *t =
+		MAIL_STORAGE_CONTEXT(index_trans);
 
-	if (it->mailbox_ctx.save_ctx != NULL)
-		ibox->save_rollback(it->mailbox_ctx.save_ctx);
+	if (t->save_ctx != NULL)
+		t->box->v.transaction_save_rollback(t->save_ctx);
 
-	i_assert(it->mail_ref_count == 0);
-	it->super.rollback(t);
-	index_transaction_free(it);
+	i_assert(t->mail_ref_count == 0);
+	t->super.rollback(index_trans);
+	index_transaction_free(t);
 }
 
-void index_transaction_init(struct index_transaction_context *it,
+void index_transaction_init(struct mailbox_transaction_context *t,
 			    struct mailbox *box,
 			    enum mailbox_transaction_flags flags)
 {
-	struct mailbox_transaction_context *t = &it->mailbox_ctx;
 	enum mail_index_transaction_flags trans_flags;
 
 	i_assert(box->opened);
@@ -85,29 +82,26 @@ void index_transaction_init(struct index_transaction_context *it,
 	array_create(&t->module_contexts, default_pool,
 		     sizeof(void *), 5);
 
-	it->cache_view = mail_cache_view_open(box->cache, t->view);
-	it->cache_trans = mail_cache_get_transaction(it->cache_view, t->itrans);
-
-	t->cache_view = it->cache_view;
-	t->cache_trans = it->cache_trans;
+	t->cache_view = mail_cache_view_open(box->cache, t->view);
+	t->cache_trans = mail_cache_get_transaction(t->cache_view, t->itrans);
 
 	/* set up after mail_cache_get_transaction(), so that we'll still
 	   have the cache_trans available in _index_commit() */
-	it->super = t->itrans->v;
+	t->super = t->itrans->v;
 	t->itrans->v.commit = index_transaction_index_commit;
 	t->itrans->v.rollback = index_transaction_index_rollback;
-	MODULE_CONTEXT_SET(t->itrans, mail_storage_mail_index_module, it);
+	MODULE_CONTEXT_SET(t->itrans, mail_storage_mail_index_module, t);
 }
 
 struct mailbox_transaction_context *
 index_transaction_begin(struct mailbox *box,
 			enum mailbox_transaction_flags flags)
 {
-	struct index_transaction_context *it;
+	struct mailbox_transaction_context *t;
 
-	it = i_new(struct index_transaction_context, 1);
-	index_transaction_init(it, box, flags);
-	return &it->mailbox_ctx;
+	t = i_new(struct mailbox_transaction_context, 1);
+	index_transaction_init(t, box, flags);
+	return t;
 }
 
 int index_transaction_commit(struct mailbox_transaction_context *t,
@@ -139,11 +133,4 @@ void index_transaction_rollback(struct mailbox_transaction_context *t)
 	struct mail_index_transaction *itrans = t->itrans;
 
 	mail_index_transaction_rollback(&itrans);
-}
-
-void index_transaction_set_max_modseq(struct mailbox_transaction_context *t,
-				      uint64_t max_modseq,
-				      ARRAY_TYPE(seq_range) *seqs)
-{
-	mail_index_transaction_set_max_modseq(t->itrans, max_modseq, seqs);
 }

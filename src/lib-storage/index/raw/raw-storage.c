@@ -36,7 +36,7 @@ raw_storage_get_list_settings(const struct mail_namespace *ns ATTR_UNUSED,
 
 static struct mailbox *
 raw_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
-		  const char *name, enum mailbox_flags flags)
+		  const char *vname, enum mailbox_flags flags)
 {
 	struct raw_mailbox *mbox;
 	pool_t pool;
@@ -51,7 +51,7 @@ raw_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &raw_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, name, flags, NULL);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, NULL);
 
 	mbox->mtime = mbox->ctime = (time_t)-1;
 	mbox->storage = (struct raw_storage *)storage;
@@ -62,6 +62,7 @@ raw_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 static int raw_mailbox_open(struct mailbox *box)
 {
 	struct raw_mailbox *mbox = (struct raw_mailbox *)box;
+	const char *path;
 	int fd;
 
 	if (box->input != NULL) {
@@ -69,9 +70,9 @@ static int raw_mailbox_open(struct mailbox *box)
 		return index_storage_mailbox_open(box, FALSE);
 	}
 
-	box->path = box->name;
+	path = box->_path = box->name;
 	mbox->have_filename = TRUE;
-	fd = open(box->path, O_RDONLY);
+	fd = open(path, O_RDONLY);
 	if (fd == -1) {
 		if (ENOTFOUND(errno)) {
 			mail_storage_set_error(box->storage,
@@ -79,12 +80,12 @@ static int raw_mailbox_open(struct mailbox *box)
 				T_MAIL_ERR_MAILBOX_NOT_FOUND(box->name));
 		} else if (!mail_storage_set_error_from_errno(box->storage)) {
 			mail_storage_set_critical(box->storage,
-				"open(%s) failed: %m", box->path);
+				"open(%s) failed: %m", path);
 		}
 		return -1;
 	}
 	box->input = i_stream_create_fd(fd, MAIL_READ_FULL_BLOCK_SIZE, TRUE);
-	i_stream_set_name(box->input, box->path);
+	i_stream_set_name(box->input, path);
 	i_stream_set_init_buffer_size(box->input, MAIL_READ_FULL_BLOCK_SIZE);
 	return index_storage_mailbox_open(box, FALSE);
 }
@@ -133,8 +134,8 @@ struct mail_storage raw_storage = {
 struct mailbox raw_mailbox = {
 	.v = {
 		index_storage_is_readonly,
-		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
+		index_storage_mailbox_exists,
 		raw_mailbox_open,
 		index_storage_mailbox_close,
 		index_storage_mailbox_free,
@@ -144,8 +145,8 @@ struct mailbox raw_mailbox = {
 		index_storage_mailbox_rename,
 		index_storage_get_status,
 		NULL,
-		NULL,
-		NULL,
+		index_storage_list_index_has_changed,
+		index_storage_list_index_update_sync,
 		raw_storage_sync_init,
 		index_mailbox_sync_next,
 		index_mailbox_sync_deinit,
@@ -154,21 +155,8 @@ struct mailbox raw_mailbox = {
 		index_transaction_begin,
 		index_transaction_commit,
 		index_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		NULL,
-		NULL,
 		NULL,
 		index_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		index_storage_search_init,
 		index_storage_search_deinit,
 		index_storage_search_next_nonblock,
@@ -179,6 +167,8 @@ struct mailbox raw_mailbox = {
 		NULL,
 		NULL,
 		mail_storage_copy,
+		NULL,
+		NULL,
 		NULL,
 		index_storage_is_inconsistent
 	}

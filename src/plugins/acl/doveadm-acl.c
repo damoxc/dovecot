@@ -27,25 +27,23 @@ cmd_acl_mailbox_open(struct mail_user *user, const char *mailbox,
 	struct acl_user *auser = ACL_USER_CONTEXT(user);
 	struct mail_namespace *ns;
 	struct mailbox *box;
-	const char *storage_name;
 
 	if (auser == NULL) {
 		i_error("ACL not enabled for %s", user->username);
 		return -1;
 	}
 
-	storage_name = mailbox;
-	ns = mail_namespace_find(user->namespaces, &storage_name);
+	ns = mail_namespace_find(user->namespaces, mailbox);
 	if (ns == NULL) {
 		i_error("No namespace found for mailbox %s", mailbox);
 		return -1;
 	}
-	box = mailbox_alloc(ns->list, storage_name,
+	box = mailbox_alloc(ns->list, mailbox,
 			    MAILBOX_FLAG_READONLY | MAILBOX_FLAG_KEEP_RECENT |
 			    MAILBOX_FLAG_IGNORE_ACLS);
 	if (mailbox_open(box) < 0) {
 		i_error("Can't open mailbox %s: %s", mailbox,
-			mail_storage_get_last_error(box->storage, NULL));
+			mailbox_get_last_error(box, NULL));
 		mailbox_free(&box);
 		return -1;
 	}
@@ -360,20 +358,19 @@ cmd_acl_debug_mailbox_open(struct mail_user *user, const char *mailbox,
 	struct acl_user *auser = ACL_USER_CONTEXT(user);
 	struct mail_namespace *ns;
 	struct mailbox *box;
-	const char *storage_name, *path, *errstr;
+	const char *path, *errstr;
 	enum mail_error error;
 
-	storage_name = mailbox;
-	ns = mail_namespace_find(user->namespaces, &storage_name);
+	ns = mail_namespace_find(user->namespaces, mailbox);
 	if (ns == NULL) {
 		i_error("No namespace found for mailbox %s", mailbox);
 		return -1;
 	}
-	box = mailbox_alloc(ns->list, storage_name,
+	box = mailbox_alloc(ns->list, mailbox,
 			    MAILBOX_FLAG_READONLY | MAILBOX_FLAG_KEEP_RECENT |
 			    MAILBOX_FLAG_IGNORE_ACLS);
 	if (mailbox_open(box) < 0) {
-		path = mailbox_list_get_path(ns->list, storage_name,
+		path = mailbox_list_get_path(ns->list, box->name,
 					     MAILBOX_LIST_PATH_TYPE_MAILBOX);
 		errstr = mail_storage_get_last_error(box->storage, &error);
 		if (error != MAIL_ERROR_NOTFOUND ||
@@ -407,17 +404,19 @@ static bool cmd_acl_debug_mailbox(struct mailbox *box, bool *retry_r)
 	struct acl_mailbox_list_context *iter;
 	struct acl_lookup_dict_iter *diter;
 	const char *const *rights, *name;
+	enum mail_flags private_flags_mask;
 	string_t *str;
 	int ret;
 	bool all_ok = TRUE;
 
 	*retry_r = FALSE;
 
-	if (box->private_flags_mask == 0)
+	private_flags_mask = mailbox_get_private_flags_mask(box);
+	if (private_flags_mask == 0)
 		i_info("All message flags are shared across users in mailbox");
 	else {
 		str = t_str_new(64);
-		imap_write_flags(str, box->private_flags_mask, NULL);
+		imap_write_flags(str, private_flags_mask, NULL);
 		i_info("Per-user private flags in mailbox: %s", str_c(str));
 	}
 

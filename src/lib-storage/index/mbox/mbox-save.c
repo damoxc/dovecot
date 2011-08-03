@@ -255,13 +255,13 @@ static int
 mbox_save_init_file(struct mbox_save_context *ctx,
 		    struct mbox_transaction_context *t, bool want_mail)
 {
-	struct mailbox_transaction_context *_t = &t->ictx.mailbox_ctx;
+	struct mailbox_transaction_context *_t = &t->t;
 	struct mbox_mailbox *mbox = ctx->mbox;
 	struct mail_storage *storage = &mbox->storage->storage;
 	bool empty = FALSE;
 	int ret;
 
-	if (ctx->mbox->box.backend_readonly) {
+	if (mbox_is_backend_readonly(ctx->mbox)) {
 		mail_storage_set_error(storage, MAIL_ERROR_PERM,
 				       "Read-only mbox");
 		return -1;
@@ -502,8 +502,7 @@ int mbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 			}
 			_ctx->dest_mail = ctx->mail;
 		}
-		mail_set_seq(_ctx->dest_mail, ctx->seq);
-		_ctx->dest_mail->saving = TRUE;
+		mail_set_seq_saving(_ctx->dest_mail, ctx->seq);
 	}
 	mbox_save_append_flag_headers(ctx->headers, save_flags);
 	mbox_save_append_keyword_headers(ctx, _ctx->keywords);
@@ -770,7 +769,8 @@ int mbox_transaction_save_commit_pre(struct mail_save_context *_ctx)
 
 		buf.modtime = st.st_mtime;
 		buf.actime = ctx->orig_atime;
-		if (utime(mbox->box.path, &buf) < 0 && errno != EPERM)
+		if (utime(mailbox_get_path(&mbox->box), &buf) < 0 &&
+		    errno != EPERM)
 			mbox_set_syscall_error(mbox, "utime()");
 	}
 

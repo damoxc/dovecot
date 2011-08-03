@@ -52,10 +52,15 @@ int imap_search_args_build(struct client_command_context *cmd,
 
 	parser = mail_search_parser_init_imap(args);
 	ret = mail_search_build(mail_search_register_get_imap(),
-				parser, charset, &sargs, &error);
+				parser, &charset, &sargs, &error);
 	mail_search_parser_deinit(&parser);
 	if (ret < 0) {
-		client_send_command_error(cmd, error);
+		if (charset == NULL) {
+			client_send_tagline(cmd, t_strconcat(
+				"BAD [BADCHARSET] ", error, NULL));
+		} else {
+			client_send_command_error(cmd, error);
+		}
 		return -1;
 	}
 
@@ -172,7 +177,7 @@ static int imap_search_get_searchres(struct client_command_context *cmd,
 	} else {
 		/* $ not set yet, match nothing */
 		search_args->args->type = SEARCH_ALL;
-		search_args->args->not = TRUE;
+		search_args->args->match_not = TRUE;
 	}
 	*search_args_r = search_args;
 	return 1;

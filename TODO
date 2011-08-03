@@ -1,5 +1,35 @@
- - doveadm fetch text mailbox <ns prefix> -> no replies, because
-   mailbox_list_iter_init_namespaces() doesn't return ns prefixes
+ - fix proxy_maybe=fqdn
+ - mailbox list index:
+    - with in-memory indexes be sure to refresh it more often
+    - refreshing could refresh only the parts that are actually requested,
+      e.g. %
+    - mailbox_get_metadata(guid) could be optimized
+    - virtual could use it to avoid keeping all mailboxes open
+ - lib-ssl-iostream:
+    - Verify remote server name. get logic from postfix.
+    - WANT_READ/WANT_WRITE handling isn't done right..
+ - imapc:
+     - prefetching to THREAD and SORT
+     - fix hangs if remote disconnects (still happening?)
+     - after LIST "" * is refreshed, delete all unlisted local index dirs
+     - fix lib-index assert-crash when >1 messages are expunged while they're
+       still in delayed_trans
+ - check the pigeonhole pipe plugin thing
+ - "protocols = $protocols sieve" when there no explicit protocols setting
+   gives duplicates
+ - check:
+    - dsyncing between two namespace separators is probably broken..
+ - remove mail_deliver_session after all, do all the stuff transparently
+   by hooking into mailbox_copy().
+     - use this hook also to do the mail deduplication: 1) sort all destination
+       users, 2) create mail_user only once for each user, 3) remember in
+       src_mail the previously copied mail, 4) use that for mailbox_copy()ing
+       to following recipients
+ - notify_sync() could have "what changed" struct with old/new flags
+ - maildir: copy dovecot-shared file from parent mailbox, not root.
+ - if global ACL path points to a file instead of a directory, read all of
+   them from there. support wildcards in names.
+
  - master passdb preserves userdb_* extra fields. should it preserve
    non-userdb_* extra fields too?
  - imap, pop3: if client init fails, wait a second or two before disconnecting
@@ -19,7 +49,6 @@
  - dsync: if mailbox is renamed due to it being invalid, its subscription
    isn't renamed
  - doveadm director assign <user> <host> - do it permanently in memory
- - LSUB shows subscribed namespace prefix as prefix/, also SUBSCRIBE adds the /
  - sql pool: if async query is pending and sync query is sent and there
    are no more empty connections, it should flush the async query first
  - NTLMv1 and LM should be disabled if disable_plaintext_auth=yes
@@ -130,8 +159,6 @@
    - recent_uids assert at least with mbox
  - quota fs: Should values returned by quota be divided by the actual
    filesystem block size instead of hardcoded DEV_BSIZE? not with AIX..
- - mailbox list fs: Listing subscriptions with children return options doesn't
-   work unless iter_is_mailbox() returns the children flags
  - lucene: handle replacement chars?
  - squat:
    - support ORs
@@ -220,9 +247,6 @@
 	  single transaction.
 	   - only after that we can remove the transaction log offset
 	     overwriting (otherwise we can get partial transactions in views)
-
- - lib-storage
-    - x search charset asdf all -> should fail
 
  - login
     - Digest-MD5: support integrity protection, and maybe crypting. Do it

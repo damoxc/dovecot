@@ -72,7 +72,6 @@ static void client_idle_timeout(struct client *client)
 static int
 pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 {
-	struct mail_storage *storage;
 	enum mail_error error;
 	int ret;
 
@@ -86,8 +85,7 @@ pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 	if (ret == 0)
 		return 0;
 
-	storage = mailbox_get_storage(mail->box);
-	(void)mail_storage_get_last_error(storage, &error);
+	(void)mailbox_get_last_error(mail->box, &error);
 	if (error != MAIL_ERROR_NOTPOSSIBLE)
 		return -1;
 
@@ -99,7 +97,7 @@ pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 	if (ret == 0)
 		return 0;
 
-	(void)mail_storage_get_last_error(storage, &error);
+	(void)mailbox_get_last_error(mail->box, &error);
 	if (error != MAIL_ERROR_NOTPOSSIBLE)
 		return -1;
 
@@ -145,7 +143,7 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 
 	*failed_uid_r = 0;
 
-	mailbox_get_status(client->mailbox, STATUS_UIDVALIDITY, &status);
+	mailbox_get_open_status(client->mailbox, STATUS_UIDVALIDITY, &status);
 	client->uid_validity = status.uidvalidity;
 	client->messages_count = status.messages;
 
@@ -153,7 +151,8 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 
 	search_args = mail_search_build_init();
 	mail_search_build_add_all(search_args);
-	ctx = mailbox_search_init(t, search_args, pop3_sort_program);
+	ctx = mailbox_search_init(t, search_args, pop3_sort_program,
+				  MAIL_FETCH_VIRTUAL_SIZE, NULL);
 	mail_search_args_unref(&search_args);
 
 	client->last_seen_pop3_msn = 0;
@@ -161,8 +160,7 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 	i_array_init(&message_sizes, client->messages_count);
 
 	msgnum = 0;
-	mail = mail_alloc(t, MAIL_FETCH_VIRTUAL_SIZE, NULL);
-	while (mailbox_search_next(ctx, mail)) {
+	while (mailbox_search_next(ctx, &mail)) {
 		if (pop3_mail_get_size(client, mail, &size) < 0) {
 			ret = mail->expunged ? 0 : -1;
 			*failed_uid_r = mail->uid;
@@ -177,7 +175,6 @@ static int read_mailbox(struct client *client, uint32_t *failed_uid_r)
 		array_append(&message_sizes, &size, 1);
 		msgnum++;
 	}
-	mail_free(&mail);
 
 	if (mailbox_search_deinit(&ctx) < 0)
 		ret = -1;
@@ -228,11 +225,7 @@ static int init_mailbox(struct client *client, const char **error_r)
 	}
 
 	if (ret < 0) {
-		struct mail_storage *storage;
-		enum mail_error error;
-
-		storage = mailbox_get_storage(client->mailbox);
-		*error_r = mail_storage_get_last_error(storage, &error);
+		*error_r = mailbox_get_last_error(client->mailbox, NULL);
 		client_send_storage_error(client);
 	} else {
 		if (failed_uid == last_failed_uid && failed_uid != 0) {
@@ -283,7 +276,7 @@ struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
 {
 	struct mail_namespace *ns;
 	struct mail_storage *storage;
-	const char *inbox, *ident;
+	const char *ident;
 	struct client *client;
         enum mailbox_flags flags;
 	const char *errmsg;
@@ -316,8 +309,7 @@ struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
 	pop3_client_count++;
 	DLLIST_PREPEND(&pop3_clients, client);
 
-	inbox = "INBOX";
-	ns = mail_namespace_find(user->namespaces, &inbox);
+	ns = mail_namespace_find(user->namespaces, "INBOX");
 	if (ns == NULL) {
 		client_send_line(client, "-ERR [IN-USE] No INBOX namespace for user.");
 		client_destroy(client, "No INBOX namespace for user.");
@@ -334,8 +326,8 @@ struct client *client_create(int fd_in, int fd_out, struct mail_user *user,
 	storage = mailbox_get_storage(client->mailbox);
 	if (mailbox_open(client->mailbox) < 0) {
 		errmsg = t_strdup_printf("Couldn't open INBOX: %s",
-					 mail_storage_get_last_error(storage,
-								     &error));
+					 mailbox_get_last_error(client->mailbox,
+								&error));
 		i_error("%s", errmsg);
 		client_send_line(client, "-ERR [IN-USE] %s", errmsg);
 		client_destroy(client, "Couldn't open INBOX");
@@ -597,9 +589,6 @@ int client_send_line(struct client *client, const char *fmt, ...)
 
 void client_send_storage_error(struct client *client)
 {
-	struct mail_storage *storage;
-	enum mail_error error;
-
 	if (mailbox_is_inconsistent(client->mailbox)) {
 		client_send_line(client, "-ERR Mailbox is in inconsistent "
 				 "state, please relogin.");
@@ -607,9 +596,8 @@ void client_send_storage_error(struct client *client)
 		return;
 	}
 
-	storage = mailbox_get_storage(client->mailbox);
 	client_send_line(client, "-ERR %s",
-			 mail_storage_get_last_error(storage, &error));
+			 mailbox_get_last_error(client->mailbox, NULL));
 }
 
 bool client_handle_input(struct client *client)

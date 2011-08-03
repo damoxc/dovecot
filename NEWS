@@ -1,3 +1,22 @@
+v2.1.UNSTABLE 2011-xx-xx  Timo Sirainen <tss@iki.fi>
+
+	* Plugins now use UTF-8 mailbox names rather than mUTF-7:
+	  acl, autocreate, expire, trash, virtual
+	* auth_username_format default changed to %Lu. If you really want
+	  case sensitive usernames, set it back to empty.
+
+	+ imapc (= IMAP client) storage allows using a remote IMAP server to
+	  be used as storage. This allows using Dovecot as a smart (caching)
+	  proxy or using dsync to do migration from remote IMAP server.
+	+ Autocreate plugin creates/subscribes mailboxes physically only when
+	  the mailbox is opened for the first time. Mailbox listing shows the
+	  autocreated mailboxes even if they don't physically exist.
+	+ Mailbox list indexes
+	- listescape plugin works perfectly now
+
+	- Fixed potential crashes and other problems when parsing header names
+	  that contained NUL characters.
+
 v2.0.13 2011-05-11  Timo Sirainen <tss@iki.fi>
 
 	+ Added "doveadm index" command to add unindexed messages into

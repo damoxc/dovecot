@@ -91,11 +91,13 @@ int doveadm_mail_server_user(struct doveadm_mail_cmd_context *ctx,
 			     const char **error_r);
 void doveadm_mail_server_flush(void);
 
+struct mailbox *
+doveadm_mailbox_find(struct mail_user *user, const char *mailbox);
 int doveadm_mailbox_find_and_sync(struct mail_user *user, const char *mailbox,
 				  struct mailbox **box_r);
 struct mail_search_args *
 doveadm_mail_build_search_args(const char *const args[]);
-const char *const *doveadm_mailbox_args_to_mutf7(const char *const args[]);
+void doveadm_mailbox_args_check(const char *const args[]);
 struct mail_search_args *
 doveadm_mail_mailbox_search_args_build(const char *const args[]);
 

@@ -93,7 +93,7 @@ static int sdbox_sync_index(struct sdbox_sync_context *ctx)
 		/* newly created index file */
 		mail_storage_set_critical(box->storage,
 			"sdbox %s: Broken index: missing UIDVALIDITY",
-			box->path);
+			mailbox_get_path(box));
 		return 0;
 	}
 
@@ -212,12 +212,12 @@ int sdbox_sync_begin(struct sdbox_mailbox *mbox, enum sdbox_sync_flags flags,
 			if (i >= SDBOX_REBUILD_COUNT) {
 				mail_storage_set_critical(storage,
 					"sdbox %s: Index keeps breaking",
-					ctx->mbox->box.path);
+					mailbox_get_path(&ctx->mbox->box));
 				ret = -1;
 			} else {
 				/* do a full resync and try again. */
 				i_warning("sdbox %s: Rebuilding index",
-					  ctx->mbox->box.path);
+					  mailbox_get_path(&ctx->mbox->box));
 				rebuild = FALSE;
 				ret = sdbox_sync_index_rebuild(mbox,
 							       force_rebuild);

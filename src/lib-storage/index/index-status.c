@@ -7,9 +7,63 @@
 #include "index-storage.h"
 #include "mail-index-modseq.h"
 
+int index_storage_get_status(struct mailbox *box,
+			     enum mailbox_status_items items,
+			     struct mailbox_status *status_r)
+{
+	const struct mail_index_header *hdr;
+
+	memset(status_r, 0, sizeof(struct mailbox_status));
+
+	if (!box->opened) {
+		if (mailbox_open(box) < 0)
+			return -1;
+		if (mailbox_sync(box, 0) < 0)
+			return -1;
+	}
+
+	/* we can get most of the status items without any trouble */
+	hdr = mail_index_get_header(box->view);
+	status_r->messages = hdr->messages_count;
+	if ((items & STATUS_RECENT) != 0) {
+		status_r->recent = index_mailbox_get_recent_count(box);
+		i_assert(status_r->recent <= status_r->messages);
+	}
+	status_r->unseen = hdr->messages_count - hdr->seen_messages_count;
+	status_r->uidvalidity = hdr->uid_validity;
+	status_r->uidnext = hdr->next_uid;
+	status_r->first_recent_uid = hdr->first_recent_uid;
+	status_r->nonpermanent_modseqs = mail_index_is_in_memory(box->index);
+	if ((items & STATUS_HIGHESTMODSEQ) != 0) {
+		status_r->highest_modseq =
+			mail_index_modseq_get_highest(box->view);
+		if (status_r->highest_modseq == 0) {
+			/* modseqs not enabled yet, but we can't return 0 */
+			status_r->highest_modseq = 1;
+		}
+	}
+
+	if ((items & STATUS_FIRST_UNSEEN_SEQ) != 0) {
+		mail_index_lookup_first(box->view, 0, MAIL_SEEN,
+					&status_r->first_unseen_seq);
+	}
+
+	if ((items & STATUS_KEYWORDS) != 0)
+		status_r->keywords = mail_index_get_keywords(box->index);
+	if ((items & STATUS_PERMANENT_FLAGS) != 0) {
+		if (!mailbox_is_readonly(box)) {
+			status_r->permanent_flags = MAIL_FLAGS_NONRECENT;
+			status_r->permanent_keywords = TRUE;
+			/* FIXME: set to FALSE if we're full */
+			status_r->allow_new_keywords = TRUE;
+		}
+	}
+	return 0;
+}
+
 static void
-index_storage_get_status_cache_fields(struct mailbox *box,
-				      struct mailbox_status *status_r)
+get_metadata_cache_fields(struct mailbox *box,
+			  struct mailbox_metadata *metadata_r)
 {
 	const struct mail_cache_field *fields;
 	enum mail_cache_decision_type dec;
@@ -26,12 +80,12 @@ index_storage_get_status_cache_fields(struct mailbox *box,
 		if (dec != MAIL_CACHE_DECISION_NO)
 			array_append(cache_fields, &fields[i].name, 1);
 	}
-	status_r->cache_fields = cache_fields;
+	metadata_r->cache_fields = cache_fields;
 }
 
-static void
-index_storage_virtual_size_add_new(struct mailbox *box,
-				   struct index_vsize_header *vsize_hdr)
+static int
+virtual_size_add_new(struct mailbox *box,
+		     struct index_vsize_header *vsize_hdr)
 {
 	struct index_mailbox_context *ibox = INDEX_STORAGE_CONTEXT(box);
 	const struct mail_index_header *hdr;
@@ -68,9 +122,9 @@ index_storage_virtual_size_add_new(struct mailbox *box,
 				     hdr->messages_count);
 
 	trans = mailbox_transaction_begin(box, 0);
-	search_ctx = mailbox_search_init(trans, search_args, NULL);
-	mail = mail_alloc(trans, MAIL_FETCH_VIRTUAL_SIZE, NULL);
-	while (mailbox_search_next(search_ctx, mail)) {
+	search_ctx = mailbox_search_init(trans, search_args, NULL,
+					 MAIL_FETCH_VIRTUAL_SIZE, NULL);
+	while (mailbox_search_next(search_ctx, &mail)) {
 		if (mail_get_virtual_size(mail, &vsize) < 0) {
 			if (mail->expunged)
 				continue;
@@ -81,7 +135,6 @@ index_storage_virtual_size_add_new(struct mailbox *box,
 		vsize_hdr->highest_uid = mail->uid;
 		vsize_hdr->message_count++;
 	}
-	mail_free(&mail);
 	if (mailbox_search_deinit(&search_ctx) < 0)
 		ret = -1;
 
@@ -94,18 +147,21 @@ index_storage_virtual_size_add_new(struct mailbox *box,
 	mail_index_update_header_ext(trans->itrans, ibox->vsize_hdr_ext_id,
 				     0, vsize_hdr, sizeof(*vsize_hdr));
 	(void)mailbox_transaction_commit(&trans);
-
+	return ret;
 }
 
-static void
-index_storage_get_status_virtual_size(struct mailbox *box,
-				      struct mailbox_status *status_r)
+static int
+get_metadata_virtual_size(struct mailbox *box,
+			  struct mailbox_metadata *metadata_r)
 {
 	struct index_mailbox_context *ibox = INDEX_STORAGE_CONTEXT(box);
 	struct index_vsize_header vsize_hdr;
+	struct mailbox_status status;
 	const void *data;
 	size_t size;
+	int ret;
 
+	mailbox_get_open_status(box, STATUS_MESSAGES | STATUS_UIDNEXT, &status);
 	mail_index_get_header_ext(box->view, ibox->vsize_hdr_ext_id,
 				  &data, &size);
 	if (size == sizeof(vsize_hdr))
@@ -119,62 +175,32 @@ index_storage_get_status_virtual_size(struct mailbox *box,
 		memset(&vsize_hdr, 0, sizeof(vsize_hdr));
 	}
 
-	if (vsize_hdr.highest_uid + 1 == status_r->uidnext &&
-	    vsize_hdr.message_count == status_r->messages) {
+	if (vsize_hdr.highest_uid + 1 == status.uidnext &&
+	    vsize_hdr.message_count == status.messages) {
 		/* up to date */
-		status_r->virtual_size = vsize_hdr.vsize;
-		return;
+		metadata_r->virtual_size = vsize_hdr.vsize;
+		return 0;
 	}
-	if (vsize_hdr.highest_uid >= status_r->uidnext) {
+	if (vsize_hdr.highest_uid >= status.uidnext) {
 		mail_storage_set_critical(box->storage,
 			"vsize-hdr has invalid highest-uid (%u >= %u)",
-			vsize_hdr.highest_uid, status_r->uidnext);
+			vsize_hdr.highest_uid, status.uidnext);
 		memset(&vsize_hdr, 0, sizeof(vsize_hdr));
 	}
-	index_storage_virtual_size_add_new(box, &vsize_hdr);
-	status_r->virtual_size = vsize_hdr.vsize;
+	ret = virtual_size_add_new(box, &vsize_hdr);
+	metadata_r->virtual_size = vsize_hdr.vsize;
+	return ret;
 }
 
-void index_storage_get_status(struct mailbox *box,
-			      enum mailbox_status_items items,
-			      struct mailbox_status *status_r)
+int index_mailbox_get_metadata(struct mailbox *box,
+			       enum mailbox_metadata_items items,
+			       struct mailbox_metadata *metadata_r)
 {
-	const struct mail_index_header *hdr;
-
-	i_assert(box->opened);
-
-	memset(status_r, 0, sizeof(struct mailbox_status));
-
-	/* we can get most of the status items without any trouble */
-	hdr = mail_index_get_header(box->view);
-	status_r->messages = hdr->messages_count;
-	if ((items & STATUS_RECENT) != 0) {
-		status_r->recent = index_mailbox_get_recent_count(box);
-		i_assert(status_r->recent <= status_r->messages);
+	if ((items & MAILBOX_METADATA_CACHE_FIELDS) != 0)
+		get_metadata_cache_fields(box, metadata_r);
+	if ((items & MAILBOX_METADATA_VIRTUAL_SIZE) != 0) {
+		if (get_metadata_virtual_size(box, metadata_r) < 0)
+			return -1;
 	}
-	status_r->unseen = hdr->messages_count - hdr->seen_messages_count;
-	status_r->uidvalidity = hdr->uid_validity;
-	status_r->first_recent_uid = hdr->first_recent_uid;
-	status_r->uidnext = hdr->next_uid;
-	status_r->nonpermanent_modseqs = mail_index_is_in_memory(box->index);
-	if ((items & STATUS_HIGHESTMODSEQ) != 0) {
-		status_r->highest_modseq =
-			mail_index_modseq_get_highest(box->view);
-		if (status_r->highest_modseq == 0) {
-			/* modseqs not enabled yet, but we can't return 0 */
-			status_r->highest_modseq = 1;
-		}
-	}
-
-	if ((items & STATUS_FIRST_UNSEEN_SEQ) != 0) {
-		mail_index_lookup_first(box->view, 0, MAIL_SEEN,
-					&status_r->first_unseen_seq);
-	}
-
-	if ((items & STATUS_KEYWORDS) != 0)
-		status_r->keywords = mail_index_get_keywords(box->index);
-	if ((items & STATUS_CACHE_FIELDS) != 0)
-		index_storage_get_status_cache_fields(box, status_r);
-	if ((items & STATUS_VIRTUAL_SIZE) != 0)
-		index_storage_get_status_virtual_size(box, status_r);
+	return 0;
 }

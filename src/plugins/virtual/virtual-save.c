@@ -23,7 +23,7 @@ virtual_save_alloc(struct mailbox_transaction_context *_t)
 
 	if (_t->save_ctx == NULL) {
 		ctx = i_new(struct virtual_save_context, 1);
-		ctx->ctx.transaction = &t->ictx.mailbox_ctx;
+		ctx->ctx.transaction = &t->t;
 		_t->save_ctx = &ctx->ctx;
 	} else {
 		ctx = (struct virtual_save_context *)_t->save_ctx;
@@ -52,7 +52,7 @@ virtual_copy_keywords(struct mailbox *src_box,
 		return NULL;
 
 	t_array_init(&kw_strings, src_keywords->count + 1);
-	mailbox_get_status(src_box, STATUS_KEYWORDS, &status);
+	mailbox_get_open_status(src_box, STATUS_KEYWORDS, &status);
 
 	for (i = 0; i < src_keywords->count; i++) {
 		kwp = array_idx(status.keywords, src_keywords->idx[i]);
@@ -127,7 +127,7 @@ void virtual_save_free(struct mail_save_context *_ctx)
 	struct virtual_save_context *ctx = (struct virtual_save_context *)_ctx;
 
 	if (ctx->backend_keywords != NULL)
-		mailbox_keywords_unref(ctx->backend_box, &ctx->backend_keywords);
+		mailbox_keywords_unref(&ctx->backend_keywords);
 	if (ctx->backend_save_ctx != NULL)
 		mailbox_save_cancel(&ctx->backend_save_ctx);
 	i_free(ctx);

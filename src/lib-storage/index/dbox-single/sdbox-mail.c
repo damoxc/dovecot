@@ -24,7 +24,7 @@ static void sdbox_mail_set_expunged(struct dbox_mail *mail)
 
 	mail_storage_set_critical(_mail->box->storage,
 				  "dbox %s: Unexpectedly lost uid=%u",
-				  _mail->box->path, _mail->uid);
+				  mailbox_get_path(_mail->box), _mail->uid);
 	sdbox_set_mailbox_corrupted(_mail->box);
 }
 
@@ -88,6 +88,7 @@ struct mail_vfuncs sdbox_mail_vfuncs = {
 	index_mail_set_seq,
 	index_mail_set_uid,
 	index_mail_set_uid_cache_updates,
+	index_mail_prefetch,
 
 	index_mail_get_flags,
 	index_mail_get_keywords,

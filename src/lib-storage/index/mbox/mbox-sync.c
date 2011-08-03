@@ -73,13 +73,13 @@ void mbox_sync_set_critical(struct mbox_sync_context *sync_ctx,
 		mail_storage_set_critical(&sync_ctx->mbox->storage->storage,
 			"mbox file %s was modified while we were syncing, "
 			"check your locking settings",
-			sync_ctx->mbox->box.path);
+			mailbox_get_path(&sync_ctx->mbox->box));
 	}
 
 	va_start(va, fmt);
 	mail_storage_set_critical(&sync_ctx->mbox->storage->storage,
 				  "Sync failed for mbox file %s: %s",
-				  sync_ctx->mbox->box.path,
+				  mailbox_get_path(&sync_ctx->mbox->box),
 				  t_strdup_vprintf(fmt, va));
 	va_end(va);
 }
@@ -991,7 +991,7 @@ static bool mbox_sync_imapbase(struct mbox_sync_context *sync_ctx,
 		i_warning("UIDVALIDITY changed (%u -> %u) in mbox file %s",
 			  sync_ctx->hdr->uid_validity,
 			  sync_ctx->base_uid_validity,
-			  sync_ctx->mbox->box.path);
+			  mailbox_get_path(&sync_ctx->mbox->box));
 		sync_ctx->index_reset = TRUE;
 		return TRUE;
 	}
@@ -1114,7 +1114,7 @@ static int mbox_sync_loop(struct mbox_sync_context *sync_ctx,
 					&sync_ctx->mbox->storage->storage,
 					"Out of UIDs, renumbering them in mbox "
 					"file %s",
-					sync_ctx->mbox->box.path);
+					mailbox_get_path(&sync_ctx->mbox->box));
 				sync_ctx->renumber_uids = TRUE;
 				return 0;
 			}
@@ -1429,7 +1429,7 @@ static int mbox_sync_update_index_header(struct mbox_sync_context *sync_ctx)
 		   quite minimal (an extra logged error message). */
 		while (sync_ctx->orig_mtime == st->st_mtime) {
 			usleep(500000);
-			if (utime(sync_ctx->mbox->box.path, NULL) < 0) {
+			if (utime(mailbox_get_path(&sync_ctx->mbox->box), NULL) < 0) {
 				mbox_set_syscall_error(sync_ctx->mbox,
 						       "utime()");
 				return -1;
@@ -1628,7 +1628,6 @@ static int mbox_sync_do(struct mbox_sync_context *sync_ctx,
 
 int mbox_sync_header_refresh(struct mbox_mailbox *mbox)
 {
-	const struct mail_index_header *hdr;
 	const void *data;
 	size_t data_size;
 
@@ -1640,10 +1639,8 @@ int mbox_sync_header_refresh(struct mbox_mailbox *mbox)
 	mail_index_get_header_ext(mbox->box.view, mbox->mbox_ext_idx,
 				  &data, &data_size);
 	if (data_size == 0) {
-		/* doesn't exist. FIXME: backwards compatibility copying */
-		hdr = mail_index_get_header(mbox->box.view);
-		mbox->mbox_hdr.sync_mtime = hdr->sync_stamp;
-		mbox->mbox_hdr.sync_size = hdr->sync_size;
+		/* doesn't exist yet. */
+		memset(&mbox->mbox_hdr, 0, sizeof(mbox->mbox_hdr));
 		return 0;
 	}
 
@@ -1678,7 +1675,7 @@ int mbox_sync_has_changed_full(struct mbox_mailbox *mbox, bool leave_dirty,
 			return -1;
 		}
 	} else {
-		if (stat(mbox->box.path, &statbuf) < 0) {
+		if (stat(mailbox_get_path(&mbox->box), &statbuf) < 0) {
 			if (errno == ENOENT) {
 				mailbox_set_deleted(&mbox->box);
 				return 0;
@@ -1733,7 +1730,7 @@ static int mbox_sync_int(struct mbox_mailbox *mbox, enum mbox_sync_flags flags,
 	int ret, changed;
 	bool delay_writes, readonly;
 
-	readonly = mbox->box.backend_readonly ||
+	readonly = mbox_is_backend_readonly(mbox) ||
 		(flags & MBOX_SYNC_READONLY) != 0;
 	delay_writes = readonly ||
 		((flags & MBOX_SYNC_REWRITE) == 0 &&
@@ -1791,7 +1788,8 @@ again:
 			/* try as read-only */
 			if (mbox_lock(mbox, F_RDLCK, lock_id) <= 0)
 				return -1;
-			mbox->box.backend_readonly = readonly = TRUE;
+			mbox->backend_readonly = readonly = TRUE;
+			mbox->backend_readonly_set = TRUE;
 			delay_writes = TRUE;
 		}
 	}
@@ -1915,7 +1913,8 @@ again:
 		else {
 			buf.modtime = st.st_mtime;
 			buf.actime = sync_ctx.orig_atime;
-			if (utime(mbox->box.path, &buf) < 0 && errno != EPERM)
+			if (utime(mailbox_get_path(&mbox->box), &buf) < 0 &&
+			    errno != EPERM)
 				mbox_set_syscall_error(mbox, "utime()");
 		}
 	}

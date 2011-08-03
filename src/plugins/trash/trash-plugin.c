@@ -2,6 +2,7 @@
 
 #include "lib.h"
 #include "array.h"
+#include "unichar.h"
 #include "istream.h"
 #include "mail-namespace.h"
 #include "mail-search-build.h"
@@ -30,8 +31,6 @@ struct trash_mailbox {
 	struct mailbox_transaction_context *trans;
 	struct mail_search_context *search_ctx;
 	struct mail *mail;
-
-	unsigned int mail_set:1;
 };
 
 struct trash_user {
@@ -63,16 +62,16 @@ static int trash_clean_mailbox_open(struct trash_mailbox *trash)
 		return -1;
 
 	trash->trans = mailbox_transaction_begin(trash->box, 0);
-	trash->mail = mail_alloc(trash->trans, MAIL_FETCH_PHYSICAL_SIZE |
-				 MAIL_FETCH_RECEIVED_DATE, NULL);
 
 	search_args = mail_search_build_init();
 	mail_search_build_add_all(search_args);
 	trash->search_ctx = mailbox_search_init(trash->trans,
-						search_args, NULL);
+						search_args, NULL,
+						MAIL_FETCH_PHYSICAL_SIZE |
+						MAIL_FETCH_RECEIVED_DATE, NULL);
 	mail_search_args_unref(&search_args);
 
-	return mailbox_search_next(trash->search_ctx, trash->mail);
+	return mailbox_search_next(trash->search_ctx, &trash->mail) ? 1 : 0;
 }
 
 static int trash_clean_mailbox_get_next(struct trash_mailbox *trash,
@@ -80,17 +79,17 @@ static int trash_clean_mailbox_get_next(struct trash_mailbox *trash,
 {
 	int ret;
 
-	if (!trash->mail_set) {
+	if (trash->mail == NULL) {
 		if (trash->box == NULL)
 			ret = trash_clean_mailbox_open(trash);
-		else
+		else {
 			ret = mailbox_search_next(trash->search_ctx,
-						  trash->mail) ? 1 : 0;
+						  &trash->mail) ? 1 : 0;
+		}
 		if (ret <= 0) {
 			*received_time_r = 0;
 			return ret;
 		}
-		trash->mail_set = TRUE;
 	}
 
 	if (mail_get_received_date(trash->mail, received_time_r) < 0)
@@ -134,7 +133,7 @@ static int trash_try_clean_mails(struct quota_transaction_context *ctx,
 			if (mail_get_physical_size(trashes[oldest_idx].mail,
 						   &size) < 0) {
 				/* maybe expunged already? */
-				trashes[oldest_idx].mail_set = FALSE;
+				trashes[oldest_idx].mail = NULL;
 				continue;
 			}
 
@@ -143,7 +142,7 @@ static int trash_try_clean_mails(struct quota_transaction_context *ctx,
 			size_expunged += size;
 			if (size_expunged >= size_needed)
 				break;
-			trashes[oldest_idx].mail_set = FALSE;
+			trashes[oldest_idx].mail = NULL;
 		} else {
 			/* find more mails from next priority's mailbox */
 			i = j;
@@ -157,8 +156,7 @@ err:
 		if (trash->box == NULL)
 			continue;
 
-		trash->mail_set = FALSE;
-		mail_free(&trash->mail);
+		trash->mail = NULL;
 		(void)mailbox_search_deinit(&trash->search_ctx);
 
 		if (size_expunged >= size_needed)
@@ -225,16 +223,11 @@ static bool trash_find_storage(struct mail_user *user,
 			       struct trash_mailbox *trash)
 {
 	struct mail_namespace *ns;
-	const char *name;
 
-	for (ns = user->namespaces; ns != NULL; ns = ns->next) {
-		name = trash->name;
-		if (mail_namespace_update_name(ns, &name)) {
-			if (name != trash->name)
-				trash->name = p_strdup(user->pool, name);
-			trash->ns = ns;
-			return TRUE;
-		}
+	ns = mail_namespace_find(user->namespaces, trash->name);
+	if (ns != NULL) {
+		trash->ns = ns;
+		return TRUE;
 	}
 	return FALSE;
 }
@@ -278,6 +271,11 @@ static int read_configuration(struct mail_user *user, const char *path)
 			ret = -1;
 		}
 
+		if (!uni_utf8_str_is_valid(trash->name)) {
+			i_error("trash: Mailbox name not UTF-8: %s",
+				trash->name);
+			ret = -1;
+		}
 		if (!trash_find_storage(user, trash)) {
 			i_error("trash: Namespace not found for mailbox '%s'",
 				trash->name);

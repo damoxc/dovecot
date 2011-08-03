@@ -148,6 +148,7 @@ virtual_sync_get_backend_box(struct virtual_sync_context *ctx, const char *name,
 
 static int virtual_sync_ext_header_read(struct virtual_sync_context *ctx)
 {
+	const char *box_path = mailbox_get_path(&ctx->mbox->box);
 	const struct virtual_mail_index_header *ext_hdr;
 	const struct mail_index_header *hdr;
 	const struct virtual_mail_index_mailbox_record *mailboxes;
@@ -184,7 +185,7 @@ static int virtual_sync_ext_header_read(struct virtual_sync_context *ctx)
 		if (ext_name_offset >= ext_size ||
 		    ext_hdr->mailbox_count > INT_MAX/sizeof(*mailboxes)) {
 			i_error("virtual index %s: Broken mailbox_count header",
-				ctx->mbox->box.path);
+				box_path);
 			ctx->index_broken = TRUE;
 			ext_mailbox_count = 0;
 			ret = 0;
@@ -199,18 +200,18 @@ static int virtual_sync_ext_header_read(struct virtual_sync_context *ctx)
 		if (mailboxes[i].id > ext_hdr->highest_mailbox_id ||
 		    mailboxes[i].id <= prev_mailbox_id) {
 			i_error("virtual index %s: Broken mailbox id",
-				ctx->mbox->box.path);
+				box_path);
 			break;
 		}
 		if (mailboxes[i].name_len == 0 ||
 		    mailboxes[i].name_len > ext_size) {
 			i_error("virtual index %s: Broken mailbox name_len",
-				ctx->mbox->box.path);
+				box_path);
 			break;
 		}
 		if (ext_name_offset + mailboxes[i].name_len > ext_size) {
 			i_error("virtual index %s: Broken mailbox list",
-				ctx->mbox->box.path);
+				box_path);
 			break;
 		}
 		T_BEGIN {
@@ -405,7 +406,7 @@ static void virtual_sync_index_rec(struct virtual_sync_context *ctx,
 				MODIFY_ADD : MODIFY_REMOVE;
 			mail_update_keywords(bbox->sync_mail,
 					     modify_type, keywords);
-			mailbox_keywords_unref(bbox->box, &keywords);
+			mailbox_keywords_unref(&keywords);
 			break;
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
 			kw_names[0] = NULL;
@@ -413,7 +414,7 @@ static void virtual_sync_index_rec(struct virtual_sync_context *ctx,
 								 kw_names);
 			mail_update_keywords(bbox->sync_mail, MODIFY_REPLACE,
 					     keywords);
-			mailbox_keywords_unref(bbox->box, &keywords);
+			mailbox_keywords_unref(&keywords);
 			break;
 		case MAIL_INDEX_SYNC_TYPE_APPEND:
 			i_unreached();
@@ -473,9 +474,9 @@ static int virtual_sync_backend_box_init(struct virtual_backend_box *bbox)
 	int ret;
 
 	trans = mailbox_transaction_begin(bbox->box, 0);
-	mail = mail_alloc(trans, 0, NULL);
 
-	search_ctx = mailbox_search_init(trans, bbox->search_args, NULL);
+	search_ctx = mailbox_search_init(trans, bbox->search_args, NULL,
+					 0, NULL);
 
 	/* save the result and keep it updated */
 	result_flags = MAILBOX_SEARCH_RESULT_FLAG_UPDATE |
@@ -486,13 +487,11 @@ static int virtual_sync_backend_box_init(struct virtual_backend_box *bbox)
 	/* add the found UIDs to uidmap. virtual_uid gets assigned later. */
 	memset(&uidmap, 0, sizeof(uidmap));
 	array_clear(&bbox->uids);
-	while (mailbox_search_next(search_ctx, mail)) {
+	while (mailbox_search_next(search_ctx, &mail)) {
 		uidmap.real_uid = mail->uid;
 		array_append(&bbox->uids, &uidmap, 1);
 	}
-
 	ret = mailbox_search_deinit(&search_ctx);
-	mail_free(&mail);
 
 	(void)mailbox_transaction_commit(&trans);
 	return ret;
@@ -985,8 +984,8 @@ static void virtual_sync_backend_ext_header(struct virtual_sync_context *ctx,
 	unsigned int mailbox_offset;
 	uint64_t wanted_ondisk_highest_modseq;
 
-	mailbox_get_status(bbox->box, STATUS_UIDVALIDITY |
-			   STATUS_HIGHESTMODSEQ, &status);
+	mailbox_get_open_status(bbox->box, STATUS_UIDVALIDITY |
+				STATUS_HIGHESTMODSEQ, &status);
 	wanted_ondisk_highest_modseq =
 		array_count(&bbox->sync_pending_removes) > 0 ? 0 :
 		status.highest_modseq;
@@ -1052,7 +1051,7 @@ static int virtual_sync_backend_box(struct virtual_sync_context *ctx,
 		if (mailbox_sync(bbox->box, sync_flags) < 0)
 			return -1;
 
-		mailbox_get_status(bbox->box, STATUS_UIDVALIDITY, &status);
+		mailbox_get_open_status(bbox->box, STATUS_UIDVALIDITY, &status);
 		virtual_backend_box_sync_mail_set(bbox);
 		if (status.uidvalidity != bbox->sync_uid_validity) {
 			/* UID validity changed since last sync (or this is
@@ -1444,7 +1443,7 @@ static int virtual_sync_finish(struct virtual_sync_context *ctx, bool success)
 			if (mail_index_unlink(ctx->index) < 0) {
 				i_error("virtual index %s: Failed to unlink() "
 					"broken indexes: %m",
-					ctx->mbox->box.path);
+					mailbox_get_path(&ctx->mbox->box));
 			}
 		}
 		mail_index_sync_rollback(&ctx->index_sync_ctx);

@@ -6,6 +6,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/plugins/fts \
 	$(CURL_CFLAGS)
 
+NOPLUGIN_LDFLAGS =
 lib21_fts_solr_plugin_la_LDFLAGS = -module -avoid-version
 
 module_LTLIBRARIES = \
@@ -21,6 +22,7 @@ lib21_fts_solr_plugin_la_LIBADD = \
 
 lib21_fts_solr_plugin_la_SOURCES = \
 	fts-backend-solr.c \
+	fts-backend-solr-old.c \
 	fts-solr-plugin.c \
 	solr-connection.c
 

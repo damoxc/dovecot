@@ -18,7 +18,6 @@
 #include "unichar.h"
 #include "rfc822-parser.h"
 #include "message-address.h"
-#include "imap-utf7.h"
 #include "settings-parser.h"
 #include "master-service.h"
 #include "master-service-settings.h"
@@ -379,6 +378,7 @@ int main(int argc, char *argv[])
 
 	memset(&raw_ns_set, 0, sizeof(raw_ns_set));
 	raw_ns_set.location = ":LAYOUT=none";
+	raw_ns_set.separator = "/";
 
 	raw_ns = mail_namespaces_init_empty(raw_mail_user);
 	raw_ns->flags |= NAMESPACE_FLAG_NOQUOTA | NAMESPACE_FLAG_NOACL;
@@ -392,7 +392,7 @@ int main(int argc, char *argv[])
 				    MAILBOX_FLAG_NO_INDEX_FILES);
 		if (mailbox_open_stream(box, input) < 0) {
 			i_fatal("Can't open delivery mail as raw: %s",
-				mail_storage_get_last_error(box->storage, &error));
+				mailbox_get_last_error(box, &error));
 		}
 		i_stream_unref(&input);
 	} else {
@@ -401,12 +401,12 @@ int main(int argc, char *argv[])
 				    MAILBOX_FLAG_NO_INDEX_FILES);
 		if (mailbox_open(box) < 0) {
 			i_fatal("Can't open delivery mail as raw: %s",
-				mail_storage_get_last_error(box->storage, &error));
+				mailbox_get_last_error(box, &error));
 		}
 	}
 	if (mailbox_sync(box, 0) < 0) {
 		i_fatal("Can't sync delivery mail: %s",
-			mail_storage_get_last_error(box->storage, &error));
+			mailbox_get_last_error(box, &error));
 	}
 	raw_box = (struct raw_mailbox *)box;
 	raw_box->envelope_sender = ctx.src_envelope_sender != NULL ?
