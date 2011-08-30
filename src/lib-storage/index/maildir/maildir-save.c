@@ -15,6 +15,7 @@
 #include "maildir-uidlist.h"
 #include "maildir-keywords.h"
 #include "maildir-filename.h"
+#include "maildir-filename-flags.h"
 #include "maildir-sync.h"
 
 #include <stdio.h>
@@ -116,6 +117,7 @@ maildir_save_transaction_init(struct mailbox_transaction_context *t)
 {
 	struct maildir_mailbox *mbox = (struct maildir_mailbox *)t->box;
 	struct maildir_save_context *ctx;
+	const char *path;
 	pool_t pool;
 
 	pool = pool_alloconly_create("maildir_save_context", 4096);
@@ -127,9 +129,10 @@ maildir_save_transaction_init(struct mailbox_transaction_context *t)
 	ctx->files_tail = &ctx->files;
 	ctx->fd = -1;
 
-	ctx->tmpdir = p_strconcat(pool, mbox->box.path, "/tmp", NULL);
-	ctx->newdir = p_strconcat(pool, mbox->box.path, "/new", NULL);
-	ctx->curdir = p_strconcat(pool, mbox->box.path, "/cur", NULL);
+	path = mailbox_get_path(&mbox->box);
+	ctx->tmpdir = p_strconcat(pool, path, "/tmp", NULL);
+	ctx->newdir = p_strconcat(pool, path, "/new", NULL);
+	ctx->curdir = p_strconcat(pool, path, "/cur", NULL);
 
 	buffer_create_const_data(&ctx->keywords_buffer, NULL, 0);
 	array_create_from_buffer(&ctx->keywords_array, &ctx->keywords_buffer,
@@ -208,8 +211,7 @@ maildir_save_add(struct mail_save_context *_ctx, const char *tmp_fname,
 			ctx->mail = mail_alloc(_ctx->transaction, 0, NULL);
 		_ctx->dest_mail = ctx->mail;
 	}
-	mail_set_seq(_ctx->dest_mail, ctx->seq);
-	_ctx->dest_mail->saving = TRUE;
+	mail_set_seq_saving(_ctx->dest_mail, ctx->seq);
 
 	if (ctx->input == NULL) {
 		/* copying with hardlinking. */
@@ -268,7 +270,7 @@ maildir_get_dest_filename(struct maildir_save_context *ctx,
 			return TRUE;
 		}
 
-		*fname_r = maildir_filename_set_flags(NULL, basename,
+		*fname_r = maildir_filename_flags_set(NULL, basename,
 					mf->flags & MAIL_FLAGS_MASK, NULL);
 		return FALSE;
 	}
@@ -276,7 +278,7 @@ maildir_get_dest_filename(struct maildir_save_context *ctx,
 	i_assert(ctx->keywords_sync_ctx != NULL || mf->keywords_count == 0);
 	buffer_create_const_data(&ctx->keywords_buffer, mf + 1,
 				 mf->keywords_count * sizeof(unsigned int));
-	*fname_r = maildir_filename_set_flags(ctx->keywords_sync_ctx, basename,
+	*fname_r = maildir_filename_flags_set(ctx->keywords_sync_ctx, basename,
 					      mf->flags & MAIL_FLAGS_MASK,
 					      &ctx->keywords_array);
 	return FALSE;
@@ -322,6 +324,7 @@ static int maildir_create_tmp(struct maildir_mailbox *mbox, const char *dir,
 			      const char **fname_r)
 {
 	struct mailbox *box = &mbox->box;
+	const struct mailbox_permissions *perm = mailbox_get_permissions(box);
 	unsigned int prefix_len;
 	const char *tmp_fname;
 	string_t *path;
@@ -342,7 +345,7 @@ static int maildir_create_tmp(struct maildir_mailbox *mbox, const char *dir,
 		   might return an existing filename is if the time moved
 		   backwards. so we'll use O_EXCL anyway, although it's mostly
 		   useless. */
-		old_mask = umask(0777 & ~box->file_create_mode);
+		old_mask = umask(0777 & ~perm->file_create_mode);
 		fd = open(str_c(path),
 			  O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0777);
 		umask(old_mask);
@@ -357,14 +360,14 @@ static int maildir_create_tmp(struct maildir_mailbox *mbox, const char *dir,
 			mail_storage_set_critical(box->storage,
 				"open(%s) failed: %m", str_c(path));
 		}
-	} else if (box->file_create_gid != (gid_t)-1) {
-		if (fchown(fd, (uid_t)-1, box->file_create_gid) < 0) {
+	} else if (perm->file_create_gid != (gid_t)-1) {
+		if (fchown(fd, (uid_t)-1, perm->file_create_gid) < 0) {
 			if (errno == EPERM) {
 				mail_storage_set_critical(box->storage, "%s",
 					eperm_error_get_chgrp("fchown",
 						str_c(path),
-						box->file_create_gid,
-						box->file_create_gid_origin));
+						perm->file_create_gid,
+						perm->file_create_gid_origin));
 			} else {
 				mail_storage_set_critical(box->storage,
 					"fchown(%s) failed: %m", str_c(path));
@@ -490,14 +493,12 @@ static int maildir_save_finish_received_date(struct maildir_save_context *ctx,
 
 static void maildir_save_remove_last_filename(struct maildir_save_context *ctx)
 {
-	struct index_transaction_context *t =
-		(struct index_transaction_context *)ctx->ctx.transaction;
 	struct maildir_filename **fm;
 
 	mail_index_expunge(ctx->trans, ctx->seq);
 	/* currently we can't just drop pending cache updates for this one
 	   specific record, so we'll reset the whole cache transaction. */
-	mail_cache_transaction_reset(t->cache_trans);
+	mail_cache_transaction_reset(ctx->ctx.transaction->cache_trans);
 	ctx->seq--;
 
 	for (fm = &ctx->files; (*fm)->next != NULL; fm = &(*fm)->next) ;
@@ -740,7 +741,7 @@ maildir_save_sync_index(struct maildir_save_context *ctx)
 		next_uid = maildir_save_set_recent_flags(ctx);
 	} T_END;
 
-	if ((mbox->box.flags & MAILBOX_FLAG_KEEP_RECENT) == 0)
+	if ((mbox->box.flags & MAILBOX_FLAG_DROP_RECENT) != 0)
 		first_recent_uid = next_uid;
 	else if (ctx->last_nonrecent_uid != 0)
 		first_recent_uid = ctx->last_nonrecent_uid + 1;
@@ -763,8 +764,6 @@ maildir_save_sync_index(struct maildir_save_context *ctx)
 static void
 maildir_save_rollback_index_changes(struct maildir_save_context *ctx)
 {
-	struct index_transaction_context *t =
-		(struct index_transaction_context *)ctx->ctx.transaction;
 	uint32_t seq;
 
 	if (ctx->seq == 0)
@@ -773,7 +772,7 @@ maildir_save_rollback_index_changes(struct maildir_save_context *ctx)
 	for (seq = ctx->seq; seq >= ctx->first_seq; seq--)
 		mail_index_expunge(ctx->trans, seq);
 
-	mail_cache_transaction_reset(t->cache_trans);
+	mail_cache_transaction_reset(ctx->ctx.transaction->cache_trans);
 }
 
 static bool maildir_filename_has_conflict(struct maildir_filename *mf,

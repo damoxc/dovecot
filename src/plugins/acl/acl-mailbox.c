@@ -75,27 +75,14 @@ static bool acl_is_readonly(struct mailbox *box)
 	if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_EXPUNGE) > 0)
 		return FALSE;
 
-	/* Next up is the "shared flag rights" */
 	if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE) > 0)
 		return FALSE;
-	if ((box->private_flags_mask & MAIL_DELETED) == 0 &&
-	    acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_DELETED) > 0)
+	if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_DELETED) > 0)
 		return FALSE;
-	if ((box->private_flags_mask & MAIL_SEEN) == 0 &&
-	    acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_SEEN) > 0)
+	if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_SEEN) > 0)
 		return FALSE;
 
 	return TRUE;
-}
-
-static bool acl_allow_new_keywords(struct mailbox *box)
-{
-	struct acl_mailbox *abox = ACL_CONTEXT(box);
-
-	if (!abox->module_ctx.super.allow_new_keywords(box))
-		return FALSE;
-
-	return acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE) > 0;
 }
 
 static void acl_mailbox_free(struct mailbox *box)
@@ -425,33 +412,31 @@ acl_transaction_commit(struct mailbox_transaction_context *ctx,
 	return abox->module_ctx.super.transaction_commit(ctx, changes_r);
 }
 
-static int
-acl_keywords_create(struct mailbox *box, const char *const keywords[],
-		    struct mail_keywords **keywords_r, bool skip_invalid)
+static int acl_mailbox_exists(struct mailbox *box, bool auto_boxes,
+			      enum mailbox_existence *existence_r)
 {
 	struct acl_mailbox *abox = ACL_CONTEXT(box);
-	int ret;
+	const char *const *rights;
+	unsigned int i;
 
-	ret = acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE);
-	if (ret < 0) {
-		if (!skip_invalid)
-			return -1;
-		/* we can't return failure. assume we don't have permissions. */
-		ret = 0;
+	if (acl_object_get_my_rights(abox->aclobj, pool_datastack_create(),
+				     &rights) < 0)
+		return -1;
+
+	/* for now this is used only by IMAP SUBSCRIBE. we'll intentionally
+	   violate RFC 4314 here, because it says SUBSCRIBE should succeed only
+	   when mailbox has 'l' right. But there's no point in not allowing
+	   a subscribe for a mailbox that can be selected anyway. Just the
+	   opposite: subscribing to such mailboxes is a very useful feature. */
+	for (i = 0; rights[i] != NULL; i++) {
+		if (strcmp(rights[i], MAIL_ACL_LOOKUP) == 0 ||
+		    strcmp(rights[i], MAIL_ACL_READ) == 0 ||
+		    strcmp(rights[i], MAIL_ACL_INSERT) == 0)
+			return abox->module_ctx.super.exists(box, auto_boxes,
+							     existence_r);
 	}
-
-	if (ret == 0) {
-		/* no permission to update any flags. just return empty
-		   keywords list. */
-		const char *null = NULL;
-
-		return abox->module_ctx.super.keywords_create(box, &null,
-							      keywords_r,
-							      skip_invalid);
-	}
-
-	return abox->module_ctx.super.keywords_create(box, keywords,
-						      keywords_r, skip_invalid);
+	*existence_r = MAILBOX_EXISTENCE_NONE;
+	return 0;
 }
 
 static int acl_mailbox_open_check_acl(struct mailbox *box)
@@ -496,6 +481,29 @@ static int acl_mailbox_open(struct mailbox *box)
 	return abox->module_ctx.super.open(box);
 }
 
+static int acl_mailbox_get_status(struct mailbox *box,
+				  enum mailbox_status_items items,
+				  struct mailbox_status *status_r)
+{
+	struct acl_mailbox *abox = ACL_CONTEXT(box);
+
+	if (abox->module_ctx.super.get_status(box, items, status_r) < 0)
+		return -1;
+
+	if ((items & STATUS_PERMANENT_FLAGS) != 0) {
+		if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE) <= 0) {
+			status_r->permanent_flags &= MAIL_DELETED|MAIL_SEEN;
+			status_r->permanent_keywords = FALSE;
+			status_r->allow_new_keywords = FALSE;
+		}
+		if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_DELETED) <= 0)
+			status_r->permanent_flags &= ~MAIL_DELETED;
+		if (acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_WRITE_SEEN) <= 0)
+			status_r->permanent_flags &= ~MAIL_SEEN;
+	}
+	return 0;
+}
+
 void acl_mailbox_allocated(struct mailbox *box)
 {
 	struct acl_mailbox_list *alist = ACL_LIST_CONTEXT(box->list);
@@ -519,14 +527,14 @@ void acl_mailbox_allocated(struct mailbox *box)
 	if ((box->flags & MAILBOX_FLAG_IGNORE_ACLS) == 0) {
 		abox->acl_enabled = TRUE;
 		v->is_readonly = acl_is_readonly;
-		v->allow_new_keywords = acl_allow_new_keywords;
+		v->exists = acl_mailbox_exists;
 		v->open = acl_mailbox_open;
+		v->get_status = acl_mailbox_get_status;
 		v->create = acl_mailbox_create;
 		v->update = acl_mailbox_update;
 		v->delete = acl_mailbox_delete;
 		v->rename = acl_mailbox_rename;
 		v->save_begin = acl_save_begin;
-		v->keywords_create = acl_keywords_create;
 		v->copy = acl_copy;
 		v->transaction_commit = acl_transaction_commit;
 	}

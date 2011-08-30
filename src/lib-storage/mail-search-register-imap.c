@@ -3,8 +3,10 @@
 #include "lib.h"
 #include "ioloop.h"
 #include "array.h"
+#include "str.h"
 #include "imap-date.h"
 #include "imap-seqset.h"
+#include "imap-utf7.h"
 #include "imap-util.h"
 #include "mail-search-register.h"
 #include "mail-search-parser.h"
@@ -42,7 +44,7 @@ imap_search_not(struct mail_search_build_context *ctx)
 	if (mail_search_build_key(ctx, ctx->parent, &sarg) < 0)
 		return NULL;
 
-	sarg->not = !sarg->not;
+	sarg->match_not = !sarg->match_not;
 	return sarg;
 }
 
@@ -111,7 +113,7 @@ imap_search_##_func(struct mail_search_build_context *ctx) \
 	struct mail_search_arg *sarg; \
 	sarg = mail_search_build_new(ctx, SEARCH_FLAGS); \
 	sarg->value.flags = _flag; \
-	sarg->not = _not; \
+	sarg->match_not = _not; \
 	return sarg; \
 }
 CALLBACK_FLAG(answered, MAIL_ANSWERED, FALSE);
@@ -148,7 +150,7 @@ imap_search_unkeyword(struct mail_search_build_context *ctx)
 
 	sarg = imap_search_keyword(ctx);
 	if (sarg != NULL)
-		sarg->not = TRUE;
+		sarg->match_not = TRUE;
 	return sarg;
 }
 
@@ -230,8 +232,10 @@ arg_new_header(struct mail_search_build_context *ctx,
 	if (mail_search_parse_string(ctx->parser, &value) < 0)
 		return NULL;
 
+	if (mail_search_build_get_utf8(ctx, value, &sarg->value.str) < 0)
+		return NULL;
+
 	sarg->hdr_field_name = p_strdup(ctx->pool, hdr_name);
-	sarg->value.str = p_strdup(ctx->pool, value);
 	return sarg;
 }
 
@@ -259,20 +263,36 @@ imap_search_header(struct mail_search_build_context *ctx)
 	return arg_new_header(ctx, SEARCH_HEADER, t_str_ucase(hdr_name));
 }
 
+static struct mail_search_arg *
+arg_new_body(struct mail_search_build_context *ctx,
+	     enum mail_search_arg_type type)
+{
+	struct mail_search_arg *sarg;
+
+	sarg = mail_search_build_str(ctx, type);
+	if (sarg == NULL)
+		return NULL;
+
+	if (mail_search_build_get_utf8(ctx, sarg->value.str,
+				       &sarg->value.str) < 0)
+		return NULL;
+
+	if (mail_search_parse_skip_next(ctx->parser, "")) {
+		/* optimization: BODY "" matches everything
+		   (but do this only after checking charset and key are ok) */
+		return mail_search_build_new(ctx, SEARCH_ALL);
+	}
+	return sarg;
+}
+
 #define CALLBACK_BODY(_func, _type) \
 static struct mail_search_arg *\
 imap_search_##_func(struct mail_search_build_context *ctx) \
 { \
-	if (mail_search_parse_skip_next(ctx->parser, "")) { \
-		/* optimization: BODY "" matches everything */ \
-		return mail_search_build_new(ctx, SEARCH_ALL); \
-	} \
-	return mail_search_build_str(ctx, _type); \
+	return arg_new_body(ctx, _type); \
 }
 CALLBACK_BODY(body, SEARCH_BODY);
 CALLBACK_BODY(text, SEARCH_TEXT);
-CALLBACK_BODY(x_body_fast, SEARCH_BODY_FAST);
-CALLBACK_BODY(x_text_fast, SEARCH_TEXT_FAST);
 
 static struct mail_search_arg *
 arg_new_interval(struct mail_search_build_context *ctx,
@@ -406,6 +426,35 @@ imap_search_last_result(struct mail_search_build_context *ctx)
 	return sarg;
 }
 
+static void mail_search_arg_set_fuzzy(struct mail_search_arg *sarg)
+{
+	for (; sarg != NULL; sarg = sarg->next) {
+		sarg->fuzzy = TRUE;
+		switch (sarg->type) {
+		case SEARCH_OR:
+		case SEARCH_SUB:
+		case SEARCH_INTHREAD:
+			mail_search_arg_set_fuzzy(sarg->value.subargs);
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+static struct mail_search_arg *
+imap_search_fuzzy(struct mail_search_build_context *ctx)
+{
+	struct mail_search_arg *sarg;
+
+	if (mail_search_build_key(ctx, ctx->parent, &sarg) < 0)
+		return NULL;
+	i_assert(sarg->next == NULL);
+
+	mail_search_arg_set_fuzzy(sarg);
+	return sarg;
+}
+
 static struct mail_search_arg *
 imap_search_inthread(struct mail_search_build_context *ctx)
 {
@@ -430,7 +479,25 @@ imap_search_inthread(struct mail_search_build_context *ctx)
 }
 
 CALLBACK_STR(x_guid, SEARCH_GUID);
-CALLBACK_STR(x_mailbox, SEARCH_MAILBOX_GLOB);
+
+static struct mail_search_arg *
+imap_search_x_mailbox(struct mail_search_build_context *ctx)
+{
+	struct mail_search_arg *sarg;
+	string_t *utf8_name;
+
+	sarg = mail_search_build_str(ctx, SEARCH_MAILBOX_GLOB);
+	if (sarg == NULL)
+		return NULL;
+
+	utf8_name = t_str_new(strlen(sarg->value.str));
+	if (imap_utf7_to_utf8(sarg->value.str, utf8_name) < 0) {
+		ctx->_error = "X-MAILBOX name not mUTF-7";
+		return NULL;
+	}
+	sarg->value.str = p_strdup(ctx->pool, str_c(utf8_name));
+	return sarg;
+}
 
 const struct mail_search_register_arg imap_register_args[] = {
 	/* argument set operations */
@@ -486,8 +553,6 @@ const struct mail_search_register_arg imap_register_args[] = {
 	/* body */
 	{ "BODY", imap_search_body },
 	{ "TEXT", imap_search_text },
-	{ "X-BODY-FAST", imap_search_x_body_fast },
-	{ "X-TEXT-FAST", imap_search_x_text_fast },
 
 	/* WITHIN extension: */
 	{ "OLDER", imap_search_older },
@@ -498,6 +563,9 @@ const struct mail_search_register_arg imap_register_args[] = {
 
 	/* SEARCHRES extension: */
 	{ "$", imap_search_last_result },
+
+	/* FUZZY extension: */
+	{ "FUZZY", imap_search_fuzzy },
 
 	/* Other Dovecot extensions: */
 	{ "INTHREAD", imap_search_inthread },

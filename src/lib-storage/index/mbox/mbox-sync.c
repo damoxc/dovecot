@@ -73,13 +73,13 @@ void mbox_sync_set_critical(struct mbox_sync_context *sync_ctx,
 		mail_storage_set_critical(&sync_ctx->mbox->storage->storage,
 			"mbox file %s was modified while we were syncing, "
 			"check your locking settings",
-			sync_ctx->mbox->box.path);
+			mailbox_get_path(&sync_ctx->mbox->box));
 	}
 
 	va_start(va, fmt);
 	mail_storage_set_critical(&sync_ctx->mbox->storage->storage,
 				  "Sync failed for mbox file %s: %s",
-				  sync_ctx->mbox->box.path,
+				  mailbox_get_path(&sync_ctx->mbox->box),
 				  t_strdup_vprintf(fmt, va));
 	va_end(va);
 }
@@ -172,7 +172,7 @@ mbox_sync_read_next_mail(struct mbox_sync_context *sync_ctx,
 static void mbox_sync_read_index_syncs(struct mbox_sync_context *sync_ctx,
 				       uint32_t uid, bool *sync_expunge_r)
 {
-	uint8_t expunged_guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t expunged_guid_128;
 
 	if (uid == 0 || sync_ctx->index_reset) {
 		/* nothing for this or the future ones */
@@ -991,7 +991,7 @@ static bool mbox_sync_imapbase(struct mbox_sync_context *sync_ctx,
 		i_warning("UIDVALIDITY changed (%u -> %u) in mbox file %s",
 			  sync_ctx->hdr->uid_validity,
 			  sync_ctx->base_uid_validity,
-			  sync_ctx->mbox->box.path);
+			  mailbox_get_path(&sync_ctx->mbox->box));
 		sync_ctx->index_reset = TRUE;
 		return TRUE;
 	}
@@ -1114,7 +1114,7 @@ static int mbox_sync_loop(struct mbox_sync_context *sync_ctx,
 					&sync_ctx->mbox->storage->storage,
 					"Out of UIDs, renumbering them in mbox "
 					"file %s",
-					sync_ctx->mbox->box.path);
+					mailbox_get_path(&sync_ctx->mbox->box));
 				sync_ctx->renumber_uids = TRUE;
 				return 0;
 			}
@@ -1376,25 +1376,25 @@ static int mbox_sync_handle_eof_updates(struct mbox_sync_context *sync_ctx,
 }
 
 static void
-mbox_sync_index_update_ext_header(struct mbox_sync_context *sync_ctx)
+mbox_sync_index_update_ext_header(struct mbox_mailbox *mbox,
+				  struct mail_index_transaction *trans)
 {
-	const struct mailbox_update *update = sync_ctx->mbox->sync_hdr_update;
-	struct mbox_mailbox *mbox = sync_ctx->mbox;
+	const struct mailbox_update *update = mbox->sync_hdr_update;
 	const void *data;
 	size_t data_size;
 
-	if (update != NULL && !mail_guid_128_is_empty(update->mailbox_guid)) {
+	if (update != NULL && !guid_128_is_empty(update->mailbox_guid)) {
 		memcpy(mbox->mbox_hdr.mailbox_guid, update->mailbox_guid,
 		       sizeof(mbox->mbox_hdr.mailbox_guid));
-	} else if (mail_guid_128_is_empty(mbox->mbox_hdr.mailbox_guid)) {
-		mail_generate_guid_128(mbox->mbox_hdr.mailbox_guid);
+	} else if (guid_128_is_empty(mbox->mbox_hdr.mailbox_guid)) {
+		guid_128_generate(mbox->mbox_hdr.mailbox_guid);
 	}
 
 	mail_index_get_header_ext(mbox->box.view, mbox->mbox_ext_idx,
 				  &data, &data_size);
 	if (data_size != sizeof(mbox->mbox_hdr) ||
 	    memcmp(data, &mbox->mbox_hdr, data_size) != 0) {
-		mail_index_update_header_ext(sync_ctx->t, mbox->mbox_ext_idx,
+		mail_index_update_header_ext(trans, mbox->mbox_ext_idx,
 					     0, &mbox->mbox_hdr,
 					     sizeof(mbox->mbox_hdr));
 	}
@@ -1429,7 +1429,7 @@ static int mbox_sync_update_index_header(struct mbox_sync_context *sync_ctx)
 		   quite minimal (an extra logged error message). */
 		while (sync_ctx->orig_mtime == st->st_mtime) {
 			usleep(500000);
-			if (utime(sync_ctx->mbox->box.path, NULL) < 0) {
+			if (utime(mailbox_get_path(&sync_ctx->mbox->box), NULL) < 0) {
 				mbox_set_syscall_error(sync_ctx->mbox,
 						       "utime()");
 				return -1;
@@ -1446,7 +1446,7 @@ static int mbox_sync_update_index_header(struct mbox_sync_context *sync_ctx)
 
 	sync_ctx->mbox->mbox_hdr.sync_mtime = st->st_mtime;
 	sync_ctx->mbox->mbox_hdr.sync_size = st->st_size;
-	mbox_sync_index_update_ext_header(sync_ctx);
+	mbox_sync_index_update_ext_header(sync_ctx->mbox, sync_ctx->t);
 
 	/* only reason not to have UID validity at this point is if the file
 	   is entirely empty. In that case just make up a new one if needed. */
@@ -1628,7 +1628,6 @@ static int mbox_sync_do(struct mbox_sync_context *sync_ctx,
 
 int mbox_sync_header_refresh(struct mbox_mailbox *mbox)
 {
-	const struct mail_index_header *hdr;
 	const void *data;
 	size_t data_size;
 
@@ -1640,10 +1639,8 @@ int mbox_sync_header_refresh(struct mbox_mailbox *mbox)
 	mail_index_get_header_ext(mbox->box.view, mbox->mbox_ext_idx,
 				  &data, &data_size);
 	if (data_size == 0) {
-		/* doesn't exist. FIXME: backwards compatibility copying */
-		hdr = mail_index_get_header(mbox->box.view);
-		mbox->mbox_hdr.sync_mtime = hdr->sync_stamp;
-		mbox->mbox_hdr.sync_size = hdr->sync_size;
+		/* doesn't exist yet. */
+		memset(&mbox->mbox_hdr, 0, sizeof(mbox->mbox_hdr));
 		return 0;
 	}
 
@@ -1651,6 +1648,27 @@ int mbox_sync_header_refresh(struct mbox_mailbox *mbox)
 	if (mbox->mbox_broken_offsets)
 		mbox->mbox_hdr.dirty_flag = TRUE;
 	return 0;
+}
+
+int mbox_sync_get_guid(struct mbox_mailbox *mbox)
+{
+	struct mail_index_transaction *trans;
+	unsigned int lock_id;
+	int ret;
+
+	if (mbox_lock(mbox, F_WRLCK, &lock_id) <= 0)
+		return -1;
+
+	ret = mbox_sync_header_refresh(mbox);
+	if (ret == 0) {
+		trans = mail_index_transaction_begin(mbox->box.view,
+				MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL);
+		mbox_sync_index_update_ext_header(mbox, trans);
+		ret = mail_index_transaction_commit(&trans);
+	}
+	mbox_unlock(mbox, lock_id);
+	return ret;
+
 }
 
 int mbox_sync_has_changed(struct mbox_mailbox *mbox, bool leave_dirty)
@@ -1678,7 +1696,7 @@ int mbox_sync_has_changed_full(struct mbox_mailbox *mbox, bool leave_dirty,
 			return -1;
 		}
 	} else {
-		if (stat(mbox->box.path, &statbuf) < 0) {
+		if (stat(mailbox_get_path(&mbox->box), &statbuf) < 0) {
 			if (errno == ENOENT) {
 				mailbox_set_deleted(&mbox->box);
 				return 0;
@@ -1693,7 +1711,7 @@ int mbox_sync_has_changed_full(struct mbox_mailbox *mbox, bool leave_dirty,
 	if (mbox_sync_header_refresh(mbox) < 0)
 		return -1;
 
-	if (mail_guid_128_is_empty(mbox->mbox_hdr.mailbox_guid)) {
+	if (guid_128_is_empty(mbox->mbox_hdr.mailbox_guid)) {
 		/* need to assign mailbox GUID */
 		return 1;
 	}
@@ -1733,7 +1751,7 @@ static int mbox_sync_int(struct mbox_mailbox *mbox, enum mbox_sync_flags flags,
 	int ret, changed;
 	bool delay_writes, readonly;
 
-	readonly = mbox->box.backend_readonly ||
+	readonly = mbox_is_backend_readonly(mbox) ||
 		(flags & MBOX_SYNC_READONLY) != 0;
 	delay_writes = readonly ||
 		((flags & MBOX_SYNC_REWRITE) == 0 &&
@@ -1791,7 +1809,8 @@ again:
 			/* try as read-only */
 			if (mbox_lock(mbox, F_RDLCK, lock_id) <= 0)
 				return -1;
-			mbox->box.backend_readonly = readonly = TRUE;
+			mbox->backend_readonly = readonly = TRUE;
+			mbox->backend_readonly_set = TRUE;
 			delay_writes = TRUE;
 		}
 	}
@@ -1808,7 +1827,7 @@ again:
 		return ret;
 	}
 
-	if ((mbox->box.flags & MAILBOX_FLAG_KEEP_RECENT) == 0) {
+	if ((mbox->box.flags & MAILBOX_FLAG_DROP_RECENT) != 0) {
 		/* see if we need to drop recent flags */
 		sync_ctx.hdr = mail_index_get_header(sync_view);
 		if (sync_ctx.hdr->first_recent_uid < sync_ctx.hdr->next_uid)
@@ -1830,7 +1849,7 @@ again:
 	memset(&sync_ctx, 0, sizeof(sync_ctx));
 	sync_ctx.mbox = mbox;
 	sync_ctx.keep_recent =
-		(mbox->box.flags & MAILBOX_FLAG_KEEP_RECENT) != 0;
+		(mbox->box.flags & MAILBOX_FLAG_DROP_RECENT) == 0;
 
 	sync_ctx.hdr = mail_index_get_header(sync_view);
 	sync_ctx.from_line = str_new(default_pool, 256);
@@ -1915,7 +1934,8 @@ again:
 		else {
 			buf.modtime = st.st_mtime;
 			buf.actime = sync_ctx.orig_atime;
-			if (utime(mbox->box.path, &buf) < 0 && errno != EPERM)
+			if (utime(mailbox_get_path(&mbox->box), &buf) < 0 &&
+			    errno != EPERM)
 				mbox_set_syscall_error(mbox, "utime()");
 		}
 	}

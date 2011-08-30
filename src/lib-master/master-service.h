@@ -76,6 +76,11 @@ void master_service_set_die_with_master(struct master_service *service,
    done forcibly. If NULL, the service is stopped immediately. */
 void master_service_set_die_callback(struct master_service *service,
 				     void (*callback)(void));
+/* "idle callback" is called when master thinks we're idling and asks us to
+   die. We'll do it only if the idle callback returns TRUE. This callback isn't
+   even called if the master service code knows that we're handling clients. */
+void master_service_set_idle_die_callback(struct master_service *service,
+					  bool (*callback)(void));
 /* Call the given callback when there are no available connections and master
    has indicated that it can't create any more processes to handle requests.
    The callback could decide to kill one of the existing connections. */
@@ -87,6 +92,9 @@ void master_service_set_client_limit(struct master_service *service,
 				     unsigned int client_limit);
 /* Returns the maximum number of clients we can handle. */
 unsigned int master_service_get_client_limit(struct master_service *service);
+/* Returns how many processes of this type can be created before reaching the
+   limit. */
+unsigned int master_service_get_process_limit(struct master_service *service);
 
 /* Set maximum number of client connections we will handle before shutting
    down. */
@@ -121,6 +129,9 @@ bool master_service_is_killed(struct master_service *service);
 void master_service_anvil_send(struct master_service *service, const char *cmd);
 /* Call to accept the client connection. Otherwise the connection is closed. */
 void master_service_client_connection_accept(struct master_service_connection *conn);
+/* Used to create "extra client connections" outside the common accept()
+   method. */
+void master_service_client_connection_created(struct master_service *service);
 /* Call whenever a client connection is destroyed. */
 void master_service_client_connection_destroyed(struct master_service *service);
 

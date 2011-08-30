@@ -5,10 +5,12 @@ noinst_LIBRARIES = libstorage_test.a
 
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
+	-I$(top_srcdir)/src/lib-test \
 	-I$(top_srcdir)/src/lib-auth \
 	-I$(top_srcdir)/src/lib-dict \
 	-I$(top_srcdir)/src/lib-master \
 	-I$(top_srcdir)/src/lib-settings \
+	-I$(top_srcdir)/src/lib-charset \
 	-I$(top_srcdir)/src/lib-mail \
 	-I$(top_srcdir)/src/lib-imap \
 	-I$(top_srcdir)/src/lib-index \
@@ -33,6 +35,10 @@ libstorage_la_SOURCES = \
 	mail-storage-settings.c \
 	mail-thread.c \
 	mail-user.c \
+	mailbox-get.c \
+	mailbox-guid-cache.c \
+	mailbox-header.c \
+	mailbox-keywords.c \
 	mailbox-list.c \
 	mailbox-search-result.c \
 	mailbox-tree.c \
@@ -57,6 +63,7 @@ headers = \
 	mail-storage-service.h \
 	mail-storage-settings.h \
 	mail-user.h \
+	mailbox-guid-cache.h \
 	mailbox-list.h \
 	mailbox-list-private.h \
 	mailbox-search-result-private.h \
@@ -85,6 +92,25 @@ libstorage_test_a_SOURCES = \
 
 test_headers = \
 	test-mail-storage.h
+
+test_programs = \
+	test-mailbox-get
+
+noinst_PROGRAMS = $(test_programs)
+
+test_libs = \
+	$(top_builddir)/src/lib-test/libtest.la \
+	$(top_builddir)/src/lib/liblib.la
+
+test_mailbox_get_SOURCES = test-mailbox-get.c
+test_mailbox_get_LDADD = mailbox-get.lo $(test_libs)
+test_mailbox_get_DEPENDENCIES = mailbox-get.lo $(test_libs)
+
+check: check-am check-test
+check-test: all-am
+	for bin in $(test_programs); do \
+	  if ! $(RUN_TEST) ./$$bin; then exit 1; fi; \
+	done
 
 pkginc_libdir=$(pkgincludedir)
 pkginc_lib_HEADERS = $(headers)

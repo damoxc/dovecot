@@ -88,6 +88,8 @@ struct index_mail_data {
 	enum mail_fetch_field cache_fetch_fields, dont_cache_fetch_fields;
 	unsigned int dont_cache_field_idx;
 
+	buffer_t *search_results;
+
 	struct istream *stream, *filter_stream;
 	struct tee_istream *tee_stream;
 	struct message_size hdr_size, body_size;
@@ -96,6 +98,7 @@ struct index_mail_data {
 	ARRAY_TYPE(keywords) keywords;
 	ARRAY_TYPE(keyword_indexes) keyword_indexes;
 
+	unsigned int initialized:1;
 	unsigned int save_sent_date:1;
 	unsigned int sent_date_parsed:1;
 	unsigned int save_envelope:1;
@@ -112,6 +115,7 @@ struct index_mail_data {
 	unsigned int destroying_stream:1;
 	unsigned int initialized_wrapper_stream:1;
 	unsigned int destroy_callback_set:1;
+	unsigned int prefetch_sent:1;
 };
 
 struct index_mail {
@@ -120,11 +124,9 @@ struct index_mail {
 	struct index_mailbox_context *ibox;
 
 	pool_t data_pool;
-	struct index_transaction_context *trans;
-	uint32_t uid_validity;
 
 	enum mail_fetch_field wanted_fields;
-	struct index_header_lookup_ctx *wanted_headers;
+	struct mailbox_header_lookup_ctx *wanted_headers;
 
 	int pop3_state;
 
@@ -141,6 +143,8 @@ struct index_mail {
 	uint8_t header_match_value;
 
 	unsigned int pop3_state_set:1;
+	/* mail created by mailbox_search_*() */
+	unsigned int search_mail:1;
 };
 
 struct mail *
@@ -152,9 +156,10 @@ void index_mail_init(struct index_mail *mail,
 		     enum mail_fetch_field wanted_fields,
 		     struct mailbox_header_lookup_ctx *_wanted_headers);
 
-void index_mail_set_seq(struct mail *mail, uint32_t seq);
+void index_mail_set_seq(struct mail *mail, uint32_t seq, bool saving);
 bool index_mail_set_uid(struct mail *mail, uint32_t uid);
 void index_mail_set_uid_cache_updates(struct mail *mail, bool set);
+bool index_mail_prefetch(struct mail *mail);
 void index_mail_close(struct mail *mail);
 void index_mail_free(struct mail *mail);
 
@@ -226,7 +231,5 @@ void index_mail_cache_parse_deinit(struct mail *mail, time_t received_date,
 
 int index_mail_cache_lookup_field(struct index_mail *mail, buffer_t *buf,
 				  unsigned int field_idx);
-
-enum index_mail_access_part index_mail_get_access_part(struct index_mail *mail);
 
 #endif

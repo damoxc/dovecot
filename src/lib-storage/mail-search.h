@@ -35,8 +35,6 @@ enum mail_search_arg_type {
 	/* body */
 	SEARCH_BODY,
 	SEARCH_TEXT,
-	SEARCH_BODY_FAST,
-	SEARCH_TEXT_FAST,
 
 	/* extensions */
 	SEARCH_MODSEQ,
@@ -93,9 +91,10 @@ struct mail_search_arg {
 
         void *context;
 	const char *hdr_field_name; /* for SEARCH_HEADER* */
-	unsigned int not:1;
+	unsigned int match_not:1; /* result = !result */
 	unsigned int match_always:1; /* result = 1 always */
 	unsigned int nonmatch_always:1; /* result = 0 always */
+	unsigned int fuzzy:1; /* use fuzzy matching for this arg */
 
 	int result; /* -1 = unknown, 0 = unmatched, 1 = matched */
 };
@@ -106,7 +105,6 @@ struct mail_search_args {
 	pool_t pool;
 	struct mailbox *box;
 	struct mail_search_arg *args;
-	const char *charset;
 
 	unsigned int simplified:1;
 	unsigned int have_inthreads:1;
@@ -114,7 +112,7 @@ struct mail_search_args {
 
 #define ARG_SET_RESULT(arg, res) \
 	STMT_START { \
-		(arg)->result = !(arg)->not ? (res) : \
+		(arg)->result = !(arg)->match_not ? (res) : \
 			(res) == -1 ? -1 : !(res); \
 	} STMT_END
 
@@ -176,7 +174,14 @@ bool mail_search_args_match_mailbox(struct mail_search_args *args,
 				    const char *vname, char sep);
 
 /* Simplify/optimize search arguments. Afterwards all OR/SUB args are
-   guaranteed to have not=FALSE. */
+   guaranteed to have match_not=FALSE. */
 void mail_search_args_simplify(struct mail_search_args *args);
+
+/* Serialization for search args' results. */
+void mail_search_args_result_serialize(const struct mail_search_args *args,
+				       buffer_t *dest);
+void mail_search_args_result_deserialize(struct mail_search_args *args,
+					 const unsigned char *data,
+					 size_t size);
 
 #endif

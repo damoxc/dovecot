@@ -1,19 +1,100 @@
 /* Copyright (c) 2006-2011 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
-#include "mail-storage-private.h"
+#include "crc32.h"
+#include "mail-storage-hooks.h"
+#include "lucene-wrapper.h"
 #include "fts-lucene-plugin.h"
 
 const char *fts_lucene_plugin_version = DOVECOT_VERSION;
 
-unsigned int fts_lucene_storage_module_id;
+struct fts_lucene_user_module fts_lucene_user_module =
+	MODULE_CONTEXT_INIT(&mail_user_module_register);
+
+static int
+fts_lucene_plugin_init_settings(struct mail_user *user,
+				struct fts_lucene_settings *set,
+				const char *str)
+{
+	const char *const *tmp;
+
+	set->default_language = "english";
+	for (tmp = t_strsplit_spaces(str, " "); *tmp != NULL; tmp++) {
+		if (strncmp(*tmp, "default_language=", 17) == 0) {
+			set->default_language =
+				p_strdup(user->pool, *tmp + 17);
+		} else if (strncmp(*tmp, "textcat_conf=", 13) == 0) {
+			set->textcat_conf = p_strdup(user->pool, *tmp + 13);
+		} else if (strncmp(*tmp, "textcat_dir=", 12) == 0) {
+			set->textcat_dir = p_strdup(user->pool, *tmp + 12);
+		} else {
+			i_error("fts_lucene: Invalid setting: %s", *tmp);
+			return -1;
+		}
+	}
+	if (set->textcat_conf != NULL && set->textcat_dir == NULL) {
+		i_error("fts_lucene: textcat_conf set, but textcat_dir unset");
+		return -1;
+	}
+	if (set->textcat_conf == NULL && set->textcat_dir != NULL) {
+		i_error("fts_lucene: textcat_dir set, but textcat_conf unset");
+		return -1;
+	}
+#ifndef HAVE_LUCENE_STEMMER
+	if (set->default_language != NULL) {
+		i_error("fts_lucene: default_language set, "
+			"but Dovecot built without stemmer support");
+		return -1;
+	}
+#endif
+#ifndef HAVE_LUCENE_TEXTCAT
+	if (set->textcat_conf != NULL) {
+		i_error("fts_lucene: textcat_dir set, "
+			"but Dovecot built without textcat support");
+		return -1;
+	}
+#endif
+	return 0;
+}
+
+uint32_t fts_lucene_settings_checksum(const struct fts_lucene_settings *set)
+{
+	/* only the default language change matters */
+	return crc32_str(set->default_language);
+}
+
+static void fts_lucene_mail_user_created(struct mail_user *user)
+{
+	struct fts_lucene_user *fuser;
+	const char *env;
+
+	fuser = p_new(user->pool, struct fts_lucene_user, 1);
+	env = mail_user_plugin_getenv(user, "fts_lucene");
+	if (env == NULL)
+		env = "";
+
+	if (fts_lucene_plugin_init_settings(user, &fuser->set, env) < 0) {
+		/* invalid settings, disabling */
+		return;
+	}
+	MODULE_CONTEXT_SET(user, fts_lucene_user_module, fuser);
+}
+
+static struct mail_storage_hooks fts_lucene_mail_storage_hooks = {
+	.mail_user_created = fts_lucene_mail_user_created
+};
 
 void fts_lucene_plugin_init(struct module *module ATTR_UNUSED)
 {
 	fts_backend_register(&fts_backend_lucene);
+	mail_storage_hooks_add(module, &fts_lucene_mail_storage_hooks);
 }
 
 void fts_lucene_plugin_deinit(void)
 {
 	fts_backend_unregister(fts_backend_lucene.name);
+	mail_storage_hooks_remove(&fts_lucene_mail_storage_hooks);
+	lucene_shutdown();
 }
+
+const char *fts_lucene_plugin_dependencies[] = { "fts", NULL };

@@ -274,10 +274,14 @@ static int squat_trie_is_file_stale(struct squat_trie *trie)
 	return 1;
 }
 
-void squat_trie_refresh(struct squat_trie *trie)
+int squat_trie_refresh(struct squat_trie *trie)
 {
-	if (squat_trie_is_file_stale(trie) > 0)
-		(void)squat_trie_open(trie);
+	int ret;
+
+	ret = squat_trie_is_file_stale(trie);
+	if (ret > 0)
+		ret = squat_trie_open(trie);
+	return ret;
 }
 
 static int squat_trie_lock(struct squat_trie *trie, int lock_type,
@@ -957,9 +961,9 @@ int squat_trie_build_more(struct squat_trie_build_context *ctx,
 			  uint32_t uid, enum squat_index_type type,
 			  const unsigned char *input, unsigned int size)
 {
-	int ret;
+	int ret = 0;
 
-	T_BEGIN {
+	if (size != 0) T_BEGIN {
 		ret = squat_trie_build_more_real(ctx, uid, type, input, size);
 	} T_END;
 	return ret;
@@ -1557,7 +1561,7 @@ int squat_trie_create_fd(struct squat_trie *trie, const char *path, int flags)
 	return fd;
 }
 
-int squat_trie_build_init(struct squat_trie *trie, uint32_t *last_uid_r,
+int squat_trie_build_init(struct squat_trie *trie,
 			  struct squat_trie_build_context **ctx_r)
 {
 	struct squat_trie_build_context *ctx;
@@ -1587,7 +1591,6 @@ int squat_trie_build_init(struct squat_trie *trie, uint32_t *last_uid_r,
 	ctx->uidlist_build_ctx = uidlist_build_ctx;
 	ctx->first_uid = trie->root.next_uid;
 
-	*last_uid_r = I_MAX((trie->root.next_uid+1)/2, 1) - 1;
 	*ctx_r = ctx;
 	return 0;
 }

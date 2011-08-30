@@ -5,6 +5,7 @@ struct message_size;
 
 #include "seq-range-array.h"
 #include "file-lock.h"
+#include "guid.h"
 #include "mail-types.h"
 #include "mail-error.h"
 #include "mailbox-list.h"
@@ -31,8 +32,8 @@ enum mailbox_flags {
 	MAILBOX_FLAG_READONLY		= 0x01,
 	/* Only saving/copying mails to mailbox works. */
 	MAILBOX_FLAG_SAVEONLY		= 0x02,
-	/* Don't reset MAIL_RECENT flags when syncing */
-	MAILBOX_FLAG_KEEP_RECENT	= 0x08,
+	/* Remove MAIL_RECENT flags when syncing */
+	MAILBOX_FLAG_DROP_RECENT	= 0x04,
 	/* Don't create index files for the mailbox */
 	MAILBOX_FLAG_NO_INDEX_FILES	= 0x10,
 	/* Keep mailbox exclusively locked all the time while it's open */
@@ -56,6 +57,12 @@ enum mailbox_feature {
 	MAILBOX_FEATURE_QRESYNC		= 0x02
 };
 
+enum mailbox_existence {
+	MAILBOX_EXISTENCE_NONE,
+	MAILBOX_EXISTENCE_NOSELECT,
+	MAILBOX_EXISTENCE_SELECT
+};
+
 enum mailbox_status_items {
 	STATUS_MESSAGES		= 0x01,
 	STATUS_RECENT		= 0x02,
@@ -65,9 +72,14 @@ enum mailbox_status_items {
 	STATUS_FIRST_UNSEEN_SEQ	= 0x20,
 	STATUS_KEYWORDS		= 0x40,
 	STATUS_HIGHESTMODSEQ	= 0x80,
-	STATUS_CACHE_FIELDS	= 0x100,
-	STATUS_VIRTUAL_SIZE	= 0x200,
+	STATUS_PERMANENT_FLAGS	= 0x200,
 	STATUS_FIRST_RECENT_UID	= 0x400
+};
+
+enum mailbox_metadata_items {
+	MAILBOX_METADATA_GUID		= 0x01,
+	MAILBOX_METADATA_VIRTUAL_SIZE	= 0x02,
+	MAILBOX_METADATA_CACHE_FIELDS	= 0x04
 };
 
 enum mailbox_search_result_flags {
@@ -89,7 +101,7 @@ enum mail_sort_type {
 	MAIL_SORT_SIZE		= 0x0010,
 	MAIL_SORT_SUBJECT	= 0x0020,
 	MAIL_SORT_TO		= 0x0040,
-	MAIL_SORT_SEARCH_SCORE	= 0x0080,
+	MAIL_SORT_RELEVANCY	= 0x0080,
 	MAIL_SORT_DISPLAYFROM	= 0x0100,
 	MAIL_SORT_DISPLAYTO	= 0x0200,
 	MAIL_SORT_POP3_ORDER	= 0x0400,
@@ -125,7 +137,7 @@ enum mail_fetch_field {
 	MAIL_FETCH_UIDL_FILE_NAME	= 0x00020000,
 	MAIL_FETCH_UIDL_BACKEND		= 0x00040000,
 	MAIL_FETCH_MAILBOX_NAME		= 0x00080000,
-	MAIL_FETCH_SEARCH_SCORE		= 0x00100000,
+	MAIL_FETCH_SEARCH_RELEVANCY	= 0x00100000,
 	MAIL_FETCH_GUID			= 0x00200000,
 	MAIL_FETCH_POP3_ORDER		= 0x00400000
 };
@@ -161,7 +173,10 @@ enum mailbox_sync_flags {
 	/* Force doing a full resync of indexes. */
 	MAILBOX_SYNC_FLAG_FORCE_RESYNC		= 0x100,
 	/* Add all missing data to cache and fts index ("doveadm index") */
-	MAILBOX_SYNC_FLAG_PRECACHE		= 0x200
+	MAILBOX_SYNC_FLAG_PRECACHE		= 0x200,
+	/* FIXME: kludge until something better comes along:
+	   Request full text search index optimization */
+	MAILBOX_SYNC_FLAG_OPTIMIZE		= 0x400
 };
 
 enum mailbox_sync_type {
@@ -191,20 +206,32 @@ struct mailbox_status {
 	uint32_t first_unseen_seq;
 	uint32_t first_recent_uid;
 	uint64_t highest_modseq;
-	/* sum of virtual size of all messages in mailbox */
-	uint64_t virtual_size;
 
+	/* NULL-terminated array of keywords */
 	const ARRAY_TYPE(keywords) *keywords;
-	/* Fields that have "temp" or "yes" caching decision. */
-	const ARRAY_TYPE(const_string) *cache_fields;
+
+	/* These flags can be permanently modified */
+	enum mail_flags permanent_flags;
 
 	/* Modseqs aren't permanent (index is in memory) */
 	unsigned int nonpermanent_modseqs:1;
+	/* All keywords can be permanently modified */
+	unsigned int permanent_keywords:1;
+	/* More keywords can be created */
+	unsigned int allow_new_keywords:1;
+};
+
+struct mailbox_metadata {
+	guid_128_t guid;
+	/* sum of virtual size of all messages in mailbox */
+	uint64_t virtual_size;
+	/* Fields that have "temp" or "yes" caching decision. */
+	const ARRAY_TYPE(const_string) *cache_fields;
 };
 
 struct mailbox_update {
 	/* All non-zero fields are changed. */
-	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	guid_128_t mailbox_guid;
 	uint32_t uid_validity;
 	uint32_t min_next_uid;
 	uint32_t min_first_recent_uid;
@@ -240,7 +267,7 @@ struct mailbox_expunge_rec {
 	uint32_t uid;
 	/* 128 bit GUID. If the actual GUID has a different size, this
 	   contains last bits of its SHA1 sum. */
-	uint8_t guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t guid_128;
 };
 ARRAY_DEFINE_TYPE(mailbox_expunge_rec, struct mailbox_expunge_rec);
 
@@ -328,6 +355,11 @@ int mail_storage_purge(struct mail_storage *storage);
 /* Returns the error message of last occurred error. */
 const char *mail_storage_get_last_error(struct mail_storage *storage,
 					enum mail_error *error_r);
+/* Wrapper for mail_storage_get_last_error(); */
+const char *mailbox_get_last_error(struct mailbox *box,
+				   enum mail_error *error_r);
+/* Wrapper for mail_storage_get_last_error(); */
+enum mail_error mailbox_get_last_mail_error(struct mailbox *box);
 
 /* Returns TRUE if mailboxes are files. */
 bool mail_storage_is_mailbox_file(struct mail_storage *storage) ATTR_PURE;
@@ -335,8 +367,17 @@ bool mail_storage_is_mailbox_file(struct mail_storage *storage) ATTR_PURE;
 /* Initialize mailbox without actually opening any files or verifying that
    it exists. Note that append and copy may open the selected mailbox again
    with possibly different readonly-state. */
-struct mailbox *mailbox_alloc(struct mailbox_list *list, const char *name,
+struct mailbox *mailbox_alloc(struct mailbox_list *list, const char *vname,
 			      enum mailbox_flags flags);
+/* Like mailbox_alloc(), but use mailbox GUID. */
+struct mailbox *mailbox_alloc_guid(struct mailbox_list *list,
+				   const guid_128_t guid,
+				   enum mailbox_flags flags);
+/* Get mailbox existence state. If auto_boxes=FALSE, return
+   MAILBOX_EXISTENCE_NONE for autocreated mailboxes that haven't been
+   physically created yet */
+int mailbox_exists(struct mailbox *box, bool auto_boxes,
+		   enum mailbox_existence *existence_r);
 /* Open the mailbox. If this function isn't called explicitly, it's also called
    internally by lib-storage when necessary. */
 int mailbox_open(struct mailbox *box);
@@ -364,6 +405,9 @@ int mailbox_delete(struct mailbox *box);
    fails, the error is set to src's storage. */
 int mailbox_rename(struct mailbox *src, struct mailbox *dest,
 		   bool rename_children);
+/* Subscribe/unsubscribe mailbox. Subscribing to
+   nonexistent mailboxes is optional. */
+int mailbox_set_subscribed(struct mailbox *box, bool set);
 
 /* Enable the given feature for the mailbox. */
 int mailbox_enable(struct mailbox *box, enum mailbox_feature features);
@@ -388,8 +432,6 @@ const char *mailbox_get_vname(const struct mailbox *box) ATTR_PURE;
 
 /* Returns TRUE if mailbox is read-only. */
 bool mailbox_is_readonly(struct mailbox *box);
-/* Returns TRUE if mailbox currently supports adding keywords. */
-bool mailbox_allow_new_keywords(struct mailbox *box);
 /* Returns TRUE if two mailboxes point to the same physical mailbox. */
 bool mailbox_backends_equal(const struct mailbox *box1,
 			    const struct mailbox *box2);
@@ -400,11 +442,19 @@ bool mailbox_backends_equal(const struct mailbox *box1,
    do forced CLOSE. */
 bool mailbox_is_inconsistent(struct mailbox *box);
 
-/* Gets the mailbox status information. */
-void mailbox_get_status(struct mailbox *box, enum mailbox_status_items items,
-			struct mailbox_status *status_r);
-/* Get mailbox GUID, creating it if necessary. */
-int mailbox_get_guid(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE]);
+/* Gets the mailbox status information, opening the mailbox if necessary. */
+int mailbox_get_status(struct mailbox *box, enum mailbox_status_items items,
+		       struct mailbox_status *status_r);
+/* Gets the mailbox status, requires that mailbox is already opened. */
+void mailbox_get_open_status(struct mailbox *box,
+			     enum mailbox_status_items items,
+			     struct mailbox_status *status_r);
+/* Gets mailbox metadata */
+int mailbox_get_metadata(struct mailbox *box, enum mailbox_metadata_items items,
+			 struct mailbox_metadata *metadata_r);
+/* Returns a mask of flags that are private to user in this mailbox
+   (as opposed to flags shared between users). */
+enum mail_flags mailbox_get_private_flags_mask(struct mailbox *box);
 
 /* Synchronize the mailbox. */
 struct mailbox_sync_context *
@@ -473,39 +523,30 @@ bool mailbox_get_expunges(struct mailbox *box, uint64_t prev_modseq,
 bool mailbox_get_expunged_uids(struct mailbox *box, uint64_t prev_modseq,
 			       const ARRAY_TYPE(seq_range) *uids_filter,
 			       ARRAY_TYPE(seq_range) *expunged_uids);
-/* If box is a virtual mailbox, look up UID for the given backend message.
-   Returns TRUE if found, FALSE if not. */
-bool mailbox_get_virtual_uid(struct mailbox *box, const char *backend_mailbox,
-			     uint32_t backend_uidvalidity,
-			     uint32_t backend_uid, uint32_t *uid_r);
-/* If box is a virtual mailbox, return all backend mailboxes. If
-   only_with_msgs=TRUE, return only those mailboxes that have at least one
-   message existing in the virtual mailbox. */
-void mailbox_get_virtual_backend_boxes(struct mailbox *box,
-				       ARRAY_TYPE(mailboxes) *mailboxes,
-				       bool only_with_msgs);
-/* If mailbox is a virtual mailbox, return all mailbox list patterns that
-   are used to figure out which mailboxes belong to the virtual mailbox. */
-void mailbox_get_virtual_box_patterns(struct mailbox *box,
-				ARRAY_TYPE(mailbox_virtual_patterns) *includes,
-				ARRAY_TYPE(mailbox_virtual_patterns) *excludes);
 
-/* Initialize new search request. charset specifies the character set used in
-   the search argument strings. If sort_program is non-NULL, the messages are
+/* Initialize header lookup for given headers. */
+struct mailbox_header_lookup_ctx *
+mailbox_header_lookup_init(struct mailbox *box, const char *const headers[]);
+void mailbox_header_lookup_ref(struct mailbox_header_lookup_ctx *ctx);
+void mailbox_header_lookup_unref(struct mailbox_header_lookup_ctx **ctx);
+
+/* Initialize new search request. If sort_program is non-NULL, the messages are
    returned in the requested order, otherwise from first to last. */
 struct mail_search_context *
 mailbox_search_init(struct mailbox_transaction_context *t,
 		    struct mail_search_args *args,
-		    const enum mail_sort_type *sort_program);
+		    const enum mail_sort_type *sort_program,
+		    enum mail_fetch_field wanted_fields,
+		    struct mailbox_header_lookup_ctx *wanted_headers);
 /* Deinitialize search request. */
 int mailbox_search_deinit(struct mail_search_context **ctx);
 /* Search the next message. Returns TRUE if found, FALSE if not. */
-bool mailbox_search_next(struct mail_search_context *ctx, struct mail *mail);
+bool mailbox_search_next(struct mail_search_context *ctx, struct mail **mail_r);
 /* Like mailbox_search_next(), but don't spend too much time searching.
    Returns FALSE with tryagain_r=FALSE if finished, and tryagain_r=TRUE if
    more results will be returned by calling the function again. */
 bool mailbox_search_next_nonblock(struct mail_search_context *ctx,
-				 struct mail *mail, bool *tryagain_r);
+				  struct mail **mail_r, bool *tryagain_r);
 /* Returns TRUE if some messages were already expunged and we couldn't
    determine correctly if those messages should have been returned in this
    search. */
@@ -544,9 +585,8 @@ mailbox_keywords_create_valid(struct mailbox *box,
 struct mail_keywords *
 mailbox_keywords_create_from_indexes(struct mailbox *box,
 				     const ARRAY_TYPE(keyword_indexes) *idx);
-void mailbox_keywords_ref(struct mailbox *box, struct mail_keywords *keywords);
-void mailbox_keywords_unref(struct mailbox *box,
-			    struct mail_keywords **keywords);
+void mailbox_keywords_ref(struct mail_keywords *keywords);
+void mailbox_keywords_unref(struct mail_keywords **keywords);
 /* Returns TRUE if keyword is valid, FALSE and error if not. */
 bool mailbox_keyword_is_valid(struct mailbox *box, const char *keyword,
 			      const char **error_r);
@@ -609,12 +649,6 @@ mailbox_save_get_transaction(struct mail_save_context *ctx);
 /* Copy the given message. You'll need to specify the flags etc. using the
    mailbox_save_*() functions. */
 int mailbox_copy(struct mail_save_context **ctx, struct mail *mail);
-
-/* Initialize header lookup for given headers. */
-struct mailbox_header_lookup_ctx *
-mailbox_header_lookup_init(struct mailbox *box, const char *const headers[]);
-void mailbox_header_lookup_ref(struct mailbox_header_lookup_ctx *ctx);
-void mailbox_header_lookup_unref(struct mailbox_header_lookup_ctx **ctx);
 
 struct mail *mail_alloc(struct mailbox_transaction_context *t,
 			enum mail_fetch_field wanted_fields,
@@ -712,18 +746,9 @@ void mail_parse(struct mail *mail, bool parse_body);
 /* Mark a cached field corrupted and have it recalculated. */
 void mail_set_cache_corrupted(struct mail *mail, enum mail_fetch_field field);
 
-/* Generate a GUID (contains host name) */
-const char *mail_generate_guid_string(void);
-/* Generate 128 bit GUID */
-void mail_generate_guid_128(uint8_t guid[MAIL_GUID_128_SIZE]);
 /* Return 128 bit GUID using input string. If guid is already 128 bit hex
    encoded, it's returned as-is. Otherwise SHA1 sum is taken and its last
    128 bits are returned. */
-void mail_generate_guid_128_hash(const char *guid,
-				 uint8_t guid_128[MAIL_GUID_128_SIZE]);
-/* Returns TRUE if GUID is empty (not set / unknown). */
-bool mail_guid_128_is_empty(const uint8_t guid_128[MAIL_GUID_128_SIZE]);
-/* Returns GUID as a hex string. */
-const char *mail_guid_128_to_string(const uint8_t guid_128[MAIL_GUID_128_SIZE]);
+void mail_generate_guid_128_hash(const char *guid, guid_128_t guid_128_r);
 
 #endif

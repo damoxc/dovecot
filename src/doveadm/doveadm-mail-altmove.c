@@ -17,11 +17,11 @@ cmd_altmove_box(const struct mailbox_info *info,
 	struct mailbox_transaction_context *trans;
 	struct mail *mail;
 
-	if (doveadm_mail_iter_init(info, search_args, &trans, &iter) < 0)
+	if (doveadm_mail_iter_init(info, search_args, 0, NULL,
+				   &trans, &iter) < 0)
 		return -1;
 
-	mail = mail_alloc(trans, 0, NULL);
-	while (doveadm_mail_iter_next(iter, mail)) {
+	while (doveadm_mail_iter_next(iter, &mail)) {
 		if (doveadm_debug) {
 			i_debug("altmove: box=%s uid=%u",
 				info->name, mail->uid);
@@ -29,7 +29,6 @@ cmd_altmove_box(const struct mailbox_info *info,
 		mail_update_flags(mail, MODIFY_ADD,
 			(enum mail_flags)MAIL_INDEX_MAIL_FLAG_BACKEND);
 	}
-	mail_free(&mail);
 	return doveadm_mail_iter_deinit_sync(&iter);
 }
 
@@ -46,7 +45,7 @@ cmd_altmove_run(struct doveadm_mail_cmd_context *ctx, struct mail_user *user)
 {
 	const enum mailbox_list_iter_flags iter_flags =
 		MAILBOX_LIST_ITER_RAW_LIST |
-		MAILBOX_LIST_ITER_NO_AUTO_INBOX |
+		MAILBOX_LIST_ITER_NO_AUTO_BOXES |
 		MAILBOX_LIST_ITER_RETURN_NO_FLAGS;
 	struct doveadm_mail_list_iter *iter;
 	const struct mailbox_info *info;

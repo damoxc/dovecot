@@ -9,7 +9,7 @@
 #include "maildir-storage.h"
 #include "maildir-uidlist.h"
 #include "maildir-keywords.h"
-#include "maildir-filename.h"
+#include "maildir-filename-flags.h"
 #include "maildir-sync.h"
 
 #include <stdio.h>
@@ -41,12 +41,12 @@ maildir_filename_guess(struct maildir_mailbox *mbox, uint32_t uid,
 	mail_index_lookup_view_flags(view, seq, &flags, &keywords);
 	if (array_count(&keywords) == 0) {
 		*have_flags_r = (flags & MAIL_FLAGS_NONRECENT) != 0;
-		fname = maildir_filename_set_flags(NULL, fname, flags, NULL);
+		fname = maildir_filename_flags_set(NULL, fname, flags, NULL);
 	} else {
 		*have_flags_r = TRUE;
 		kw_ctx = maildir_keywords_sync_init_readonly(mbox->keywords,
 							     mbox->box.index);
-		fname = maildir_filename_set_flags(kw_ctx, fname,
+		fname = maildir_filename_flags_set(kw_ctx, fname,
 						   flags, &keywords);
 		maildir_keywords_sync_deinit(&kw_ctx);
 	}
@@ -61,7 +61,7 @@ static int maildir_file_do_try(struct maildir_mailbox *mbox, uint32_t uid,
 	bool have_flags;
 	int ret;
 
-	ret = maildir_uidlist_lookup(mbox->uidlist, uid, &flags, &fname);
+	ret = maildir_sync_lookup(mbox, uid, &flags, &fname);
 	if (ret <= 0)
 		return ret == 0 ? -2 : -1;
 
@@ -76,13 +76,14 @@ static int maildir_file_do_try(struct maildir_mailbox *mbox, uint32_t uid,
 
 	if ((flags & MAILDIR_UIDLIST_REC_FLAG_NEW_DIR) != 0) {
 		/* probably in new/ dir */
-		path = t_strconcat(mbox->box.path, "/new/", fname, NULL);
+		path = t_strconcat(mailbox_get_path(&mbox->box),
+				   "/new/", fname, NULL);
 		ret = callback(mbox, path, context);
 		if (ret != 0)
 			return ret;
 	}
 
-	path = t_strconcat(mbox->box.path, "/cur/", fname, NULL);
+	path = t_strconcat(mailbox_get_path(&mbox->box), "/cur/", fname, NULL);
 	ret = callback(mbox, path, context);
 	return ret;
 }
@@ -135,10 +136,11 @@ int maildir_file_do(struct maildir_mailbox *mbox, uint32_t uid,
 static int maildir_create_path(struct mailbox *box, const char *path,
 			       enum mailbox_list_path_type type, bool retry)
 {
+	const struct mailbox_permissions *perm = mailbox_get_permissions(box);
 	const char *p, *parent;
 
-	if (mkdir_chgrp(path, box->dir_create_mode, box->file_create_gid,
-			box->file_create_gid_origin) == 0)
+	if (mkdir_chgrp(path, perm->dir_create_mode, perm->file_create_gid,
+			perm->file_create_gid_origin) == 0)
 		return 0;
 
 	switch (errno) {
@@ -154,7 +156,7 @@ static int maildir_create_path(struct mailbox *box, const char *path,
 		}
 		/* create index/control root directory */
 		parent = t_strdup_until(path, p);
-		if (mailbox_list_mkdir(box->list, parent, type) == 0) {
+		if (mailbox_list_mkdir_root(box->list, parent, type) == 0) {
 			/* should work now, try again */
 			return maildir_create_path(box, path, type, FALSE);
 		}
@@ -179,7 +181,8 @@ static int maildir_create_subdirs(struct mailbox *box)
 	/* @UNSAFE: get a list of directories we want to create */
 	for (i = 0; i < N_ELEMENTS(subdirs); i++) {
 		types[i] = MAILBOX_LIST_PATH_TYPE_MAILBOX;
-		dirs[i] = t_strconcat(box->path, "/", subdirs[i], NULL);
+		dirs[i] = t_strconcat(mailbox_get_path(box),
+				      "/", subdirs[i], NULL);
 	}
 	types[i] = MAILBOX_LIST_PATH_TYPE_CONTROL;
 	dirs[i++] = mailbox_list_get_path(box->list, box->name,
@@ -209,12 +212,12 @@ bool maildir_set_deleted(struct mailbox *box)
 	struct stat st;
 	int ret;
 
-	if (stat(box->path, &st) < 0) {
+	if (stat(mailbox_get_path(box), &st) < 0) {
 		if (errno == ENOENT)
 			mailbox_set_deleted(box);
 		else {
 			mail_storage_set_critical(box->storage,
-				"stat(%s) failed: %m", box->path);
+				"stat(%s) failed: %m", mailbox_get_path(box));
 		}
 		return FALSE;
 	}

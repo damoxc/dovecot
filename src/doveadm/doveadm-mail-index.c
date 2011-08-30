@@ -1,22 +1,53 @@
 /* Copyright (c) 2010-2011 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "str.h"
+#include "strescape.h"
+#include "network.h"
+#include "write-full.h"
 #include "mail-namespace.h"
 #include "mail-storage.h"
 #include "mail-search-build.h"
+#include "doveadm-settings.h"
 #include "doveadm-mail.h"
 
+#define INDEXER_SOCKET_NAME "indexer"
+#define INDEXER_HANDSHAKE "VERSION\tindexer\t1\t0\n"
+
+struct index_cmd_context {
+	struct doveadm_mail_cmd_context ctx;
+
+	int queue_fd;
+	unsigned int max_recent_msgs;
+	unsigned int queue:1;
+	unsigned int have_wildcards:1;
+};
+
 static int
-cmd_index_box(const struct mailbox_info *info)
+cmd_index_box(struct index_cmd_context *ctx, const struct mailbox_info *info)
 {
 	struct mailbox *box;
-	const char *storage_name;
+	struct mailbox_status status;
 	int ret = 0;
 
-	storage_name = mail_namespace_get_storage_name(info->ns, info->name);
-	box = mailbox_alloc(info->ns->list, storage_name,
-			    MAILBOX_FLAG_KEEP_RECENT |
+	box = mailbox_alloc(info->ns->list, info->name,
 			    MAILBOX_FLAG_IGNORE_ACLS);
+	if (ctx->max_recent_msgs != 0) {
+		/* index only if there aren't too many recent messages.
+		   don't bother syncing the mailbox, that alone can take a
+		   while with large maildirs. */
+		if (mailbox_open(box) < 0) {
+			i_error("Opening mailbox %s failed: %s", info->name,
+				mail_storage_get_last_error(mailbox_get_storage(box), NULL));
+			ret = -1;
+		} else {
+			mailbox_get_open_status(box, STATUS_RECENT, &status);
+		}
+		if (ret < 0 || status.recent > ctx->max_recent_msgs) {
+			mailbox_free(&box);
+			return ret;
+		}
+	}
 
 	if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FULL_READ |
 			 MAILBOX_SYNC_FLAG_PRECACHE) < 0) {
@@ -29,48 +60,136 @@ cmd_index_box(const struct mailbox_info *info)
 	return ret;
 }
 
-static void
-cmd_index_run(struct doveadm_mail_cmd_context *ctx, struct mail_user *user)
+static void index_queue_connect(struct index_cmd_context *ctx)
 {
+	const char *path;
+
+	path = t_strconcat(doveadm_settings->base_dir,
+			   "/"INDEXER_SOCKET_NAME, NULL);
+	ctx->queue_fd = net_connect_unix(path);
+	if (ctx->queue_fd == -1)
+		i_fatal("net_connect_unix(%s) failed: %m", path);
+	if (write_full(ctx->queue_fd, INDEXER_HANDSHAKE,
+		       strlen(INDEXER_HANDSHAKE)) < 0)
+		i_fatal("write(indexer) failed: %m");
+}
+
+static void cmd_index_queue(struct index_cmd_context *ctx,
+			    struct mail_user *user, const char *mailbox)
+{
+	if (ctx->queue_fd == -1)
+		index_queue_connect(ctx);
+
+	T_BEGIN {
+		string_t *str = t_str_new(256);
+
+		str_append(str, "APPEND\t0\t");
+		str_tabescape_write(str, user->username);
+		str_append_c(str, '\t');
+		str_tabescape_write(str, mailbox);
+		str_printfa(str, "\t%u\n", ctx->max_recent_msgs);
+		if (write_full(ctx->queue_fd, str_data(str), str_len(str)) < 0)
+			i_fatal("write(indexer) failed: %m");
+	} T_END;
+}
+
+static void
+cmd_index_run(struct doveadm_mail_cmd_context *_ctx, struct mail_user *user)
+{
+	struct index_cmd_context *ctx = (struct index_cmd_context *)_ctx;
 	const enum mailbox_list_iter_flags iter_flags =
 		MAILBOX_LIST_ITER_RAW_LIST |
-		MAILBOX_LIST_ITER_NO_AUTO_INBOX |
+		MAILBOX_LIST_ITER_NO_AUTO_BOXES |
 		MAILBOX_LIST_ITER_RETURN_NO_FLAGS |
 		MAILBOX_LIST_ITER_STAR_WITHIN_NS;
 	const enum namespace_type ns_mask =
 		NAMESPACE_PRIVATE | NAMESPACE_SHARED | NAMESPACE_PUBLIC;
 	struct mailbox_list_iterate_context *iter;
 	const struct mailbox_info *info;
+	unsigned int i;
 
-	iter = mailbox_list_iter_init_namespaces(user->namespaces, ctx->args,
+	if (ctx->queue && !ctx->have_wildcards) {
+		/* we can do this quickly without going through the mailboxes */
+		for (i = 0; _ctx->args[i] != NULL; i++)
+			cmd_index_queue(ctx, user, _ctx->args[i]);
+		return;
+	}
+
+	iter = mailbox_list_iter_init_namespaces(user->namespaces, _ctx->args,
 						 ns_mask, iter_flags);
 	while ((info = mailbox_list_iter_next(iter)) != NULL) {
 		if ((info->flags & (MAILBOX_NOSELECT |
 				    MAILBOX_NONEXISTENT)) == 0) T_BEGIN {
-			(void)cmd_index_box(info);
+			if (ctx->queue)
+				cmd_index_queue(ctx, user, info->name);
+			else
+				(void)cmd_index_box(ctx, info);
 		} T_END;
 	}
 	if (mailbox_list_iter_deinit(&iter) < 0)
 		i_error("Listing mailboxes failed");
 }
 
-static void cmd_index_init(struct doveadm_mail_cmd_context *ctx ATTR_UNUSED,
+static void cmd_index_init(struct doveadm_mail_cmd_context *_ctx,
 			   const char *const args[])
 {
+	struct index_cmd_context *ctx = (struct index_cmd_context *)_ctx;
+	unsigned int i;
+
 	if (args[0] == NULL)
 		doveadm_mail_help_name("index");
+	for (i = 0; args[i] != NULL; i++) {
+		if (strchr(args[i], '*') != NULL ||
+		    strchr(args[i], '%') != NULL) {
+			ctx->have_wildcards = TRUE;
+			break;
+		}
+	}
+}
+
+static void cmd_index_deinit(struct doveadm_mail_cmd_context *_ctx)
+{
+	struct index_cmd_context *ctx = (struct index_cmd_context *)_ctx;
+
+	if (ctx->queue_fd != -1) {
+		net_disconnect(ctx->queue_fd);
+		ctx->queue_fd = -1;
+	}
+}
+
+static bool
+cmd_index_parse_arg(struct doveadm_mail_cmd_context *_ctx, int c)
+{
+	struct index_cmd_context *ctx = (struct index_cmd_context *)_ctx;
+
+	switch (c) {
+	case 'q':
+		ctx->queue = TRUE;
+		break;
+	case 'n':
+		if (str_to_uint(optarg, &ctx->max_recent_msgs) < 0)
+			i_fatal("Invalid -n parameter number: %s", optarg);
+		break;
+	default:
+		return FALSE;
+	}
+	return TRUE;
 }
 
 static struct doveadm_mail_cmd_context *cmd_index_alloc(void)
 {
-	struct doveadm_mail_cmd_context *ctx;
+	struct index_cmd_context *ctx;
 
-	ctx = doveadm_mail_cmd_alloc(struct doveadm_mail_cmd_context);
-	ctx->v.init = cmd_index_init;
-	ctx->v.run = cmd_index_run;
-	return ctx;
+	ctx = doveadm_mail_cmd_alloc(struct index_cmd_context);
+	ctx->queue_fd = -1;
+	ctx->ctx.getopt_args = "qn:";
+	ctx->ctx.v.parse_arg = cmd_index_parse_arg;
+	ctx->ctx.v.init = cmd_index_init;
+	ctx->ctx.v.deinit = cmd_index_deinit;
+	ctx->ctx.v.run = cmd_index_run;
+	return &ctx->ctx;
 }
 
 struct doveadm_mail_cmd cmd_index = {
-	cmd_index_alloc, "index", "<mailbox>"
+	cmd_index_alloc, "index", "[-q] [-n <max recent>] <mailbox>"
 };

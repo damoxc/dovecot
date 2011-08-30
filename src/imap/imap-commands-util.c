@@ -8,29 +8,21 @@
 #include "imap-resp-code.h"
 #include "imap-parser.h"
 #include "imap-sync.h"
+#include "imap-utf7.h"
 #include "imap-util.h"
 #include "mail-storage.h"
 #include "mail-namespace.h"
 #include "imap-commands-util.h"
 
-/* Maximum length for mailbox name, including it's path. This isn't fully
-   exact since the user can create folder hierarchy with small names, then
-   rename them to larger names. Mail storages should set more strict limits
-   to them, mbox/maildir currently allow paths only up to PATH_MAX. */
-#define MAILBOX_MAX_NAME_LEN 512
-
 struct mail_namespace *
-client_find_namespace(struct client_command_context *cmd, const char *mailbox,
-		      const char **storage_name_r,
-		      enum mailbox_name_status *mailbox_status_r)
+client_find_namespace(struct client_command_context *cmd, const char **mailbox)
 {
 	struct mail_namespace *namespaces = cmd->client->user->namespaces;
 	struct mail_namespace *ns;
-	const char *storage_name, *p;
-	unsigned int storage_name_len;
+	unsigned int name_len;
+	string_t *utf8_name;
 
-	storage_name = mailbox;
-	ns = mail_namespace_find(namespaces, &storage_name);
+	ns = mail_namespace_find(namespaces, *mailbox);
 	if (ns == NULL) {
 		client_send_tagline(cmd, t_strdup_printf(
 			"NO Client tried to access nonexistent namespace. "
@@ -39,105 +31,22 @@ client_find_namespace(struct client_command_context *cmd, const char *mailbox,
 		return NULL;
 	}
 
-	if (mailbox_status_r == NULL) {
-		*storage_name_r = storage_name;
-		return ns;
-	}
-
-	/* make sure it even looks valid */
-	if (*storage_name == '\0' && !(*mailbox != '\0' && ns->list)) {
-		client_send_tagline(cmd, "NO Empty mailbox name.");
-		return NULL;
-	}
-
-	storage_name_len = strlen(storage_name);
+	name_len = strlen(*mailbox);
 	if ((cmd->client->set->parsed_workarounds &
 	     		WORKAROUND_TB_EXTRA_MAILBOX_SEP) != 0 &&
-	    storage_name_len > 0 &&
-	    storage_name[storage_name_len-1] == ns->real_sep) {
+	    name_len > 0 &&
+	    (*mailbox)[name_len-1] == mail_namespace_get_sep(ns)) {
 		/* drop the extra trailing hierarchy separator */
-		storage_name = t_strndup(storage_name, storage_name_len-1);
+		*mailbox = t_strndup(*mailbox, name_len-1);
 	}
 
-	if (strlen(mailbox) == ns->prefix_len) {
-		/* trying to open "ns prefix/" */
-		client_send_tagline(cmd, "NO Invalid mailbox name.");
+	utf8_name = t_str_new(64);
+	if (imap_utf7_to_utf8(*mailbox, utf8_name) < 0) {
+		client_send_tagline(cmd, "NO Mailbox name is not valid mUTF-7");
 		return NULL;
 	}
-
-	if (ns->real_sep != ns->sep && ns->prefix_len < strlen(mailbox)) {
-		/* make sure there are no real separators used in the mailbox
-		   name. */
-		mailbox += ns->prefix_len;
-		for (p = mailbox; *p != '\0'; p++) {
-			if (*p == ns->real_sep) {
-				client_send_tagline(cmd, t_strdup_printf(
-					"NO Character not allowed "
-					"in mailbox name: '%c'",
-					ns->real_sep));
-				return NULL;
-			}
-		}
-	}
-
-	/* make sure two hierarchy separators aren't next to each others */
-	for (p = storage_name+1; *p != '\0'; p++) {
-		if (p[0] == ns->real_sep && p[-1] == ns->real_sep) {
-			client_send_tagline(cmd, "NO Invalid mailbox name.");
-			return NULL;
-		}
-	}
-
-	if (storage_name_len > MAILBOX_MAX_NAME_LEN) {
-		client_send_tagline(cmd, "NO Mailbox name too long.");
-		return NULL;
-	}
-
-	/* check what our storage thinks of it */
-	if (mailbox_list_get_mailbox_name_status(ns->list, storage_name,
-						 mailbox_status_r) < 0) {
-		client_send_list_error(cmd, ns->list);
-		return NULL;
-	}
-	*storage_name_r = storage_name;
+	*mailbox = str_c(utf8_name);
 	return ns;
-}
-
-void client_fail_mailbox_name_status(struct client_command_context *cmd,
-				     const char *mailbox_name,
-				     const char *resp_code,
-				     enum mailbox_name_status status)
-{
-	switch (status) {
-	case MAILBOX_NAME_EXISTS_MAILBOX:
-	case MAILBOX_NAME_EXISTS_DIR:
-		client_send_tagline(cmd, t_strconcat(
-			"NO [", IMAP_RESP_CODE_ALREADYEXISTS,
-			"] Mailbox already exists: ",
-			str_sanitize(mailbox_name, MAILBOX_MAX_NAME_LEN),
-			NULL));
-		break;
-	case MAILBOX_NAME_VALID:
-		if (resp_code == NULL)
-			resp_code = "";
-		else
-			resp_code = t_strconcat("[", resp_code, "] ", NULL);
-		client_send_tagline(cmd, t_strconcat(
-			"NO ", resp_code, "Mailbox doesn't exist: ",
-			str_sanitize(mailbox_name, MAILBOX_MAX_NAME_LEN),
-			NULL));
-		break;
-	case MAILBOX_NAME_INVALID:
-		client_send_tagline(cmd, t_strconcat(
-			"NO Invalid mailbox name: ",
-			str_sanitize(mailbox_name, MAILBOX_MAX_NAME_LEN),
-			NULL));
-		break;
-	case MAILBOX_NAME_NOINFERIORS:
-		client_send_tagline(cmd,
-			"NO Parent mailbox doesn't allow child mailboxes.");
-		break;
-	}
 }
 
 bool client_verify_open_mailbox(struct client_command_context *cmd)
@@ -148,6 +57,46 @@ bool client_verify_open_mailbox(struct client_command_context *cmd)
 		client_send_tagline(cmd, "BAD No mailbox selected.");
 		return FALSE;
 	}
+}
+
+int client_open_save_dest_box(struct client_command_context *cmd,
+			      const char *name, struct mailbox **destbox_r)
+{
+	struct mail_namespace *ns;
+	struct mailbox *box;
+	const char *error_string;
+	enum mail_error error;
+
+	ns = client_find_namespace(cmd, &name);
+	if (ns == NULL)
+		return -1;
+
+	if (cmd->client->mailbox != NULL &&
+	    mailbox_equals(cmd->client->mailbox, ns, name)) {
+		*destbox_r = cmd->client->mailbox;
+		return 0;
+	}
+	box = mailbox_alloc(ns->list, name, MAILBOX_FLAG_SAVEONLY);
+	if (mailbox_open(box) < 0) {
+		error_string = mailbox_get_last_error(box, &error);
+		if (error == MAIL_ERROR_NOTFOUND) {
+			client_send_tagline(cmd,  t_strdup_printf(
+				"NO [TRYCREATE] %s", error_string));
+		} else {
+			client_send_storage_error(cmd, mailbox_get_storage(box));
+		}
+		mailbox_free(&box);
+		return -1;
+	}
+	if (cmd->client->enabled_features != 0) {
+		if (mailbox_enable(box, cmd->client->enabled_features) < 0) {
+			client_send_storage_error(cmd, mailbox_get_storage(box));
+			mailbox_free(&box);
+			return -1;
+		}
+	}
+	*destbox_r = box;
+	return 0;
 }
 
 const char *
@@ -289,27 +238,12 @@ bool client_parse_mail_flags(struct client_command_context *cmd,
 	return TRUE;
 }
 
-static const char *get_keywords_string(const ARRAY_TYPE(keywords) *keywords)
-{
-	string_t *str;
-	const char *const *names;
-
-	str = t_str_new(256);
-	array_foreach(keywords, names) {
-		const char *name = *names;
-
-		str_append_c(str, ' ');
-		str_append(str, name);
-	}
-	return str_c(str);
-}
-
-#define SYSTEM_FLAGS "\\Answered \\Flagged \\Deleted \\Seen \\Draft"
-
 void client_send_mailbox_flags(struct client *client, bool selecting)
 {
+	struct mailbox_status status;
 	unsigned int count = array_count(client->keywords.names);
-	const char *str;
+	const char *const *keywords;
+	string_t *str;
 
 	if (!selecting && count == client->keywords.announce_count) {
 		/* no changes to keywords and we're not selecting a mailbox */
@@ -317,21 +251,35 @@ void client_send_mailbox_flags(struct client *client, bool selecting)
 	}
 
 	client->keywords.announce_count = count;
-	str = count == 0 ? "" : get_keywords_string(client->keywords.names);
-	client_send_line(client,
-		t_strconcat("* FLAGS ("SYSTEM_FLAGS, str, ")", NULL));
+	mailbox_get_open_status(client->mailbox, STATUS_PERMANENT_FLAGS,
+				&status);
 
-	if (mailbox_is_readonly(client->mailbox)) {
-		client_send_line(client, "* OK [PERMANENTFLAGS ()] "
-				 "Read-only mailbox.");
-	} else {
-		bool star = mailbox_allow_new_keywords(client->mailbox);
+	keywords = count == 0 ? NULL :
+		array_idx(client->keywords.names, 0);
+	str = t_str_new(128);
+	str_append(str, "* FLAGS (");
+	imap_write_flags(str, MAIL_FLAGS_NONRECENT, keywords);
+	str_append_c(str, ')');
+	client_send_line(client, str_c(str));
 
-		client_send_line(client,
-			t_strconcat("* OK [PERMANENTFLAGS ("SYSTEM_FLAGS, str,
-				    star ? " \\*" : "",
-				    ")] Flags permitted.", NULL));
+	if (!status.permanent_keywords)
+		keywords = NULL;
+
+	str_truncate(str, 0);
+	str_append(str, "* OK [PERMANENTFLAGS (");
+	imap_write_flags(str, status.permanent_flags, keywords);
+	if (status.allow_new_keywords) {
+		if (status.permanent_flags != 0 || keywords != NULL)
+			str_append_c(str, ' ');
+		str_append(str, "\\*");
 	}
+	str_append(str, ")] ");
+
+	if (mailbox_is_readonly(client->mailbox))
+		str_append(str, "Read-only mailbox.");
+	else
+		str_append(str, "Flags permitted.");
+	client_send_line(client, str_c(str));
 }
 
 void client_update_mailbox_flags(struct client *client,
@@ -374,7 +322,7 @@ bool mailbox_equals(const struct mailbox *box1,
 	if (ns1 != ns2)
 		return FALSE;
 
-        name1 = mailbox_get_name(box1);
+        name1 = mailbox_get_vname(box1);
 	if (strcmp(name1, name2) == 0)
 		return TRUE;
 

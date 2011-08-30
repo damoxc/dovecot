@@ -226,9 +226,9 @@ int imap_sync_deinit(struct imap_sync_context *ctx,
 		i_free(ctx);
 		return -1;
 	}
-	mailbox_get_status(ctx->box, STATUS_UIDVALIDITY |
-			   STATUS_MESSAGES | STATUS_RECENT |
-			   STATUS_HIGHESTMODSEQ, &status);
+	mailbox_get_open_status(ctx->box, STATUS_UIDVALIDITY |
+				STATUS_MESSAGES | STATUS_RECENT |
+				STATUS_HIGHESTMODSEQ, &status);
 
 	ret = mailbox_transaction_commit(&ctx->t);
 
@@ -680,7 +680,7 @@ static bool cmd_sync_drop_fast(struct client *client)
 	return ret;
 }
 
-bool cmd_sync_delayed(struct client *client)
+static bool cmd_sync_delayed_real(struct client *client)
 {
 	struct client_command_context *cmd, *first_expunge, *first_nonexpunge;
 
@@ -725,4 +725,14 @@ bool cmd_sync_delayed(struct client *client)
 		return cmd_sync_drop_fast(client);
 	i_assert(client->mailbox != NULL);
 	return cmd_sync_client(cmd);
+}
+
+bool cmd_sync_delayed(struct client *client)
+{
+	bool ret;
+
+	T_BEGIN {
+		ret = cmd_sync_delayed_real(client);
+	} T_END;
+	return ret;
 }

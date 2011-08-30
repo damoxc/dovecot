@@ -19,7 +19,7 @@ static struct file_listener_settings auth_unix_listeners_array[] = {
 	{ "login/login", 0666, "", "" },
 	{ "auth-login", 0600, "$default_internal_user", "" },
 	{ "auth-client", 0600, "", "" },
-	{ "auth-userdb", 0600, "", "" },
+	{ "auth-userdb", 0666, "", "" },
 	{ "auth-master", 0600, "", "" }
 };
 static struct file_listener_settings *auth_unix_listeners[] = {
@@ -221,7 +221,7 @@ static const struct auth_settings auth_default_settings = {
 	.cache_negative_ttl = 60*60,
 	.username_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890.-_@",
 	.username_translation = "",
-	.username_format = "",
+	.username_format = "%Lu",
 	.master_user_separator = "",
 	.anonymous_username = "anonymous",
 	.krb5_keytab = "",

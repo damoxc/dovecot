@@ -69,6 +69,8 @@ src/doveadm/doveadm-server
 src/dsync/dsync
 src/imap-login/imap-login
 src/imap/imap
+src/indexer/indexer
+src/indexer/indexer-worker
 src/ipc/ipc
 src/lib/unicodemap.c
 src/lib/UnicodeData.txt
@@ -80,6 +82,7 @@ src/log/log
 src/lmtp/lmtp
 src/master/dovecot
 src/ssl-params/ssl-params
+src/stats/stats
 src/plugins/fts-squat/squat-test
 src/pop3-login/pop3-login
 src/pop3/pop3
@@ -90,6 +93,7 @@ src/util/rawlog
 src/util/script
 src/util/script-login
 src/util/tcpwrap
+src/plugins/fts/xml2text
 src/plugins/quota/rquota_xdr.c
 src/plugins/quota/rquota.h
 

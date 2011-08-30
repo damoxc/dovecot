@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([Dovecot],[2.0.14],[dovecot@dovecot.org])
+AC_INIT([Dovecot],[2.1.UNSTABLE],[dovecot@dovecot.org])
 AC_CONFIG_SRCDIR([src])
 
 AM_INIT_AUTOMAKE([foreign])
@@ -146,10 +146,12 @@ AC_ARG_WITH(lucene,
 AS_HELP_STRING([--with-lucene], [Build with CLucene full text search support]),
   TEST_WITH(lucene, $withval),
   want_lucene=no)
-if test "$want_lucene" = "yes"; then
-  AC_ERROR([CLucene support isn't working very well. Use Solr instead.])
-fi
 AM_CONDITIONAL(BUILD_LUCENE, test "$want_lucene" = "yes")
+
+AC_ARG_WITH(stemmer,
+AS_HELP_STRING([--with-stemmer], [Build with libstemmer support (for CLucene)]),
+  TEST_WITH(stemmer, $withval),
+  want_stemmer=auto)
 
 AC_ARG_WITH(solr,
 AS_HELP_STRING([--with-solr], [Build with Solr full text search support]),
@@ -244,7 +246,7 @@ AS_HELP_STRING([--with-storages], [Build with specified mail storage formats (ma
 		AC_MSG_ERROR([--with-storages needs storage list as parameter])
 	fi
 	mail_storages="shared `echo "$withval"|sed 's/,/ /g'`" ],
-	mail_storages="shared maildir mbox sdbox mdbox cydir")
+	mail_storages="shared maildir mbox sdbox mdbox cydir imapc")
 AC_SUBST(mail_storages)
 
 DC_DOVECOT_MODULEDIR
@@ -283,7 +285,7 @@ AC_CHECK_HEADERS(strings.h stdint.h unistd.h dirent.h malloc.h inttypes.h \
   sys/quota.h sys/fs/ufs_quota.h ufs/ufs/quota.h jfs/quota.h sys/fs/quota_common.h \
   mntent.h sys/mnttab.h sys/event.h sys/time.h sys/mkdev.h linux/dqblk_xfs.h \
   xfs/xqm.h execinfo.h ucontext.h malloc_np.h sys/utsname.h sys/vmount.h \
-  sys/utsname.h glob.h linux/falloc.h)
+  sys/utsname.h glob.h linux/falloc.h ucred.h)
 
 dnl * gcc specific options
 if test "x$ac_cv_c_compiler_gnu" = "xyes"; then
@@ -379,7 +381,8 @@ AC_CHECK_FUNCS(fcntl flock lockf inet_aton sigaction getpagesize madvise \
 	       setrlimit setproctitle seteuid setreuid setegid setresgid \
 	       strtoull strtoll strtouq strtoq \
 	       setpriority quotactl getmntent kqueue kevent backtrace_symbols \
-	       walkcontext dirfd clearenv malloc_usable_size glob fallocate)
+	       walkcontext dirfd clearenv malloc_usable_size glob fallocate \
+	       posix_fadvise getpeereid getpeerucred)
 
 AC_CHECK_LIB(rt, clock_gettime, [
   AC_DEFINE(HAVE_CLOCK_GETTIME,, Define if you have the clock_gettime function)
@@ -1706,6 +1709,7 @@ if test $want_openssl != no && test $have_ssl = no; then
     ],, $SSL_LIBS)
   fi
 fi
+AM_CONDITIONAL(BUILD_OPENSSL, test "$have_openssl" = "yes")
 
 if test $want_gnutls != no && test $have_ssl = no; then
   AC_CHECK_LIB(gnutls, gnutls_global_init, [
@@ -2305,10 +2309,12 @@ fi
 AC_CHECK_FUNC(crypt,, [
   AC_CHECK_LIB(crypt, crypt, [
     AUTH_LIBS="-lcrypt $AUTH_LIBS"
+    CRYPT_LIBS="-lcrypt"
   ], [
     AC_MSG_ERROR([crypt() wasn't found])
   ])
 ])
+AC_SUBST(CRYPT_LIBS)
 
 if test $have_modules = yes; then
   AC_DEFINE(HAVE_MODULES,, Define if you have dynamic module support)
@@ -2429,6 +2435,7 @@ dbox_common_libs='$(top_builddir)/src/lib-storage/index/dbox-common/libstorage_d
 sdbox_libs='$(top_builddir)/src/lib-storage/index/dbox-single/libstorage_dbox_single.la'
 mdbox_libs='$(top_builddir)/src/lib-storage/index/dbox-multi/libstorage_dbox_multi.la'
 cydir_libs='$(top_builddir)/src/lib-storage/index/cydir/libstorage_cydir.la'
+imapc_libs='$(top_builddir)/src/lib-storage/index/imapc/libstorage_imapc.la $(top_builddir)/src/lib-ssl-iostream/libssl_iostream.la'
 raw_libs='$(top_builddir)/src/lib-storage/index/raw/libstorage_raw.la'
 shared_libs='$(top_builddir)/src/lib-storage/index/shared/libstorage_shared.la'
 
@@ -2439,6 +2446,8 @@ LINKED_STORAGE_LIBS=
 mail_storages="$mail_storages raw"
 # drop duplicates
 mail_storages=`(for i in $mail_storages; do echo $i; done)|sort|uniq|xargs echo`
+
+mailbox_list_drivers="maildir imapdir none fs shared"
 have_sdbox=no
 for storage in $mail_storages; do
   LINKED_STORAGE_LIBS="$LINKED_STORAGE_LIBS `eval echo \\$${storage}_libs`"
@@ -2449,8 +2458,12 @@ for storage in $mail_storages; do
     LINKED_STORAGE_LIBS="$LINKED_STORAGE_LIBS $dbox_common_libs"
     dbox_common_libs=""
   fi
+  if test $storage = imapc; then
+    mailbox_list_drivers="$mailbox_list_drivers imapc"
+  fi
 done
 AC_SUBST(LINKED_STORAGE_LIBS)
+AC_SUBST(mailbox_list_drivers)
 AC_DEFINE_UNQUOTED(MAIL_STORAGES, "$mail_storages", List of compiled in mail storages)
 
 if test $have_sdbox = yes; then
@@ -2570,6 +2583,14 @@ if test -f /usr/include/rpcsvc/rquota.x && test -n "$RPCGEN"; then
 fi
 AM_CONDITIONAL(HAVE_RQUOTA, test "$have_rquota" = "yes")
 
+dnl
+dnl ** Full text search
+dnl
+
+fts=" squat"
+not_fts=""
+
+have_solr=no
 if test "$want_solr" != "no"; then
   AC_CHECK_PROG(CURLCONFIG, curl-config, curl-config, NO)
   if test $CURLCONFIG != NO; then
@@ -2582,6 +2603,7 @@ if test "$want_solr" != "no"; then
         AC_SUBST(CURL_CFLAGS)
         AC_SUBST(CURL_LIBS)
 	have_solr=yes
+        fts="$fts solr"
       ], [
 	if test $want_solr = yes; then
 	  AC_ERROR([Can't build with Solr support: expat.h not found])
@@ -2600,6 +2622,35 @@ if test "$want_solr" != "no"; then
 fi
 AM_CONDITIONAL(BUILD_SOLR, test "$have_solr" = "yes")
 
+have_lucene=no
+if test "$want_lucene" = "yes"; then
+  if test $want_stemmer != no; then
+    AC_CHECK_LIB(stemmer, sb_stemmer_new, [
+      have_lucene_stemmer=yes
+      AC_DEFINE(HAVE_LUCENE_STEMMER,, Define if you want stemming support for CLucene)
+      AC_CHECK_LIB(textcat, special_textcat_Init, [
+	have_lucene_textcat=yes
+	AC_DEFINE(HAVE_LUCENE_TEXTCAT,, Define if you want textcat support for CLucene)
+      ])
+    ], [
+      if test $want_stemmer = yes; then
+	AC_ERROR([Can't build with stemmer support: libstemmer not found])
+      fi
+    ])
+  fi
+  have_lucene=yes
+  fts="$fts lucene"
+fi
+AM_CONDITIONAL(BUILD_LUCENE_STEMMER, test "$have_lucene_stemmer" = "yes")
+AM_CONDITIONAL(BUILD_LUCENE_TEXTCAT, test "$have_lucene_textcat" = "yes")
+
+if test $have_lucene = no; then
+  not_fts="$not_fts lucene"
+fi
+if test $have_solr = no; then
+  not_fts="$not_fts solr"
+fi
+
 dnl **
 dnl ** Settings
 dnl **
@@ -2617,11 +2668,16 @@ dnl **
 dnl IDLE doesn't really belong to banner. It's there just to make Blackberries
 dnl happy, because otherwise BIS server disables push email.
 capability_banner="IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE IDLE"
-capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS MULTIAPPEND UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS"
+capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS MULTIAPPEND UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS FUZZY"
 AC_DEFINE_UNQUOTED(CAPABILITY_STRING, "$capability", IMAP capabilities)
 AC_DEFINE_UNQUOTED(CAPABILITY_BANNER_STRING, "$capability_banner", IMAP capabilities advertised in banner) 
 
 CFLAGS="$CFLAGS $EXTRA_CFLAGS"
+if test "$with_gnu_ld" = yes; then
+  NOPLUGIN_LDFLAGS="-Wl,--as-needed -Wl,--no-undefined"
+  LDFLAGS="\$(NOPLUGIN_LDFLAGS) $LDFLAGS"
+  AC_SUBST(NOPLUGIN_LDFLAGS)
+fi
 
 if test "$docdir" = ""; then
   dnl docdir supported only by autoconf v2.59c and later
@@ -2663,10 +2719,12 @@ src/lib-ntlm/Makefile
 src/lib-otp/Makefile
 src/lib-dovecot/Makefile
 src/lib-settings/Makefile
+src/lib-ssl-iostream/Makefile
 src/lib-test/Makefile
 src/lib-storage/Makefile
 src/lib-storage/list/Makefile
 src/lib-storage/index/Makefile
+src/lib-storage/index/imapc/Makefile
 src/lib-storage/index/maildir/Makefile
 src/lib-storage/index/mbox/Makefile
 src/lib-storage/index/dbox-common/Makefile
@@ -2687,6 +2745,7 @@ src/lmtp/Makefile
 src/dict/Makefile
 src/director/Makefile
 src/dns/Makefile
+src/indexer/Makefile
 src/ipc/Makefile
 src/imap/Makefile
 src/imap-login/Makefile
@@ -2695,6 +2754,7 @@ src/master/Makefile
 src/pop3/Makefile
 src/pop3-login/Makefile
 src/ssl-params/Makefile
+src/stats/Makefile
 src/util/Makefile
 src/plugins/Makefile
 src/plugins/acl/Makefile
@@ -2712,6 +2772,8 @@ src/plugins/notify/Makefile
 src/plugins/quota/Makefile
 src/plugins/imap-quota/Makefile
 src/plugins/snarf/Makefile
+src/plugins/stats/Makefile
+src/plugins/imap-stats/Makefile
 src/plugins/trash/Makefile
 src/plugins/virtual/Makefile
 src/plugins/zlib/Makefile
@@ -2728,6 +2790,7 @@ fi
 not_passdb=`echo "$not_passdb"|sed 's/ / -/g'`
 not_userdb=`echo "$not_userdb"|sed 's/ / -/g'`
 not_sql_drivers=`echo "$not_sql_drivers"|sed 's/ / -/g'`
+not_fts=`echo "$not_fts"|sed 's/ / -/g'`
 
 echo
 echo "Install prefix . : $prefix"
@@ -2748,3 +2811,10 @@ echo "SQL drivers .... :$sql_drivers"
 if test "$not_sql_drivers" != ""; then
   echo "                 :$not_sql_drivers"
 fi
+echo "Full text search :$fts"
+if test "$not_fts" != ""; then
+  echo "                 :$not_fts"
+fi
+
+echo
+echo "NOTE: This is the UNSTABLE development branch of Dovecot v2.1."

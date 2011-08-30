@@ -58,7 +58,7 @@ sdbox_file_copy_attachments(struct sdbox_file *src_file,
 			sdbox_file_attachment_relpath(src_file, extref->path));
 		dest_relpath = p_strconcat(dest_file->attachment_pool,
 					   extref->path, "-",
-					   mail_generate_guid_string(), NULL);
+					   guid_generate(), NULL);
 		dest = t_strdup_printf("%s/%s", dest_storage->attachment_dir,
 				       dest_relpath);
 		if (fs_link(dest_storage->attachment_fs, src, dest) < 0) {
@@ -130,10 +130,8 @@ sdbox_copy_hardlink(struct mail_save_context *_ctx, struct mail *mail)
 	index_copy_cache_fields(_ctx, mail, ctx->seq);
 
 	sdbox_save_add_file(_ctx, dest_file);
-	if (_ctx->dest_mail != NULL) {
-		mail_set_seq(_ctx->dest_mail, ctx->seq);
-		_ctx->dest_mail->saving = TRUE;
-	}
+	if (_ctx->dest_mail != NULL)
+		mail_set_seq_saving(_ctx->dest_mail, ctx->seq);
 	dbox_file_unref(&src_file);
 	return 1;
 }

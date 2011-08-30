@@ -19,7 +19,7 @@ struct mbox_index_header {
 	uint32_t sync_mtime;
 	uint8_t dirty_flag;
 	uint8_t unused[3];
-	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	guid_128_t mailbox_guid;
 };
 struct mbox_storage {
 	struct mail_storage storage;
@@ -57,10 +57,14 @@ struct mbox_mailbox {
 	unsigned int mbox_used_privileges:1;
 	unsigned int mbox_privileged_locking:1;
 	unsigned int syncing:1;
+	unsigned int backend_readonly:1;
+	unsigned int backend_readonly_set:1;
 };
 
 struct mbox_transaction_context {
-	struct index_transaction_context ictx;
+	struct mailbox_transaction_context t;
+	union mail_index_transaction_module_context module_ctx;
+
 	unsigned int mbox_lock_id;
 };
 
@@ -84,5 +88,7 @@ int mbox_transaction_save_commit_pre(struct mail_save_context *ctx);
 void mbox_transaction_save_commit_post(struct mail_save_context *ctx,
 				       struct mail_index_transaction_commit_result *result);
 void mbox_transaction_save_rollback(struct mail_save_context *ctx);
+
+bool mbox_is_backend_readonly(struct mbox_mailbox *mbox);
 
 #endif

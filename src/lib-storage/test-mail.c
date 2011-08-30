@@ -32,10 +32,11 @@ static void test_mail_free(struct mail *mail)
 	pool_unref(&pmail->pool);
 }
 
-static void test_mail_set_seq(struct mail *mail, uint32_t seq)
+static void test_mail_set_seq(struct mail *mail, uint32_t seq, bool saving)
 {
 	mail->seq = seq;
 	mail->uid = seq;
+	mail->saving = saving;
 
 	mail->expunged = TRUE;
 	mail->has_nuls = FALSE;
@@ -44,13 +45,18 @@ static void test_mail_set_seq(struct mail *mail, uint32_t seq)
 
 static bool test_mail_set_uid(struct mail *mail, uint32_t uid)
 {
-	test_mail_set_seq(mail, uid);
+	test_mail_set_seq(mail, uid, FALSE);
 	return TRUE;
 }
 
 static void test_mail_set_uid_cache_updates(struct mail *mail ATTR_UNUSED,
 					    bool set ATTR_UNUSED)
 {
+}
+
+static bool test_mail_prefetch(struct mail *mail ATTR_UNUSED)
+{
+	return TRUE;
 }
 
 static enum mail_flags test_mail_get_flags(struct mail *mail ATTR_UNUSED)
@@ -212,6 +218,7 @@ struct mail_vfuncs test_mail_vfuncs = {
 	test_mail_set_seq,
 	test_mail_set_uid,
 	test_mail_set_uid_cache_updates,
+	test_mail_prefetch,
 
 	test_mail_get_flags,
 	test_mail_get_keywords,

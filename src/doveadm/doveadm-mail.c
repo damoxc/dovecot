@@ -5,10 +5,10 @@
 #include "lib-signals.h"
 #include "ioloop.h"
 #include "str.h"
+#include "unichar.h"
 #include "module-dir.h"
 #include "wildcard-match.h"
 #include "master-service.h"
-#include "imap-utf7.h"
 #include "mail-user.h"
 #include "mail-namespace.h"
 #include "mail-storage.h"
@@ -71,29 +71,31 @@ static struct doveadm_mail_cmd_context *cmd_purge_alloc(void)
 	return ctx;
 }
 
-static int mailbox_find_and_open(struct mail_user *user, const char *mailbox,
-				 struct mailbox **box_r)
+struct mailbox *
+doveadm_mailbox_find(struct mail_user *user, const char *mailbox)
 {
 	struct mail_namespace *ns;
-	struct mailbox *box;
-	string_t *str;
-	const char *orig_mailbox = mailbox;
 
-	str = t_str_new(128);
-	if (imap_utf8_to_utf7(mailbox, str) < 0)
+	if (!uni_utf8_str_is_valid(mailbox))
 		i_fatal("Mailbox name not valid UTF-8: %s", mailbox);
-	mailbox = str_c(str);
 
-	ns = mail_namespace_find(user->namespaces, &mailbox);
+	ns = mail_namespace_find(user->namespaces, mailbox);
 	if (ns == NULL)
 		i_fatal("Can't find namespace for mailbox %s", mailbox);
 
-	box = mailbox_alloc(ns->list, mailbox, MAILBOX_FLAG_KEEP_RECENT |
-			    MAILBOX_FLAG_IGNORE_ACLS);
+	return mailbox_alloc(ns->list, mailbox, MAILBOX_FLAG_IGNORE_ACLS);
+}
+
+static int
+doveadm_mailbox_find_and_open(struct mail_user *user, const char *mailbox,
+			      struct mailbox **box_r)
+{
+	struct mailbox *box;
+
+	box = doveadm_mailbox_find(user, mailbox);
 	if (mailbox_open(box) < 0) {
-		i_error("Opening mailbox %s failed: %s", orig_mailbox,
-			mail_storage_get_last_error(mailbox_get_storage(box),
-						    NULL));
+		i_error("Opening mailbox %s failed: %s", mailbox,
+			mailbox_get_last_error(box, NULL));
 		mailbox_free(&box);
 		return -1;
 	}
@@ -104,12 +106,12 @@ static int mailbox_find_and_open(struct mail_user *user, const char *mailbox,
 int doveadm_mailbox_find_and_sync(struct mail_user *user, const char *mailbox,
 				  struct mailbox **box_r)
 {
-	if (mailbox_find_and_open(user, mailbox, box_r) < 0)
+	if (doveadm_mailbox_find_and_open(user, mailbox, box_r) < 0)
 		return -1;
 	if (mailbox_sync(*box_r, MAILBOX_SYNC_FLAG_FULL_READ) < 0) {
 		i_error("Syncing mailbox %s failed: %s", mailbox,
-			mail_storage_get_last_error(mailbox_get_storage(*box_r),
-						    NULL));
+			mailbox_get_last_error(*box_r, NULL));
+		mailbox_free(box_r);
 		mailbox_free(box_r);
 		return -1;
 	}
@@ -121,11 +123,11 @@ doveadm_mail_build_search_args(const char *const args[])
 {
 	struct mail_search_parser *parser;
 	struct mail_search_args *sargs;
-	const char *error;
+	const char *error, *charset = "UTF-8";
 
 	parser = mail_search_parser_init_cmdline(args);
 	if (mail_search_build(mail_search_register_get_human(),
-			      parser, "UTF-8", &sargs, &error) < 0)
+			      parser, &charset, &sargs, &error) < 0)
 		i_fatal("%s", error);
 	mail_search_parser_deinit(&parser);
 	return sargs;
@@ -141,19 +143,16 @@ static void cmd_force_resync_run(struct doveadm_mail_cmd_context *_ctx,
 {
 	struct force_resync_cmd_context *ctx =
 		(struct force_resync_cmd_context *)_ctx;
-	struct mail_storage *storage;
 	struct mailbox *box;
 
-	if (mailbox_find_and_open(user, ctx->mailbox, &box) < 0) {
+	if (doveadm_mailbox_find_and_open(user, ctx->mailbox, &box) < 0) {
 		_ctx->failed = TRUE;
 		return;
 	}
-	storage = mailbox_get_storage(box);
 	if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FORCE_RESYNC |
 			 MAILBOX_SYNC_FLAG_FIX_INCONSISTENT) < 0) {
 		i_error("Forcing a resync on mailbox %s failed: %s",
-			ctx->mailbox,
-			mail_storage_get_last_error(storage, NULL));
+			ctx->mailbox, mailbox_get_last_error(box, NULL));
 		_ctx->failed = TRUE;
 	}
 	mailbox_free(&box);
@@ -223,7 +222,7 @@ doveadm_mail_next_user(struct doveadm_mail_cmd_context *ctx,
 	return 1;
 }
 
-void doveadm_mail_single_user(struct doveadm_mail_cmd_context *ctx, char *argv[],
+void doveadm_mail_single_user(struct doveadm_mail_cmd_context *ctx,
 			      const struct mail_storage_service_input *input,
 			      enum mail_storage_service_flags service_flags)
 {
@@ -234,7 +233,7 @@ void doveadm_mail_single_user(struct doveadm_mail_cmd_context *ctx, char *argv[]
 
 	ctx->storage_service = mail_storage_service_init(master_service, NULL,
 							 service_flags);
-	ctx->v.init(ctx, (const void *)argv);
+	ctx->v.init(ctx, ctx->args);
 	if (hook_doveadm_mail_init != NULL)
 		hook_doveadm_mail_init(ctx);
 
@@ -366,6 +365,7 @@ doveadm_mail_cmd(const struct doveadm_mail_cmd *cmd, int argc, char *argv[])
 		service_flags |= MAIL_STORAGE_SERVICE_FLAG_DEBUG;
 
 	ctx = doveadm_mail_cmd_init(cmd, doveadm_settings);
+	ctx->full_args = (const void *)(argv + 1);
 
 	getopt_args = t_strconcat("AS:u:", ctx->getopt_args, NULL);
 	username = getenv("USER");
@@ -418,7 +418,7 @@ doveadm_mail_cmd(const struct doveadm_mail_cmd *cmd, int argc, char *argv[])
 		memset(&input, 0, sizeof(input));
 		input.service = "doveadm";
 		input.username = username;
-		doveadm_mail_single_user(ctx, argv, &input, service_flags);
+		doveadm_mail_single_user(ctx, &input, service_flags);
 	} else {
 		service_flags |= MAIL_STORAGE_SERVICE_FLAG_TEMP_PRIV_DROP;
 		doveadm_mail_all_users(ctx, argv, wildcard_user, service_flags);

@@ -64,7 +64,7 @@ int mail_storage_copy(struct mail_save_context *ctx, struct mail *mail)
 		/* keywords gets unreferenced twice: first in
 		   mailbox_save_cancel()/_finish() and second time in
 		   mailbox_copy(). */
-		mailbox_keywords_ref(ctx->transaction->box, ctx->keywords);
+		mailbox_keywords_ref(ctx->keywords);
 	}
 
 	if (mail_storage_try_copy(&ctx, mail) < 0) {
@@ -78,7 +78,19 @@ int mail_storage_copy(struct mail_save_context *ctx, struct mail *mail)
 bool mail_storage_copy_can_use_hardlink(struct mailbox *src,
 					struct mailbox *dest)
 {
-	return src->file_create_mode == dest->file_create_mode &&
-		src->file_create_gid == dest->file_create_gid &&
+	const struct mailbox_permissions *src_perm =
+		mailbox_get_permissions(src);
+	const struct mailbox_permissions *dest_perm =
+		mailbox_get_permissions(dest);
+
+	if (src_perm->file_uid != dest_perm->file_uid) {
+		/* if we don't have read permissions, we can't hard link
+		   (basically we'll catch 0600 files here) */
+		if ((src_perm->file_create_mode & 0022) == 0)
+			return FALSE;
+	}
+
+	return src_perm->file_create_mode == dest_perm->file_create_mode &&
+		src_perm->file_create_gid == dest_perm->file_create_gid &&
 		!dest->disable_reflink_copy_to;
 }

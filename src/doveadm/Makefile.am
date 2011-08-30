@@ -41,7 +41,7 @@ libs = \
 doveadm_LDADD = \
 	$(libs) \
 	$(cmd_pw_libs) \
-	$(AUTH_LIBS) \
+	$(CRYPT_LIBS) \
 	$(LIBDOVECOT) \
 	$(MODULE_LIBS)
 doveadm_DEPENDENCIES = \
@@ -98,6 +98,7 @@ doveadm_SOURCES = \
 	doveadm-proxy.c \
 	doveadm-pw.c \
 	doveadm-sis.c \
+	doveadm-stats.c \
 	doveadm-who.c
 
 doveadm_server_SOURCES = \

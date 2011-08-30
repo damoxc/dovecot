@@ -5,9 +5,9 @@
 #include "array.h"
 #include "str.h"
 #include "str-sanitize.h"
+#include "unichar.h"
 #include "var-expand.h"
 #include "message-address.h"
-#include "imap-utf7.h"
 #include "lda-settings.h"
 #include "mail-storage.h"
 #include "mail-namespace.h"
@@ -138,40 +138,34 @@ void mail_deliver_session_deinit(struct mail_deliver_session **_session)
 	pool_unref(&session->pool);
 }
 
-static const char *mailbox_name_to_mutf7(const char *mailbox_utf8)
-{
-	string_t *str = t_str_new(128);
-
-	if (imap_utf8_to_utf7(mailbox_utf8, str) < 0)
-		return mailbox_utf8;
-	else
-		return str_c(str);
-}
-
 int mail_deliver_save_open(struct mail_deliver_save_open_context *ctx,
 			   const char *name, struct mailbox **box_r,
 			   enum mail_error *error_r, const char **error_str_r)
 {
 	struct mail_namespace *ns;
-	struct mail_storage *storage;
 	struct mailbox *box;
 	enum mailbox_flags flags =
-		MAILBOX_FLAG_KEEP_RECENT | MAILBOX_FLAG_SAVEONLY |
-		MAILBOX_FLAG_POST_SESSION;
+		MAILBOX_FLAG_SAVEONLY | MAILBOX_FLAG_POST_SESSION;
 
 	*box_r = NULL;
 	*error_r = MAIL_ERROR_NONE;
 	*error_str_r = NULL;
 
-	name = mailbox_name_to_mutf7(name);
-	ns = mail_namespace_find(ctx->user->namespaces, &name);
+	if (!uni_utf8_str_is_valid(name)) {
+		*error_str_r = "Mailbox name not valid UTF-8";
+		*error_r = MAIL_ERROR_PARAMS;
+		return -1;
+	}
+
+	ns = mail_namespace_find(ctx->user->namespaces, name);
 	if (ns == NULL) {
 		*error_str_r = "Unknown namespace";
 		*error_r = MAIL_ERROR_PARAMS;
 		return -1;
 	}
 
-	if (*name == '\0' && (ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
+	if (strcmp(name, ns->prefix) == 0 &&
+	    (ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
 		/* delivering to a namespace prefix means we actually want to
 		   deliver to the INBOX instead */
 		name = "INBOX";
@@ -188,26 +182,25 @@ int mail_deliver_save_open(struct mail_deliver_save_open_context *ctx,
 	if (mailbox_open(box) == 0)
 		return 0;
 
-	storage = mailbox_get_storage(box);
-	*error_str_r = mail_storage_get_last_error(storage, error_r);
+	*error_str_r = mailbox_get_last_error(box, error_r);
 	if (!ctx->lda_mailbox_autocreate || *error_r != MAIL_ERROR_NOTFOUND)
 		return -1;
 
 	/* try creating it. */
 	if (mailbox_create(box, NULL, FALSE) < 0) {
-		*error_str_r = mail_storage_get_last_error(storage, error_r);
+		*error_str_r = mailbox_get_last_error(box, error_r);
 		if (*error_r != MAIL_ERROR_EXISTS)
 			return -1;
 		/* someone else just created it */
 	}
 	if (ctx->lda_mailbox_autosubscribe) {
 		/* (try to) subscribe to it */
-		(void)mailbox_list_set_subscribed(ns->list, name, TRUE);
+		(void)mailbox_set_subscribed(box, TRUE);
 	}
 
 	/* and try opening again */
 	if (mailbox_sync(box, 0) < 0) {
-		*error_str_r = mail_storage_get_last_error(storage, error_r);
+		*error_str_r = mailbox_get_last_error(box, error_r);
 		return -1;
 	}
 	return 0;
@@ -216,10 +209,10 @@ int mail_deliver_save_open(struct mail_deliver_save_open_context *ctx,
 static bool mail_deliver_check_duplicate(struct mail_deliver_session *session,
 					 struct mailbox *box)
 {
-	uint8_t box_guid[MAIL_GUID_128_SIZE];
-	const mail_guid_128_t *guid;
+	struct mailbox_metadata metadata;
+	const guid_128_t *guid;
 
-	if (mailbox_get_guid(box, box_guid) < 0) {
+	if (mailbox_get_metadata(box, MAILBOX_METADATA_GUID, &metadata) < 0) {
 		/* just play it safe and assume a duplicate */
 		return TRUE;
 	}
@@ -229,10 +222,10 @@ static bool mail_deliver_check_duplicate(struct mail_deliver_session *session,
 	if (!array_is_created(&session->inbox_guids))
 		p_array_init(&session->inbox_guids, session->pool, 8);
 	array_foreach(&session->inbox_guids, guid) {
-		if (memcmp(box_guid, guid, sizeof(box_guid)) == 0)
+		if (memcmp(metadata.guid, *guid, sizeof(metadata.guid)) == 0)
 			return TRUE;
 	}
-	array_append(&session->inbox_guids, &box_guid, 1);
+	array_append(&session->inbox_guids, &metadata.guid, 1);
 	return FALSE;
 }
 
@@ -242,7 +235,7 @@ void mail_deliver_deduplicate_guid_if_needed(struct mail_deliver_session *sessio
 	struct mailbox_transaction_context *trans =
 		mailbox_save_get_transaction(save_ctx);
 	struct mailbox *box = mailbox_transaction_get_mailbox(trans);
-	uint8_t guid[MAIL_GUID_128_SIZE];
+	guid_128_t guid;
 
 	if (strcmp(mailbox_get_name(box), "INBOX") != 0)
 		return;
@@ -252,8 +245,8 @@ void mail_deliver_deduplicate_guid_if_needed(struct mail_deliver_session *sessio
 	   session. the problem with this is that if GUIDs are used as POP3
 	   UIDLs, some clients can't handle the duplicates well. */
 	if (mail_deliver_check_duplicate(session, box)) {
-		mail_generate_guid_128(guid);
-		mailbox_save_set_guid(save_ctx, mail_guid_128_to_string(guid));
+		guid_128_generate(guid);
+		mailbox_save_set_guid(save_ctx, guid_128_to_string(guid));
 	}
 }
 
@@ -320,7 +313,7 @@ int mail_deliver_save(struct mail_deliver_context *ctx, const char *mailbox,
 	else
 		mail_deliver_log_cache_var_expand_table(ctx);
 	if (kw != NULL)
-		mailbox_keywords_unref(box, &kw);
+		mailbox_keywords_unref(&kw);
 	mail_free(&ctx->dest_mail);
 
 	if (ret < 0)

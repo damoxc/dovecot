@@ -10,39 +10,40 @@ struct doveadm_mail_iter {
 	struct mail_search_args *search_args;
 
 	struct mailbox *box;
-	struct mail_storage *storage;
 	struct mailbox_transaction_context *t;
 	struct mail_search_context *search_ctx;
 };
 
 int doveadm_mail_iter_init(const struct mailbox_info *info,
 			   struct mail_search_args *search_args,
+			   enum mail_fetch_field wanted_fields,
+			   const char *const *wanted_headers,
 			   struct mailbox_transaction_context **trans_r,
 			   struct doveadm_mail_iter **iter_r)
 {
 	struct doveadm_mail_iter *iter;
-	const char *storage_name;
-
-	storage_name = mail_namespace_get_storage_name(info->ns, info->name);
+	struct mailbox_header_lookup_ctx *headers_ctx;
 
 	iter = i_new(struct doveadm_mail_iter, 1);
-	iter->box = mailbox_alloc(info->ns->list, storage_name,
-				  MAILBOX_FLAG_KEEP_RECENT |
+	iter->box = mailbox_alloc(info->ns->list, info->name,
 				  MAILBOX_FLAG_IGNORE_ACLS);
-	iter->storage = mailbox_get_storage(iter->box);
 	iter->search_args = search_args;
 
 	if (mailbox_sync(iter->box, MAILBOX_SYNC_FLAG_FULL_READ) < 0) {
 		i_error("Syncing mailbox %s failed: %s", info->name,
-			mail_storage_get_last_error(iter->storage, NULL));
+			mailbox_get_last_error(iter->box, NULL));
 		mailbox_free(&iter->box);
 		i_free(iter);
 		return -1;
 	}
 
+	headers_ctx = wanted_headers == NULL || wanted_headers[0] == NULL ?
+		NULL : mailbox_header_lookup_init(iter->box, wanted_headers);
+
 	mail_search_args_init(search_args, iter->box, FALSE, NULL);
 	iter->t = mailbox_transaction_begin(iter->box, 0);
-	iter->search_ctx = mailbox_search_init(iter->t, search_args, NULL);
+	iter->search_ctx = mailbox_search_init(iter->t, search_args, NULL,
+					       wanted_fields, headers_ctx);
 
 	*trans_r = iter->t;
 	*iter_r = iter;
@@ -58,14 +59,14 @@ doveadm_mail_iter_deinit_transaction(struct doveadm_mail_iter *iter,
 	if (mailbox_search_deinit(&iter->search_ctx) < 0) {
 		i_error("Searching mailbox %s failed: %s",
 			mailbox_get_vname(iter->box),
-			mail_storage_get_last_error(iter->storage, NULL));
+			mailbox_get_last_error(iter->box, NULL));
 		ret = -1;
 	}
 	if (commit) {
 		if (mailbox_transaction_commit(&iter->t) < 0) {
 			i_error("Commiting mailbox %s failed: %s",
 				mailbox_get_vname(iter->box),
-				mail_storage_get_last_error(iter->storage, NULL));
+			mailbox_get_last_error(iter->box, NULL));
 			ret = -1;
 		}
 	} else {
@@ -107,7 +108,8 @@ void doveadm_mail_iter_deinit_rollback(struct doveadm_mail_iter **_iter)
 	(void)doveadm_mail_iter_deinit_full(_iter, FALSE, FALSE);
 }
 
-bool doveadm_mail_iter_next(struct doveadm_mail_iter *iter, struct mail *mail)
+bool doveadm_mail_iter_next(struct doveadm_mail_iter *iter,
+			    struct mail **mail_r)
 {
-	return mailbox_search_next(iter->search_ctx, mail);
+	return mailbox_search_next(iter->search_ctx, mail_r);
 }

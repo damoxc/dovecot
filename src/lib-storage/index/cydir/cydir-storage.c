@@ -36,10 +36,9 @@ cydir_storage_get_list_settings(const struct mail_namespace *ns ATTR_UNUSED,
 
 static struct mailbox *
 cydir_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
-		    const char *name, enum mailbox_flags flags)
+		    const char *vname, enum mailbox_flags flags)
 {
 	struct cydir_mailbox *mbox;
-	struct index_mailbox_context *ibox;
 	pool_t pool;
 
 	/* cydir can't work without index files */
@@ -53,17 +52,8 @@ cydir_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &cydir_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, name, flags,
+	index_storage_mailbox_alloc(&mbox->box, vname, flags,
 				    CYDIR_INDEX_PREFIX);
-	mail_index_set_fsync_mode(mbox->box.index,
-				  storage->set->parsed_fsync_mode,
-				  MAIL_INDEX_SYNC_TYPE_APPEND |
-				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
-
-	ibox = INDEX_STORAGE_CONTEXT(&mbox->box);
-	ibox->save_commit_pre = cydir_transaction_save_commit_pre;
-	ibox->save_commit_post = cydir_transaction_save_commit_post;
-	ibox->save_rollback = cydir_transaction_save_rollback;
 
 	mbox->storage = (struct cydir_storage *)storage;
 	return &mbox->box;
@@ -71,9 +61,10 @@ cydir_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 
 static int cydir_mailbox_open(struct mailbox *box)
 {
+	const char *box_path = mailbox_get_path(box);
 	struct stat st;
 
-	if (stat(box->path, &st) == 0) {
+	if (stat(box_path, &st) == 0) {
 		/* exists, open it */
 	} else if (errno == ENOENT) {
 		mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
@@ -81,14 +72,20 @@ static int cydir_mailbox_open(struct mailbox *box)
 		return -1;
 	} else if (errno == EACCES) {
 		mail_storage_set_critical(box->storage, "%s",
-			mail_error_eacces_msg("stat", box->path));
+			mail_error_eacces_msg("stat", box_path));
 		return -1;
 	} else {
 		mail_storage_set_critical(box->storage, "stat(%s) failed: %m",
-					  box->path);
+					  box_path);
 		return -1;
 	}
-	return index_storage_mailbox_open(box, FALSE);
+	if (index_storage_mailbox_open(box, FALSE) < 0)
+		return -1;
+	mail_index_set_fsync_mode(box->index,
+				  box->storage->set->parsed_fsync_mode,
+				  MAIL_INDEX_SYNC_TYPE_APPEND |
+				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
+	return 0;
 }
 
 static int
@@ -105,17 +102,15 @@ cydir_mailbox_create(struct mailbox *box, const struct mailbox_update *update,
 
 static void cydir_notify_changes(struct mailbox *box)
 {
-	struct cydir_mailbox *mbox = (struct cydir_mailbox *)box;
-
 	if (box->notify_callback == NULL)
-		index_mailbox_check_remove_all(&mbox->box);
+		index_mailbox_check_remove_all(box);
 	else
-		index_mailbox_check_add(&mbox->box, mbox->box.path);
+		index_mailbox_check_add(box, mailbox_get_path(box));
 }
 
 struct mail_storage cydir_storage = {
 	.name = CYDIR_STORAGE_NAME,
-	.class_flags = 0,
+	.class_flags = MAIL_STORAGE_CLASS_FLAG_FILE_PER_MSG,
 
 	.v = {
 		NULL,
@@ -133,8 +128,8 @@ struct mail_storage cydir_storage = {
 struct mailbox cydir_mailbox = {
 	.v = {
 		index_storage_is_readonly,
-		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
+		index_storage_mailbox_exists,
 		cydir_mailbox_open,
 		index_storage_mailbox_close,
 		index_storage_mailbox_free,
@@ -144,8 +139,8 @@ struct mailbox cydir_mailbox = {
 		index_storage_mailbox_rename,
 		index_storage_get_status,
 		NULL,
-		NULL,
-		NULL,
+		index_storage_list_index_has_changed,
+		index_storage_list_index_update_sync,
 		cydir_storage_sync_init,
 		index_mailbox_sync_next,
 		index_mailbox_sync_deinit,
@@ -154,21 +149,8 @@ struct mailbox cydir_mailbox = {
 		index_transaction_begin,
 		index_transaction_commit,
 		index_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		NULL,
-		NULL,
 		NULL,
 		index_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		index_storage_search_init,
 		index_storage_search_deinit,
 		index_storage_search_next_nonblock,
@@ -179,7 +161,9 @@ struct mailbox cydir_mailbox = {
 		cydir_save_finish,
 		cydir_save_cancel,
 		mail_storage_copy,
-		NULL,
+		cydir_transaction_save_commit_pre,
+		cydir_transaction_save_commit_post,
+		cydir_transaction_save_rollback,
 		index_storage_is_inconsistent
 	}
 };

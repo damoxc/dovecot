@@ -30,7 +30,7 @@ static struct mail_storage *sdbox_storage_alloc(void)
 
 static struct mailbox *
 sdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
-		    const char *name, enum mailbox_flags flags)
+		    const char *vname, enum mailbox_flags flags)
 {
 	struct sdbox_mailbox *mbox;
 	struct index_mailbox_context *ibox;
@@ -47,23 +47,14 @@ sdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &sdbox_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, name, flags, DBOX_INDEX_PREFIX);
-	mail_index_set_fsync_mode(mbox->box.index,
-				  storage->set->parsed_fsync_mode,
-				  MAIL_INDEX_SYNC_TYPE_APPEND |
-				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
+	index_storage_mailbox_alloc(&mbox->box, vname,
+				    flags, DBOX_INDEX_PREFIX);
 
 	ibox = INDEX_STORAGE_CONTEXT(&mbox->box);
-	ibox->save_commit_pre = sdbox_transaction_save_commit_pre;
-	ibox->save_commit_post = sdbox_transaction_save_commit_post;
-	ibox->save_rollback = sdbox_transaction_save_rollback;
 	ibox->index_flags |= MAIL_INDEX_OPEN_FLAG_KEEP_BACKUPS |
 		MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY;
 
 	mbox->storage = (struct sdbox_storage *)storage;
-	mbox->hdr_ext_id =
-		mail_index_ext_register(mbox->box.index, "dbox-hdr",
-					sizeof(struct sdbox_index_header), 0, 0);
 	return &mbox->box;
 }
 
@@ -84,7 +75,7 @@ int sdbox_read_header(struct sdbox_mailbox *mbox,
 			mail_storage_set_critical(
 				&mbox->storage->storage.storage,
 				"sdbox %s: Invalid dbox header size",
-				mbox->box.path);
+				mailbox_get_path(&mbox->box));
 		}
 		ret = -1;
 	} else {
@@ -107,11 +98,11 @@ void sdbox_update_header(struct sdbox_mailbox *mbox,
 
 	new_hdr = hdr;
 
-	if (update != NULL && !mail_guid_128_is_empty(update->mailbox_guid)) {
+	if (update != NULL && !guid_128_is_empty(update->mailbox_guid)) {
 		memcpy(new_hdr.mailbox_guid, update->mailbox_guid,
 		       sizeof(new_hdr.mailbox_guid));
-	} else if (mail_guid_128_is_empty(new_hdr.mailbox_guid)) {
-		mail_generate_guid_128(new_hdr.mailbox_guid);
+	} else if (guid_128_is_empty(new_hdr.mailbox_guid)) {
+		guid_128_generate(new_hdr.mailbox_guid);
 	}
 
 	if (memcmp(&hdr, &new_hdr, sizeof(hdr)) != 0) {
@@ -194,7 +185,7 @@ sdbox_get_attachment_path_suffix(struct dbox_file *_file)
 	struct sdbox_file *file = (struct sdbox_file *)_file;
 
 	return t_strdup_printf("-%s-%u",
-			mail_guid_128_to_string(file->mbox->mailbox_guid),
+			guid_128_to_string(file->mbox->mailbox_guid),
 			file->uid);
 }
 
@@ -223,6 +214,14 @@ static int sdbox_mailbox_open(struct mailbox *box)
 
 	if (dbox_mailbox_open(box) < 0)
 		return -1;
+	mbox->hdr_ext_id =
+		mail_index_ext_register(box->index, "dbox-hdr",
+					sizeof(struct sdbox_index_header), 0, 0);
+
+	if (box->creating) {
+		/* wait for mailbox creation to initialize the index */
+		return 0;
+	}
 
 	if (box->creating) {
 		/* wait for mailbox creation to initialize the index */
@@ -246,7 +245,7 @@ static int sdbox_mailbox_open(struct mailbox *box)
 			memset(&hdr, 0, sizeof(hdr));
 	}
 
-	if (mail_guid_128_is_empty(hdr.mailbox_guid)) {
+	if (guid_128_is_empty(hdr.mailbox_guid)) {
 		/* regenerate it */
 		if (sdbox_mailbox_create_indexes(box, NULL, NULL) < 0 ||
 		    sdbox_read_header(mbox, &hdr, TRUE) < 0)
@@ -266,55 +265,18 @@ static void sdbox_mailbox_close(struct mailbox *box)
 	index_storage_mailbox_close(box);
 }
 
-static int sdbox_mailbox_delete(struct mailbox *box)
-{
-	struct sdbox_mailbox *mbox = (struct sdbox_mailbox *)box;
-	struct mail_search_context *ctx;
-        struct mailbox_transaction_context *t;
-	struct mail *mail;
-	struct mail_search_args *search_args;
-	struct dbox_file *file;
-	struct sdbox_file *sfile;
-
-	if (!box->opened || mbox->storage->storage.attachment_dir == NULL)
-		return index_storage_mailbox_delete(box);
-
-	/* mark the mailbox deleted to avoid race conditions */
-	if (mailbox_mark_index_deleted(box, TRUE) < 0)
-		return -1;
-
-	/* ulink all dbox mails and their attachements in the mailbox. */
-	t = mailbox_transaction_begin(box, 0);
-
-	search_args = mail_search_build_init();
-	mail_search_build_add_all(search_args);
-	ctx = mailbox_search_init(t, search_args, NULL);
-	mail_search_args_unref(&search_args);
-
-	mail = mail_alloc(t, 0, NULL);
-	while (mailbox_search_next(ctx, mail)) {
-		file = sdbox_file_init(mbox, mail->uid);
-		sfile = (struct sdbox_file *)file;
-		(void)sdbox_file_unlink_with_attachments(sfile);
-		dbox_file_unref(&file);
-	}
-	mail_free(&mail);
-
-	if (mailbox_search_deinit(&ctx) < 0) {
-		/* maybe we missed some mails. oh well, can't help it. */
-	}
-	mailbox_transaction_rollback(&t);
-
-	return index_storage_mailbox_delete(box);
-}
-
 static int
-sdbox_mailbox_get_guid(struct mailbox *box, uint8_t guid[MAIL_GUID_128_SIZE])
+sdbox_mailbox_get_metadata(struct mailbox *box,
+			   enum mailbox_metadata_items items,
+			   struct mailbox_metadata *metadata_r)
 {
 	struct sdbox_mailbox *mbox = (struct sdbox_mailbox *)box;
 
-	memcpy(guid, mbox->mailbox_guid, MAIL_GUID_128_SIZE);
-	return 0;
+	if ((items & MAILBOX_METADATA_GUID) != 0) {
+		memcpy(metadata_r->guid, mbox->mailbox_guid,
+		       sizeof(metadata_r->guid));
+	}
+	return index_mailbox_get_metadata(box, items, metadata_r);
 }
 
 static int
@@ -348,7 +310,7 @@ struct mail_storage sdbox_storage = {
 
 struct mail_storage dbox_storage = {
 	.name = "dbox", /* alias */
-	.class_flags = 0,
+	.class_flags = MAIL_STORAGE_CLASS_FLAG_FILE_PER_MSG,
 
 	.v = {
                 NULL,
@@ -366,19 +328,19 @@ struct mail_storage dbox_storage = {
 struct mailbox sdbox_mailbox = {
 	.v = {
 		index_storage_is_readonly,
-		index_storage_allow_new_keywords,
 		index_storage_mailbox_enable,
+		index_storage_mailbox_exists,
 		sdbox_mailbox_open,
 		sdbox_mailbox_close,
 		index_storage_mailbox_free,
 		dbox_mailbox_create,
 		dbox_mailbox_update,
-		sdbox_mailbox_delete,
+		index_storage_mailbox_delete,
 		index_storage_mailbox_rename,
 		index_storage_get_status,
-		sdbox_mailbox_get_guid,
-		NULL,
-		NULL,
+		sdbox_mailbox_get_metadata,
+		index_storage_list_index_has_changed,
+		index_storage_list_index_update_sync,
 		sdbox_storage_sync_init,
 		index_mailbox_sync_next,
 		index_mailbox_sync_deinit,
@@ -387,21 +349,8 @@ struct mailbox sdbox_mailbox = {
 		index_transaction_begin,
 		index_transaction_commit,
 		index_transaction_rollback,
-		index_transaction_set_max_modseq,
-		index_keywords_create,
-		index_keywords_create_from_indexes,
-		index_keywords_ref,
-		index_keywords_unref,
-		index_keyword_is_valid,
-		index_storage_get_seq_range,
-		index_storage_get_uid_range,
-		index_storage_get_expunges,
-		NULL,
-		NULL,
 		NULL,
 		dbox_mail_alloc,
-		index_header_lookup_init,
-		index_header_lookup_deinit,
 		index_storage_search_init,
 		index_storage_search_deinit,
 		index_storage_search_next_nonblock,
@@ -412,7 +361,9 @@ struct mailbox sdbox_mailbox = {
 		sdbox_save_finish,
 		sdbox_save_cancel,
 		sdbox_copy,
-		NULL,
+		sdbox_transaction_save_commit_pre,
+		sdbox_transaction_save_commit_post,
+		sdbox_transaction_save_rollback,
 		index_storage_is_inconsistent
 	}
 };

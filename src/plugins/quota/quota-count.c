@@ -17,12 +17,9 @@ quota_count_mailbox(struct quota_root *root, struct mail_namespace *ns,
 	struct mail_search_context *ctx;
 	struct mail *mail;
 	struct mail_search_args *search_args;
-	const char *storage_name;
 	enum mail_error error;
 	uoff_t size;
 	int ret = 0;
-
-	storage_name = mail_namespace_get_storage_name(ns, vname);
 
 	rule = quota_root_rule_find(root->set, vname);
 	if (rule != NULL && rule->ignore) {
@@ -30,10 +27,9 @@ quota_count_mailbox(struct quota_root *root, struct mail_namespace *ns,
 		return 0;
 	}
 
-	box = mailbox_alloc(ns->list, storage_name,
-			    MAILBOX_FLAG_READONLY | MAILBOX_FLAG_KEEP_RECENT);
+	box = mailbox_alloc(ns->list, vname, MAILBOX_FLAG_READONLY);
 	if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FULL_READ) < 0) {
-		mail_storage_get_last_error(mailbox_get_storage(box), &error);
+		error = mailbox_get_last_mail_error(box);
 		mailbox_free(&box);
 		if (error == MAIL_ERROR_TEMP)
 			return -1;
@@ -42,19 +38,18 @@ quota_count_mailbox(struct quota_root *root, struct mail_namespace *ns,
 	}
 
 	trans = mailbox_transaction_begin(box, 0);
-	mail = mail_alloc(trans, MAIL_FETCH_PHYSICAL_SIZE, NULL);
 
 	search_args = mail_search_build_init();
 	mail_search_build_add_all(search_args);
-	ctx = mailbox_search_init(trans, search_args, NULL);
+	ctx = mailbox_search_init(trans, search_args, NULL,
+				  MAIL_FETCH_PHYSICAL_SIZE, NULL);
 	mail_search_args_unref(&search_args);
 
-	while (mailbox_search_next(ctx, mail)) {
+	while (mailbox_search_next(ctx, &mail)) {
 		if (mail_get_physical_size(mail, &size) == 0)
 			*bytes_r += size;
 		*count_r += 1;
 	}
-	mail_free(&mail);
 	if (mailbox_search_deinit(&ctx) < 0)
 		ret = -1;
 

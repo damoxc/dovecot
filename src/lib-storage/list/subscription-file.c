@@ -94,7 +94,7 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	struct istream *input;
 	struct ostream *output;
 	int fd_in, fd_out;
-	mode_t mode;
+	mode_t file_mode, dir_mode;
 	gid_t gid;
 	bool found, changed = FALSE, failed = FALSE;
 
@@ -108,15 +108,17 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	dotlock_set.timeout = SUBSCRIPTION_FILE_LOCK_TIMEOUT;
 	dotlock_set.stale_timeout = SUBSCRIPTION_FILE_CHANGE_TIMEOUT;
 
-	mailbox_list_get_permissions(list, NULL, &mode, &gid, &origin);
+	mailbox_list_get_root_permissions(list, &file_mode, &dir_mode,
+					  &gid, &origin);
 	fd_out = file_dotlock_open_group(&dotlock_set, path, 0,
-					 mode, gid, origin, &dotlock);
+					 file_mode, gid, origin, &dotlock);
 	if (fd_out == -1 && errno == ENOENT) {
 		/* directory hasn't been created yet. */
-		if (mailbox_list_create_parent_dir(list, NULL, path) < 0)
+		if (mailbox_list_mkdir_parent(list, NULL, path) < 0)
 			return -1;
 		fd_out = file_dotlock_open_group(&dotlock_set, path, 0,
-						 mode, gid, origin, &dotlock);
+						 file_mode, gid,
+						 origin, &dotlock);
 	}
 	if (fd_out == -1) {
 		if (errno == EAGAIN) {
@@ -222,15 +224,33 @@ subsfile_list_init(struct mailbox_list *list, const char *path)
 	return ctx;
 }
 
-int subsfile_list_deinit(struct subsfile_list_context *ctx)
+int subsfile_list_deinit(struct subsfile_list_context **_ctx)
 {
+	struct subsfile_list_context *ctx = *_ctx;
 	int ret = ctx->failed ? -1 : 0;
+
+	*_ctx = NULL;
 
 	if (ctx->input != NULL)
 		i_stream_destroy(&ctx->input);
 	i_free(ctx->path);
 	i_free(ctx);
 	return ret;
+}
+
+int subsfile_list_fstat(struct subsfile_list_context *ctx, struct stat *st_r)
+{
+	const struct stat *st;
+
+	if (ctx->failed)
+		return -1;
+
+	if ((st = i_stream_stat(ctx->input, FALSE)) == NULL) {
+		ctx->failed = TRUE;
+		return -1;
+	}
+	*st_r = *st;
+	return 0;
 }
 
 const char *subsfile_list_next(struct subsfile_list_context *ctx)

@@ -10,11 +10,10 @@ enum message_search_flags {
 	MESSAGE_SEARCH_FLAG_SKIP_HEADERS	= 0x01
 };
 
-/* Returns 1 if ok, 0 if unknown charset, -1 if key contains invalid characters
-   in given charset. */
-int message_search_init(const char *key, const char *charset,
-			enum message_search_flags flags,
-			struct message_search_context **ctx_r);
+/* The key must be given in UTF-8 charset */
+struct message_search_context *
+message_search_init(const char *key_utf8,
+		    enum message_search_flags flags);
 void message_search_deinit(struct message_search_context **ctx);
 
 /* Returns TRUE if key is found from input buffer, FALSE if not. */

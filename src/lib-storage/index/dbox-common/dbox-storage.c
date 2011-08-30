@@ -27,6 +27,59 @@ void dbox_storage_get_list_settings(const struct mail_namespace *ns ATTR_UNUSED,
 		set->mailbox_dir_name = DBOX_MAILBOX_DIR_NAME;
 }
 
+static bool
+dbox_alt_path_has_changed(const char *root_dir,
+			  const char *alt_path, const char *alt_symlink_path)
+{
+	char buf[PATH_MAX];
+	ssize_t ret;
+
+	ret = readlink(alt_symlink_path, buf, sizeof(buf)-1);
+	if (ret < 0) {
+		if (errno == ENOENT)
+			return alt_path != NULL;
+		i_error("readlink(%s) failed: %m", alt_symlink_path);
+		return FALSE;
+	}
+	buf[ret] = '\0';
+
+	if (alt_path == NULL) {
+		i_warning("dbox %s: Original ALT=%s, "
+			  "but currently no ALT path set", root_dir, buf);
+		return TRUE;
+	} else if (strcmp(buf, alt_path) != 0) {
+		i_warning("dbox %s: Original ALT=%s, "
+			  "but currently ALT=%s", root_dir, buf, alt_path);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static void dbox_verify_alt_path(struct mailbox_list *list)
+{
+	const char *root_dir, *alt_symlink_path, *alt_path;
+
+	root_dir = mailbox_list_get_path(list, NULL,
+					 MAILBOX_LIST_PATH_TYPE_DIR);
+	alt_symlink_path =
+		t_strconcat(root_dir, "/"DBOX_ALT_SYMLINK_NAME, NULL);
+	alt_path = mailbox_list_get_path(list, NULL,
+					 MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX);
+	if (!dbox_alt_path_has_changed(root_dir, alt_path, alt_symlink_path))
+		return;
+
+	/* unlink/create the current alt path symlink */
+	if (unlink(alt_symlink_path) < 0 && errno != ENOENT)
+		i_error("unlink(%s) failed: %m", alt_symlink_path);
+	if (alt_path != NULL) {
+		if (symlink(alt_path, alt_symlink_path) < 0 &&
+		    errno != EEXIST) {
+			i_error("symlink(%s, %s) failed: %m",
+				alt_path, alt_symlink_path);
+		}
+	}
+}
+
 int dbox_storage_create(struct mail_storage *_storage,
 			struct mail_namespace *ns,
 			const char **error_r ATTR_UNUSED)
@@ -53,6 +106,8 @@ int dbox_storage_create(struct mail_storage *_storage,
 		storage->attachment_dir = p_strdup(_storage->pool, dir);
 		storage->attachment_fs = fs_init(name, args, &fs_set);
 	} T_END;
+
+	dbox_verify_alt_path(ns->list);
 	return 0;
 }
 
@@ -113,21 +168,31 @@ dbox_cleanup_if_exists(struct mailbox_list *list, const char *path)
 
 int dbox_mailbox_open(struct mailbox *box)
 {
-	if (dbox_cleanup_if_exists(box->list, box->path)) {
-		return index_storage_mailbox_open(box, FALSE);
-	} else if (errno == ENOENT) {
+	const char *box_path = mailbox_get_path(box);
+
+	if (dbox_cleanup_if_exists(box->list, box_path))
+		;
+	else if (errno == ENOENT) {
 		mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
 			T_MAIL_ERR_MAILBOX_NOT_FOUND(box->name));
 		return -1;
 	} else if (errno == EACCES) {
 		mail_storage_set_critical(box->storage, "%s",
-			mail_error_eacces_msg("stat", box->path));
+			mail_error_eacces_msg("stat", box_path));
 		return -1;
 	} else {
 		mail_storage_set_critical(box->storage,
-					  "stat(%s) failed: %m", box->path);
+					  "stat(%s) failed: %m", box_path);
 		return -1;
 	}
+
+	if (index_storage_mailbox_open(box, FALSE) < 0)
+		return -1;
+	mail_index_set_fsync_mode(box->index,
+				  box->storage->set->parsed_fsync_mode,
+				  MAIL_INDEX_SYNC_TYPE_APPEND |
+				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
+	return 0;
 }
 
 static int dir_is_empty(struct mail_storage *storage, const char *path)

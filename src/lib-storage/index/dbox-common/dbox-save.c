@@ -44,8 +44,7 @@ void dbox_save_begin(struct dbox_save_context *ctx, struct istream *input)
 			ctx->mail = mail_alloc(_ctx->transaction, 0, NULL);
 		_ctx->dest_mail = ctx->mail;
 	}
-	mail_set_seq(_ctx->dest_mail, ctx->seq);
-	_ctx->dest_mail->saving = TRUE;
+	mail_set_seq_saving(_ctx->dest_mail, ctx->seq);
 
 	crlf_input = i_stream_create_lf(input);
 	ctx->input = index_mail_cache_parse_init(_ctx->dest_mail, crlf_input);
@@ -118,7 +117,7 @@ void dbox_save_end(struct dbox_save_context *ctx)
 void dbox_save_write_metadata(struct mail_save_context *_ctx,
 			      struct ostream *output, uoff_t output_msg_size,
 			      const char *orig_mailbox_name,
-			      uint8_t guid_128[MAIL_GUID_128_SIZE])
+			      guid_128_t guid_128)
 {
 	struct dbox_save_context *ctx = (struct dbox_save_context *)_ctx;
 	struct dbox_metadata_header metadata_hdr;
@@ -156,8 +155,8 @@ void dbox_save_write_metadata(struct mail_save_context *_ctx,
 	if (guid != NULL)
 		mail_generate_guid_128_hash(guid, guid_128);
 	else {
-		mail_generate_guid_128(guid_128);
-		guid = binary_to_hex(guid_128, MAIL_GUID_128_SIZE);
+		guid_128_generate(guid_128);
+		guid = guid_128_to_string(guid_128);
 	}
 	str_printfa(str, "%c%s\n", DBOX_METADATA_GUID, guid);
 

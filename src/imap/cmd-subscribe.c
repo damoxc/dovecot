@@ -1,125 +1,83 @@
 /* Copyright (c) 2002-2011 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
+#include "imap-utf7.h"
 #include "imap-commands.h"
 #include "mail-namespace.h"
 
-static bool have_listable_namespace_prefix(struct mail_namespace *ns,
-					   const char *name)
+static bool
+subscribe_is_valid_name(struct client_command_context *cmd, struct mailbox *box)
 {
-	unsigned int name_len = strlen(name);
+	enum mailbox_existence existence;
+	int ret;
 
-	for (; ns != NULL; ns = ns->next) {
-		if ((ns->flags & (NAMESPACE_FLAG_LIST_PREFIX |
-				  NAMESPACE_FLAG_LIST_CHILDREN)) == 0)
-			continue;
-
-		if (ns->prefix_len <= name_len)
-			continue;
-
-		/* if prefix has multiple hierarchies, allow subscribing to
-		   any of the hierarchies */
-		if (strncmp(ns->prefix, name, name_len) == 0 &&
-		    ns->prefix[name_len] == ns->sep)
-			return TRUE;
+	if ((ret = mailbox_exists(box, TRUE, &existence)) < 0) {
+		client_send_storage_error(cmd, mailbox_get_storage(box));
+		return FALSE;
 	}
-	return FALSE;
+	if (existence == MAILBOX_EXISTENCE_NONE) {
+		client_send_tagline(cmd, t_strdup_printf(
+			"NO "MAIL_ERRSTR_MAILBOX_NOT_FOUND,
+			mailbox_get_vname(box)));
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static bool str_ends_with_char(const char *str, char c)
+{
+	unsigned int len = strlen(str);
+
+	return len > 0 && str[len-1] == c;
 }
 
 bool cmd_subscribe_full(struct client_command_context *cmd, bool subscribe)
 {
-	enum mailbox_name_status status;
-	struct mail_namespace *ns, *box_ns;
-	const char *mailbox, *storage_name, *subs_name, *subs_name2 = NULL;
+	struct mail_namespace *ns;
+	struct mailbox *box, *box2;
+	const char *mailbox, *orig_mailbox;
 	bool unsubscribed_mailbox2;
+	char sep;
 
 	/* <mailbox> */
 	if (!client_read_string_args(cmd, 1, &mailbox))
 		return FALSE;
+	orig_mailbox = mailbox;
 
-	box_ns = client_find_namespace(cmd, mailbox, &storage_name, NULL);
-	if (box_ns == NULL)
+	ns = client_find_namespace(cmd, &mailbox);
+	if (ns == NULL)
 		return TRUE;
 
-	/* now find a namespace where the subscription can be added to */
-	subs_name = mailbox;
-	ns = mail_namespace_find_subscribable(cmd->client->user->namespaces,
-					      &subs_name);
-	if (ns == NULL) {
-		client_send_tagline(cmd, "NO Unknown subscription namespace.");
-		return TRUE;
-	}
-
-	if (ns != box_ns) {
-		/* subscription is being written to a different namespace
-		   than where the mailbox exists. */
-		subs_name = t_strconcat(box_ns->prefix, storage_name, NULL);
-		/* drop the common prefix */
-		i_assert(strncmp(ns->prefix, subs_name, strlen(ns->prefix)) == 0);
-		subs_name += strlen(ns->prefix);
-	}
-
-	if ((cmd->client->set->parsed_workarounds &
-	     WORKAROUND_TB_EXTRA_MAILBOX_SEP) != 0 &&
-	    *subs_name != '\0' &&
-	    subs_name[strlen(subs_name)-1] == ns->real_sep) {
-		/* verify the validity without the trailing '/' */
-		mailbox = t_strndup(mailbox, strlen(mailbox)-1);
-		subs_name2 = subs_name;
-		subs_name = t_strndup(subs_name, strlen(subs_name)-1);
-	}
-
-	if (have_listable_namespace_prefix(cmd->client->user->namespaces,
-					   mailbox)) {
-		/* subscribing to a listable namespace prefix, allow it. */
-	} else if (subscribe) {
-		if (client_find_namespace(cmd, mailbox,
-					  &storage_name, &status) == NULL)
-			return TRUE;
-		switch (status) {
-		case MAILBOX_NAME_EXISTS_MAILBOX:
-		case MAILBOX_NAME_EXISTS_DIR:
-			break;
-		case MAILBOX_NAME_VALID:
-		case MAILBOX_NAME_INVALID:
-		case MAILBOX_NAME_NOINFERIORS:
-			client_fail_mailbox_name_status(cmd, mailbox,
-							NULL, status);
-			return TRUE;
-		}
-	} else {
-		if (client_find_namespace(cmd, mailbox,
-					  &storage_name, &status) == NULL)
-			return TRUE;
-		switch (status) {
-		case MAILBOX_NAME_EXISTS_MAILBOX:
-		case MAILBOX_NAME_EXISTS_DIR:
-		case MAILBOX_NAME_VALID:
-			break;
-		case MAILBOX_NAME_INVALID:
-		case MAILBOX_NAME_NOINFERIORS:
-			client_fail_mailbox_name_status(cmd, mailbox,
-							NULL, status);
+	box = mailbox_alloc(ns->list, mailbox, 0);
+	if (subscribe) {
+		if (!subscribe_is_valid_name(cmd, box)) {
+			mailbox_free(&box);
 			return TRUE;
 		}
 	}
 
+	sep = mail_namespace_get_sep(ns);
 	unsubscribed_mailbox2 = FALSE;
-	if (!subscribe && subs_name2 != NULL) {
+	if (!subscribe &&
+	    str_ends_with_char(orig_mailbox, sep) &&
+	    !str_ends_with_char(mailbox, sep)) {
 		/* try to unsubscribe both "box" and "box/" */
-		if (mailbox_list_set_subscribed(ns->list, subs_name2,
-						FALSE) == 0)
+		const char *name2 = t_strdup_printf("%s%c", mailbox, sep);
+		box2 = mailbox_alloc(ns->list, name2, 0);
+		if (mailbox_set_subscribed(box2, FALSE) == 0)
 			unsubscribed_mailbox2 = TRUE;
+		mailbox_free(&box2);
 	}
 
-	if (mailbox_list_set_subscribed(ns->list, subs_name, subscribe) < 0 &&
+	if (mailbox_set_subscribed(box, subscribe) < 0 &&
 	    !unsubscribed_mailbox2) {
-		client_send_list_error(cmd, ns->list);
+		client_send_storage_error(cmd, mailbox_get_storage(box));
 	} else {
 		client_send_tagline(cmd, subscribe ?
 				    "OK Subscribe completed." :
 				    "OK Unsubscribe completed.");
 	}
+	mailbox_free(&box);
 	return TRUE;
 }
 

@@ -3,6 +3,7 @@
 
 #include "file-lock.h"
 #include "fsync-mode.h"
+#include "guid.h"
 #include "mail-types.h"
 #include "seq-range-array.h"
 
@@ -85,8 +86,8 @@ struct mail_index_header {
 	uint32_t log_file_tail_offset;
 	uint32_t log_file_head_offset;
 
-	uint64_t sync_size;
-	uint32_t sync_stamp;
+	uint64_t unused_old_sync_size;
+	uint32_t unused_old_sync_stamp;
 
 	/* daily first UIDs that have been added to index. */
 	uint32_t day_stamp;
@@ -143,7 +144,8 @@ enum mail_index_sync_flags {
 	MAIL_INDEX_SYNC_FLAG_REQUIRE_CHANGES	= 0x08,
 	/* Create the transaction with FSYNC flag */
 	MAIL_INDEX_SYNC_FLAG_FSYNC		= 0x10,
-	/* If we see "delete index" request transaction, finish it */
+	/* If we see "delete index" request transaction, finish it.
+	   This flag also allows commiting more changes to a deleted index. */
 	MAIL_INDEX_SYNC_FLAG_DELETING_INDEX	= 0x20
 };
 
@@ -168,7 +170,7 @@ struct mail_index_sync_rec {
 	unsigned int keyword_idx;
 
 	/* MAIL_INDEX_SYNC_TYPE_EXPUNGE: */
-	uint8_t guid_128[MAIL_GUID_128_SIZE];
+	guid_128_t guid_128;
 };
 
 enum mail_index_view_sync_type {
@@ -429,7 +431,7 @@ void mail_index_append_finish_uids(struct mail_index_transaction *t,
 void mail_index_expunge(struct mail_index_transaction *t, uint32_t seq);
 /* Like mail_index_expunge(), but also write message GUID to transaction log. */
 void mail_index_expunge_guid(struct mail_index_transaction *t, uint32_t seq,
-			     const uint8_t guid_128[MAIL_GUID_128_SIZE]);
+			     const guid_128_t guid_128);
 /* Update flags in index. */
 void mail_index_update_flags(struct mail_index_transaction *t, uint32_t seq,
 			     enum modify_type modify_type,

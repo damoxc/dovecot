@@ -658,7 +658,7 @@ login_proxy_cmd_list_reply(struct ipc_cmd *cmd,
 
 		reply = t_strdup_printf("%s\t%s\t%s\t%s\t%u",
 					proxy->client->virtual_user,
-					login_binary.protocol,
+					login_binary->protocol,
 					net_ip2addr(&proxy->client->ip),
 					net_ip2addr(&proxy->ip), proxy->port);
 		ipc_cmd_send(cmd, reply);

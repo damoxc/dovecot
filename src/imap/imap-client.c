@@ -123,7 +123,8 @@ void client_command_cancel(struct client_command_context **_cmd)
 		i_unreached();
 	}
 
-	cmd_ret = !cmd->cancel || cmd->func == NULL ? TRUE : cmd->func(cmd);
+	cmd_ret = !cmd->cancel || cmd->func == NULL ? TRUE :
+		command_exec(cmd);
 	if (!cmd_ret && cmd->state != CLIENT_COMMAND_STATE_DONE) {
 		if (cmd->client->output->closed)
 			i_panic("command didn't cancel itself: %s", cmd->name);
@@ -669,7 +670,8 @@ static bool client_command_input(struct client_command_context *cmd)
 
         if (cmd->func != NULL) {
 		/* command is being executed - continue it */
-		if (cmd->func(cmd) || cmd->state == CLIENT_COMMAND_STATE_DONE) {
+		if (command_exec(cmd) ||
+		    cmd->state == CLIENT_COMMAND_STATE_DONE) {
 			/* command execution was finished */
 			client_command_free(&cmd);
 			client_add_missing_io(client);
@@ -837,7 +839,7 @@ static void client_output_cmd(struct client_command_context *cmd)
 	bool finished;
 
 	/* continue processing command */
-	finished = cmd->func(cmd) || cmd->state == CLIENT_COMMAND_STATE_DONE;
+	finished = command_exec(cmd) || cmd->state == CLIENT_COMMAND_STATE_DONE;
 
 	if (!finished)
 		(void)client_handle_unfinished_cmd(cmd);
@@ -923,27 +925,35 @@ bool client_handle_search_save_ambiguity(struct client_command_context *cmd)
 	return TRUE;
 }
 
-void client_enable(struct client *client, enum mailbox_feature features)
+int client_enable(struct client *client, enum mailbox_feature features)
 {
 	struct mailbox_status status;
+	int ret;
 
 	if ((client->enabled_features & features) == features)
-		return;
+		return 0;
 
 	client->enabled_features |= features;
 	if (client->mailbox == NULL)
-		return;
+		return 0;
 
-	mailbox_enable(client->mailbox, features);
-	if ((features & MAILBOX_FEATURE_CONDSTORE) != 0) {
+	ret = mailbox_enable(client->mailbox, features);
+	if ((features & MAILBOX_FEATURE_CONDSTORE) != 0 && ret == 0) {
 		/* CONDSTORE being enabled while mailbox is selected.
 		   Notify client of the latest HIGHESTMODSEQ. */
-		mailbox_get_status(client->mailbox,
-				   STATUS_HIGHESTMODSEQ, &status);
-		client_send_line(client, t_strdup_printf(
-			"* OK [HIGHESTMODSEQ %llu] Highest",
-			(unsigned long long)status.highest_modseq));
+		ret = mailbox_get_status(client->mailbox,
+					 STATUS_HIGHESTMODSEQ, &status);
+		if (ret == 0) {
+			client_send_line(client, t_strdup_printf(
+				"* OK [HIGHESTMODSEQ %llu] Highest",
+				(unsigned long long)status.highest_modseq));
+		}
 	}
+	if (ret < 0) {
+		client_send_untagged_storage_error(client,
+			mailbox_get_storage(client->mailbox));
+	}
+	return ret;
 }
 
 struct imap_search_update *

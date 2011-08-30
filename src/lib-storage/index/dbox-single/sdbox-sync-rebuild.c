@@ -73,7 +73,7 @@ sdbox_sync_add_file(struct dbox_sync_rebuild_context *ctx,
 
 	if (str_to_uint32(fname, &uid) < 0 || uid == 0) {
 		i_warning("sdbox %s: Ignoring invalid filename %s",
-			  ctx->box->path, fname);
+			  mailbox_get_path(ctx->box), fname);
 		return 0;
 	}
 
@@ -135,8 +135,8 @@ static void sdbox_sync_update_header(struct dbox_sync_rebuild_context *ctx)
 
 	if (sdbox_read_header(mbox, &hdr, FALSE) < 0)
 		memset(&hdr, 0, sizeof(hdr));
-	if (mail_guid_128_is_empty(hdr.mailbox_guid))
-		mail_generate_guid_128(hdr.mailbox_guid);
+	if (guid_128_is_empty(hdr.mailbox_guid))
+		guid_128_generate(hdr.mailbox_guid);
 	if (++hdr.rebuild_count == 0)
 		hdr.rebuild_count = 1;
 	mail_index_update_header_ext(ctx->trans, mbox->hdr_ext_id, 0,
@@ -146,16 +146,18 @@ static void sdbox_sync_update_header(struct dbox_sync_rebuild_context *ctx)
 static int
 sdbox_sync_index_rebuild_singles(struct dbox_sync_rebuild_context *ctx)
 {
-	const char *alt_path;
+	const char *path, *alt_path;
 	int ret = 0;
 
+	path = mailbox_get_path(ctx->box);
 	alt_path = mailbox_list_get_path(ctx->box->list, ctx->box->name,
 					 MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX);
 
 	sdbox_sync_set_uidvalidity(ctx);
-	if (sdbox_sync_index_rebuild_dir(ctx, ctx->box->path, TRUE) < 0) {
+	if (sdbox_sync_index_rebuild_dir(ctx, path, TRUE) < 0) {
 		mail_storage_set_critical(ctx->box->storage,
-			"sdbox: Rebuilding failed on path %s", ctx->box->path);
+			"sdbox: Rebuilding failed on path %s",
+			mailbox_get_path(ctx->box));
 		ret = -1;
 	} else if (alt_path != NULL) {
 		if (sdbox_sync_index_rebuild_dir(ctx, alt_path, FALSE) < 0) {
@@ -188,7 +190,7 @@ int sdbox_sync_index_rebuild(struct sdbox_mailbox *mbox, bool force)
 	if (dbox_sync_rebuild_verify_alt_storage(mbox->box.list) < 0) {
 		mail_storage_set_critical(mbox->box.storage,
 			"sdbox %s: Alt storage not mounted, "
-			"aborting index rebuild", mbox->box.path);
+			"aborting index rebuild", mailbox_get_path(&mbox->box));
 		return -1;
 	}
 

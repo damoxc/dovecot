@@ -24,7 +24,7 @@ static void sdbox_mail_set_expunged(struct dbox_mail *mail)
 
 	mail_storage_set_critical(_mail->box->storage,
 				  "dbox %s: Unexpectedly lost uid=%u",
-				  _mail->box->path, _mail->uid);
+				  mailbox_get_path(_mail->box), _mail->uid);
 	sdbox_set_mailbox_corrupted(_mail->box);
 }
 
@@ -53,7 +53,7 @@ static int sdbox_mail_file_set(struct dbox_mail *mail)
 		if (ret <= 0) {
 			mail_storage_set_critical(_mail->box->storage,
 				"dbox %s: Unexpectedly lost mail being saved",
-				  _mail->box->path);
+				  mailbox_get_path(_mail->box));
 			sdbox_set_mailbox_corrupted(_mail->box);
 			return -1;
 		}
@@ -78,7 +78,7 @@ int sdbox_mail_open(struct dbox_mail *mail, uoff_t *offset_r,
 		return -1;
 	if (ret == 0) {
 		if (!dbox_file_is_open(mail->open_file))
-			mail->imail.mail.stats_open_lookup_count++;
+			_mail->transaction->stats.open_lookup_count++;
 		if (dbox_file_open(mail->open_file, &deleted) <= 0)
 			return -1;
 		if (deleted) {
@@ -98,6 +98,7 @@ struct mail_vfuncs sdbox_mail_vfuncs = {
 	index_mail_set_seq,
 	index_mail_set_uid,
 	index_mail_set_uid_cache_updates,
+	index_mail_prefetch,
 
 	index_mail_get_flags,
 	index_mail_get_keywords,

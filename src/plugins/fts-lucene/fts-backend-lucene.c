@@ -2,85 +2,149 @@
 
 #include "lib.h"
 #include "array.h"
-#include "mkdir-parents.h"
+#include "hash.h"
+#include "hex-binary.h"
+#include "strescape.h"
+#include "mail-namespace.h"
 #include "mail-storage-private.h"
+#include "fts-expunge-log.h"
 #include "lucene-wrapper.h"
 #include "fts-lucene-plugin.h"
 
+#include <wchar.h>
+
 #define LUCENE_INDEX_DIR_NAME "lucene-indexes"
-#define LUCENE_LOCK_SUBDIR_NAME "locks"
-
-#define LUCENE_CONTEXT(obj) \
-	MODULE_CONTEXT(obj, fts_lucene_storage_module)
-
-struct lucene_mail_storage {
-	union mail_storage_module_context module_ctx;
-	struct lucene_index *index;
-	struct mailbox *selected_box;
-	int refcount;
-};
+#define LUCENE_EXPUNGE_LOG_NAME "dovecot-expunges.log"
+#define LUCENE_OPTIMIZE_BATCH_MSGS_COUNT 100
 
 struct lucene_fts_backend {
 	struct fts_backend backend;
-	struct lucene_mail_storage *lstorage;
-	struct mailbox *box;
+	char *dir_path;
+
+	struct lucene_index *index;
+	struct mailbox *selected_box;
+	unsigned int selected_box_generation;
+	guid_128_t selected_box_guid;
+
+	struct fts_expunge_log *expunge_log;
+
+	unsigned int dir_created:1;
+	unsigned int updating:1;
 };
 
-struct lucene_fts_backend_build_context {
-	struct fts_backend_build_context ctx;
+struct lucene_fts_backend_update_context {
+	struct fts_backend_update_context ctx;
+
+	struct mailbox *box;
+	uint32_t last_uid;
+	uint32_t last_indexed_uid;
+	char *first_box_vname;
 
 	uint32_t uid;
-	bool hdr;
+	char *hdr_name;
+
+	unsigned int added_msgs;
+	struct fts_expunge_log_append_ctx *expunge_ctx;
+
+	bool lucene_opened;
+	bool last_indexed_uid_set;
 };
 
-static MODULE_CONTEXT_DEFINE_INIT(fts_lucene_storage_module,
-				  &mail_storage_module_register);
-
-static void fts_backend_select(struct lucene_fts_backend *backend)
+static int fts_backend_lucene_mkdir(struct lucene_fts_backend *backend)
 {
-	if (backend->lstorage->selected_box != backend->box) {
-		lucene_index_select_mailbox(backend->lstorage->index,
-					    mailbox_get_name(backend->box));
-		backend->lstorage->selected_box = backend->box;
-	}
+	if (backend->dir_created)
+		return 0;
+
+	backend->dir_created = TRUE;
+	return mailbox_list_mkdir_root(backend->backend.ns->list,
+				       backend->dir_path,
+				       MAILBOX_LIST_PATH_TYPE_INDEX);
 }
 
-static struct fts_backend *fts_backend_lucene_init(struct mailbox *box)
+static int
+fts_lucene_get_mailbox_guid(struct mailbox *box, guid_128_t guid_r)
 {
-	struct lucene_mail_storage *lstorage;
-	struct lucene_fts_backend *backend;
-	const char *path, *lock_path;
+	struct mailbox_metadata metadata;
 
-	lstorage = LUCENE_CONTEXT(box->storage);
-	if (lstorage == NULL) {
-		path = mailbox_list_get_path(box->list, "INBOX",
-					     MAILBOX_LIST_PATH_TYPE_INDEX);
-		if (path == NULL) {
-			/* in-memory indexes */
-			if (box->storage->set->mail_debug)
-				i_debug("fts squat: Disabled with in-memory indexes");
-			return NULL;
-		}
-
-		path = t_strconcat(path, "/"LUCENE_INDEX_DIR_NAME, NULL);
-		lock_path = t_strdup_printf("%s/"LUCENE_LOCK_SUBDIR_NAME, path);
-		if (mkdir_parents(lock_path, 0700) < 0 && errno != EEXIST) {
-			i_error("mkdir_parents(%s) failed: %m", lock_path);
-			return NULL;
-		}
-
-		lstorage = i_new(struct lucene_mail_storage, 1);
-		lstorage->index = lucene_index_init(path, lock_path);
-		MODULE_CONTEXT_SET(box->storage, fts_lucene_storage_module,
-				   lstorage);
+	if (mailbox_get_metadata(box, MAILBOX_METADATA_GUID,
+				 &metadata) < 0) {
+		i_error("lucene: Couldn't get mailbox %s GUID: %s",
+			box->vname, mailbox_get_last_error(box, NULL));
+		return -1;
 	}
-	lstorage->refcount++;
+	memcpy(guid_r, metadata.guid, GUID_128_SIZE);
+	return 0;
+}
+
+static int
+fts_backend_select(struct lucene_fts_backend *backend, struct mailbox *box)
+{
+	guid_128_t guid;
+	unsigned char guid_hex[MAILBOX_GUID_HEX_LENGTH];
+	wchar_t wguid_hex[MAILBOX_GUID_HEX_LENGTH];
+	buffer_t buf;
+	unsigned int i;
+
+	if (backend->selected_box == box &&
+	    backend->selected_box_generation == box->generation_sequence)
+		return 0;
+
+	if (box != NULL) {
+		if (fts_lucene_get_mailbox_guid(box, guid) < 0)
+			return -1;
+		buffer_create_data(&buf, guid_hex, MAILBOX_GUID_HEX_LENGTH);
+		binary_to_hex_append(&buf, guid, GUID_128_SIZE);
+		for (i = 0; i < N_ELEMENTS(wguid_hex); i++)
+			wguid_hex[i] = guid_hex[i];
+
+		lucene_index_select_mailbox(backend->index, wguid_hex);
+	} else {
+		lucene_index_unselect_mailbox(backend->index);
+		memset(&guid, 0, sizeof(guid));
+	}
+	backend->selected_box = box;
+	memcpy(backend->selected_box_guid, guid,
+	       sizeof(backend->selected_box_guid));
+	backend->selected_box_generation =
+		box == NULL ? 0 : box->generation_sequence;
+	return 0;
+}
+
+static struct fts_backend *fts_backend_lucene_alloc(void)
+{
+	struct lucene_fts_backend *backend;
 
 	backend = i_new(struct lucene_fts_backend, 1);
 	backend->backend = fts_backend_lucene;
-	backend->lstorage = lstorage;
-	backend->box = box;
 	return &backend->backend;
+}
+
+static int
+fts_backend_lucene_init(struct fts_backend *_backend, const char **error_r)
+{
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_backend;
+	struct fts_lucene_user *fuser =
+		FTS_LUCENE_USER_CONTEXT(_backend->ns->user);
+	const char *path;
+
+	if (fuser == NULL) {
+		/* invalid settings */
+		*error_r = "Invalid fts_lucene settings";
+		return -1;
+	}
+
+	path = mailbox_list_get_path(_backend->ns->list, NULL,
+				     MAILBOX_LIST_PATH_TYPE_INDEX);
+	i_assert(path != NULL); /* fts already checked this */
+
+	backend->dir_path = i_strconcat(path, "/"LUCENE_INDEX_DIR_NAME, NULL);
+	backend->index = lucene_index_init(backend->dir_path,
+					   _backend->ns->list, &fuser->set);
+
+	path = t_strconcat(backend->dir_path, "/"LUCENE_EXPUNGE_LOG_NAME, NULL);
+	backend->expunge_log = fts_expunge_log_init(path);
+	return 0;
 }
 
 static void fts_backend_lucene_deinit(struct fts_backend *_backend)
@@ -88,154 +152,385 @@ static void fts_backend_lucene_deinit(struct fts_backend *_backend)
 	struct lucene_fts_backend *backend =
 		(struct lucene_fts_backend *)_backend;
 
-	if (--backend->lstorage->refcount == 0) {
-		MODULE_CONTEXT_UNSET(backend->box->storage,
-				     fts_lucene_storage_module);
-		lucene_index_deinit(backend->lstorage->index);
-		i_free(backend->lstorage);
-	}
+	lucene_index_deinit(backend->index);
+	fts_expunge_log_deinit(&backend->expunge_log);
+	i_free(backend->dir_path);
 	i_free(backend);
 }
 
 static int
 fts_backend_lucene_get_last_uid(struct fts_backend *_backend,
-				uint32_t *last_uid_r)
+				struct mailbox *box, uint32_t *last_uid_r)
 {
 	struct lucene_fts_backend *backend =
 		(struct lucene_fts_backend *)_backend;
+	struct fts_lucene_user *fuser =
+		FTS_LUCENE_USER_CONTEXT(_backend->ns->user);
+	struct fts_index_header hdr;
+	uint32_t set_checksum;
 
-	fts_backend_select(backend);
-	return lucene_index_get_last_uid(backend->lstorage->index, last_uid_r);
-}
+	if (fts_index_get_header(box, &hdr)) {
+		set_checksum = fts_lucene_settings_checksum(&fuser->set);
+		if (!fts_index_have_compatible_settings(_backend->ns->list,
+							set_checksum)) {
+			/* need to rebuild the index */
+			*last_uid_r = 0;
+		} else {
+			*last_uid_r = hdr.last_indexed_uid;
+		}
+		return 0;
+	}
 
-static int
-fts_backend_lucene_build_init(struct fts_backend *_backend,
-			      uint32_t *last_uid_r,
-			      struct fts_backend_build_context **ctx_r)
-{
-	struct lucene_fts_backend *backend =
-		(struct lucene_fts_backend *)_backend;
-	struct lucene_fts_backend_build_context *ctx;
-	uint32_t last_uid;
-
-	fts_backend_select(backend);
-	if (lucene_index_build_init(backend->lstorage->index,
-				    &last_uid) < 0)
+	/* either nothing has been indexed, or the index was corrupted.
+	   do it the slow way. */
+	if (fts_backend_select(backend, box) < 0)
+		return -1;
+	if (lucene_index_get_last_uid(backend->index, last_uid_r) < 0)
 		return -1;
 
-	ctx = i_new(struct lucene_fts_backend_build_context, 1);
-	ctx->ctx.backend = _backend;
-	ctx->uid = last_uid + 1;
-
-	*last_uid_r = last_uid;
-	*ctx_r = &ctx->ctx;
+	(void)fts_index_set_last_uid(box, *last_uid_r);
 	return 0;
 }
 
-static void
-fts_backend_lucene_build_hdr(struct fts_backend_build_context *_ctx,
-			     uint32_t uid)
+static struct fts_backend_update_context *
+fts_backend_lucene_update_init(struct fts_backend *_backend)
 {
-	struct lucene_fts_backend_build_context *ctx =
-		(struct lucene_fts_backend_build_context *)_ctx;
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_backend;
+	struct lucene_fts_backend_update_context *ctx;
 
-	i_assert(uid >= ctx->uid);
+	i_assert(!backend->updating);
 
-	ctx->uid = uid;
-	ctx->hdr = TRUE;
+	ctx = i_new(struct lucene_fts_backend_update_context, 1);
+	ctx->ctx.backend = _backend;
+	backend->updating = TRUE;
+	return &ctx->ctx;
 }
 
 static bool
-fts_backend_lucene_build_body_begin(struct fts_backend_build_context *_ctx,
-				    uint32_t uid, const char *content_type,
-				    const char *content_disposition ATTR_UNUSED)
+fts_backend_lucene_need_optimize(struct lucene_fts_backend_update_context *ctx)
 {
-	struct lucene_fts_backend_build_context *ctx =
-		(struct lucene_fts_backend_build_context *)_ctx;
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)ctx->ctx.backend;
+	unsigned int expunges;
+	uint32_t numdocs;
 
-	i_assert(uid >= ctx->uid);
-
-	if (!fts_backend_default_can_index(content_type))
+	if (ctx->added_msgs >= LUCENE_OPTIMIZE_BATCH_MSGS_COUNT)
+		return TRUE;
+	if (lucene_index_get_doc_count(backend->index, &numdocs) < 0)
 		return FALSE;
 
-	ctx->uid = uid;
-	ctx->hdr = FALSE;
-	return TRUE;
+	if (fts_expunge_log_uid_count(backend->expunge_log, &expunges) < 0)
+		return FALSE;
+	return expunges > 0 &&
+		numdocs / expunges <= 50; /* >2% of index has been expunged */
 }
 
 static int
-fts_backend_lucene_build_more(struct fts_backend_build_context *_ctx,
-			      const unsigned char *data, size_t size)
+fts_backend_lucene_update_deinit(struct fts_backend_update_context *_ctx)
 {
-	struct lucene_fts_backend_build_context *ctx =
-		(struct lucene_fts_backend_build_context *)_ctx;
+	struct lucene_fts_backend_update_context *ctx =
+		(struct lucene_fts_backend_update_context *)_ctx;
 	struct lucene_fts_backend *backend =
 		(struct lucene_fts_backend *)_ctx->backend;
+	int ret = _ctx->failed ? -1 : 0;
 
-	if (_ctx->failed)
-		return -1;
+	i_assert(backend->updating);
 
-	i_assert(backend->lstorage->selected_box == backend->box);
-	return lucene_index_build_more(backend->lstorage->index,
-				       ctx->uid, data, size, ctx->hdr);
-}
+	backend->updating = FALSE;
+	if (ctx->lucene_opened)
+		lucene_index_build_deinit(backend->index);
 
-static int
-fts_backend_lucene_build_deinit(struct fts_backend_build_context *ctx)
-{
-	struct lucene_fts_backend *backend =
-		(struct lucene_fts_backend *)ctx->backend;
-	int ret = ctx->failed ? -1 : 0;
+	if (ctx->expunge_ctx != NULL) {
+		if (fts_expunge_log_append_commit(&ctx->expunge_ctx) < 0)
+			ret = -1;
+	}
 
-	i_assert(backend->lstorage->selected_box == backend->box);
-	lucene_index_build_deinit(backend->lstorage->index);
+	if (fts_backend_lucene_need_optimize(ctx)) {
+		if (ctx->ctx.backend->syncing)
+			(void)fts_backend_optimize(_ctx->backend);
+		else {
+			struct mail_user *user = backend->backend.ns->user;
+			const char *cmd, *path;
+			int fd;
+
+			/* the optimize affects all mailboxes within namespace,
+			   so just use any mailbox name in it */
+			cmd = t_strdup_printf("OPTIMIZE\t0\t%s\t%s\n",
+				str_tabescape(user->username),
+				str_tabescape(ctx->first_box_vname));
+			fd = fts_indexer_cmd(user, cmd, &path);
+			if (fd != -1)
+				(void)close(fd);
+		}
+	}
+
+	i_free(ctx->first_box_vname);
 	i_free(ctx);
 	return ret;
 }
 
 static void
-fts_backend_lucene_expunge(struct fts_backend *_backend, struct mail *mail)
+fts_backend_lucene_update_set_mailbox(struct fts_backend_update_context *_ctx,
+				      struct mailbox *box)
+{
+	struct lucene_fts_backend_update_context *ctx =
+		(struct lucene_fts_backend_update_context *)_ctx;
+
+	if (ctx->last_uid != 0) {
+		(void)fts_index_set_last_uid(ctx->box, ctx->last_uid);
+		ctx->last_uid = 0;
+	}
+	if (ctx->first_box_vname == NULL)
+		ctx->first_box_vname = i_strdup(box->vname);
+	ctx->box = box;
+	ctx->last_indexed_uid_set = FALSE;
+}
+
+static void
+fts_backend_lucene_update_expunge(struct fts_backend_update_context *_ctx,
+				  uint32_t uid)
+{
+	struct lucene_fts_backend_update_context *ctx =
+		(struct lucene_fts_backend_update_context *)_ctx;
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_ctx->backend;
+	struct fts_index_header hdr;
+
+	if (!ctx->last_indexed_uid_set) {
+		if (!fts_index_get_header(ctx->box, &hdr))
+			ctx->last_indexed_uid = 0;
+		else
+			ctx->last_indexed_uid = hdr.last_indexed_uid;
+		ctx->last_indexed_uid_set = TRUE;
+	}
+	if (ctx->last_indexed_uid == 0 ||
+	    uid > ctx->last_indexed_uid + 100) {
+		/* don't waste time adding expunge to log for a message that
+		   isn't even indexed. this check is racy, because indexer may
+		   just be in the middle of indexing this message. we'll
+		   attempt to avoid that by skipping the expunging only if
+		   indexing hasn't been done for a while (100 msgs). */
+		return;
+	}
+
+	if (ctx->expunge_ctx == NULL) {
+		ctx->expunge_ctx =
+			fts_expunge_log_append_begin(backend->expunge_log);
+	}
+
+	if (fts_backend_select(backend, ctx->box) < 0)
+		_ctx->failed = TRUE;
+
+	fts_expunge_log_append_next(ctx->expunge_ctx,
+				    backend->selected_box_guid, uid);
+}
+
+static bool
+fts_backend_lucene_update_set_build_key(struct fts_backend_update_context *_ctx,
+					const struct fts_backend_build_key *key)
+{
+	struct lucene_fts_backend_update_context *ctx =
+		(struct lucene_fts_backend_update_context *)_ctx;
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_ctx->backend;
+
+	if (!ctx->lucene_opened) {
+		if (fts_backend_lucene_mkdir(backend) < 0)
+			ctx->ctx.failed = TRUE;
+		if (lucene_index_build_init(backend->index) < 0)
+			ctx->ctx.failed = TRUE;
+		ctx->lucene_opened = TRUE;
+	}
+
+	if (fts_backend_select(backend, ctx->box) < 0)
+		_ctx->failed = TRUE;
+
+	switch (key->type) {
+	case FTS_BACKEND_BUILD_KEY_HDR:
+	case FTS_BACKEND_BUILD_KEY_MIME_HDR:
+		i_assert(key->hdr_name != NULL);
+
+		i_free(ctx->hdr_name);
+		ctx->hdr_name = i_strdup(key->hdr_name);
+		break;
+	case FTS_BACKEND_BUILD_KEY_BODY_PART:
+		i_free_and_null(ctx->hdr_name);
+		break;
+	case FTS_BACKEND_BUILD_KEY_BODY_PART_BINARY:
+		i_unreached();
+	}
+
+	if (key->uid != ctx->last_uid) {
+		i_assert(key->uid >= ctx->last_uid);
+		ctx->last_uid = key->uid;
+		ctx->added_msgs++;
+	}
+
+	ctx->uid = key->uid;
+	return TRUE;
+}
+
+static void
+fts_backend_lucene_update_unset_build_key(struct fts_backend_update_context *_ctx)
+{
+	struct lucene_fts_backend_update_context *ctx =
+		(struct lucene_fts_backend_update_context *)_ctx;
+
+	ctx->uid = 0;
+	i_free_and_null(ctx->hdr_name);
+}
+
+static int
+fts_backend_lucene_update_build_more(struct fts_backend_update_context *_ctx,
+				     const unsigned char *data, size_t size)
+{
+	struct lucene_fts_backend_update_context *ctx =
+		(struct lucene_fts_backend_update_context *)_ctx;
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_ctx->backend;
+	int ret;
+
+	i_assert(ctx->uid != 0);
+
+	if (_ctx->failed)
+		return -1;
+
+	T_BEGIN {
+		ret = lucene_index_build_more(backend->index, ctx->uid,
+					      data, size, ctx->hdr_name);
+	} T_END;
+	return ret;
+}
+
+static int
+fts_backend_lucene_refresh(struct fts_backend *_backend)
 {
 	struct lucene_fts_backend *backend =
 		(struct lucene_fts_backend *)_backend;
 
-	fts_backend_select(backend);
-	(void)lucene_index_expunge(backend->lstorage->index, mail->uid);
+	lucene_index_close(backend->index);
+	return 0;
 }
 
-static void
-fts_backend_lucene_expunge_finish(struct fts_backend *_backend ATTR_UNUSED,
-				  struct mailbox *box ATTR_UNUSED,
-				  bool committed ATTR_UNUSED)
-{
-}
-
-static int
-fts_backend_lucene_lock(struct fts_backend *_backend ATTR_UNUSED)
-{
-	return 1;
-}
-
-static void
-fts_backend_lucene_unlock(struct fts_backend *_backend ATTR_UNUSED)
-{
-}
-
-static int
-fts_backend_lucene_lookup(struct fts_backend *_backend,
-			  const char *key, enum fts_lookup_flags flags,
-			  ARRAY_TYPE(seq_range) *definite_uids,
-			  ARRAY_TYPE(seq_range) *maybe_uids)
+static int fts_backend_lucene_rescan(struct fts_backend *_backend)
 {
 	struct lucene_fts_backend *backend =
 		(struct lucene_fts_backend *)_backend;
 
-	i_assert((flags & FTS_LOOKUP_FLAG_INVERT) == 0);
+	if (lucene_index_rescan(backend->index) < 0)
+		return -1;
+	return lucene_index_optimize(backend->index);
+}
 
-	array_clear(maybe_uids);
-	fts_backend_select(backend);
-	return lucene_index_lookup(backend->lstorage->index,
-				   flags, key, definite_uids);
+static int fts_backend_lucene_optimize(struct fts_backend *_backend)
+{
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_backend;
+	int ret;
+
+	ret = lucene_index_expunge_from_log(backend->index,
+					    backend->expunge_log);
+	if (ret == 0) {
+		/* log was corrupted, need to rescan */
+		ret = lucene_index_rescan(backend->index);
+	}
+	if (ret >= 0)
+		ret = lucene_index_optimize(backend->index);
+	return ret;
+}
+
+static int
+fts_backend_lucene_lookup(struct fts_backend *_backend, struct mailbox *box,
+			  struct mail_search_arg *args, bool and_args,
+			  struct fts_result *result)
+{
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_backend;
+	int ret;
+
+	if (fts_backend_select(backend, box) < 0)
+		return -1;
+	T_BEGIN {
+		ret = lucene_index_lookup(backend->index, args, and_args,
+					  result);
+	} T_END;
+	return ret;
+}
+
+/* a char* hash function from ASU -- from glib */
+static unsigned int wstr_hash(const void *p)
+{
+        const wchar_t *s = p;
+	unsigned int g, h = 0;
+
+	while (*s != '\0') {
+		h = (h << 4) + *s;
+		if ((g = h & 0xf0000000UL)) {
+			h = h ^ (g >> 24);
+			h = h ^ g;
+		}
+		s++;
+	}
+
+	return h;
+}
+
+static int
+mailboxes_get_guids(struct mailbox *const boxes[],
+		    struct hash_table *guids, struct fts_multi_result *result)
+{
+	ARRAY_DEFINE(box_results, struct fts_result);
+	struct fts_result *box_result;
+	const char *guid;
+	wchar_t *guid_dup;
+	unsigned int i, j;
+
+	p_array_init(&box_results, result->pool, 32);
+	for (i = 0; boxes[i] != NULL; i++) {
+		if (fts_mailbox_get_guid(boxes[i], &guid) < 0)
+			return -1;
+
+		i_assert(strlen(guid) == MAILBOX_GUID_HEX_LENGTH);
+		guid_dup = t_new(wchar_t, MAILBOX_GUID_HEX_LENGTH + 1);
+		for (j = 0; j < MAILBOX_GUID_HEX_LENGTH; j++)
+			guid_dup[j] = guid[j];
+
+		box_result = array_append_space(&box_results);
+		box_result->box = boxes[i];
+		hash_table_insert(guids, guid_dup, box_result);
+	}
+
+	(void)array_append_space(&box_results);
+	result->box_results = array_idx_modifiable(&box_results, 0);
+	return 0;
+}
+
+static int
+fts_backend_lucene_lookup_multi(struct fts_backend *_backend,
+				struct mailbox *const boxes[],
+				struct mail_search_arg *args, bool and_args,
+				struct fts_multi_result *result)
+{
+	struct lucene_fts_backend *backend =
+		(struct lucene_fts_backend *)_backend;
+	int ret;
+
+	T_BEGIN {
+		struct hash_table *guids;
+
+		guids = hash_table_create(default_pool, default_pool, 0,
+					  wstr_hash,
+					  (hash_cmp_callback_t *)wcscmp);
+		ret = mailboxes_get_guids(boxes, guids, result);
+		if (ret == 0) {
+			ret = lucene_index_lookup_multi(backend->index,
+							guids, args, and_args,
+							result);
+		}
+		hash_table_destroy(&guids);
+	} T_END;
+	return ret;
 }
 
 struct fts_backend fts_backend_lucene = {
@@ -243,22 +538,22 @@ struct fts_backend fts_backend_lucene = {
 	.flags = 0,
 
 	{
+		fts_backend_lucene_alloc,
 		fts_backend_lucene_init,
 		fts_backend_lucene_deinit,
 		fts_backend_lucene_get_last_uid,
-		NULL,
-		fts_backend_lucene_build_init,
-		fts_backend_lucene_build_hdr,
-		fts_backend_lucene_build_body_begin,
-		NULL,
-		fts_backend_lucene_build_more,
-		fts_backend_lucene_build_deinit,
-		fts_backend_lucene_expunge,
-		fts_backend_lucene_expunge_finish,
-		fts_backend_lucene_lock,
-		fts_backend_lucene_unlock,
+		fts_backend_lucene_update_init,
+		fts_backend_lucene_update_deinit,
+		fts_backend_lucene_update_set_mailbox,
+		fts_backend_lucene_update_expunge,
+		fts_backend_lucene_update_set_build_key,
+		fts_backend_lucene_update_unset_build_key,
+		fts_backend_lucene_update_build_more,
+		fts_backend_lucene_refresh,
+		fts_backend_lucene_rescan,
+		fts_backend_lucene_optimize,
+		fts_backend_default_can_lookup,
 		fts_backend_lucene_lookup,
-		NULL,
-		NULL
+		fts_backend_lucene_lookup_multi
 	}
 };

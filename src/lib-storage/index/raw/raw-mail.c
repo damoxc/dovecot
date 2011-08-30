@@ -12,17 +12,17 @@
 static int raw_mail_stat(struct mail *mail)
 {
 	struct raw_mailbox *mbox = (struct raw_mailbox *)mail->box;
-	struct mail_private *p = (struct mail_private *)mail;
 	const struct stat *st;
 
 	if (mail->lookup_abort == MAIL_LOOKUP_ABORT_NOT_IN_CACHE)
 		return mail_set_aborted(mail);
 
-	p->stats_fstat_lookup_count++;
+	mail->transaction->stats.fstat_lookup_count++;
 	st = i_stream_stat(mail->box->input, TRUE);
 	if (st == NULL) {
 		mail_storage_set_critical(mail->box->storage,
-			"stat(%s) failed: %m", mail->box->path);
+					  "stat(%s) failed: %m",
+					  i_stream_get_name(mail->box->input));
 		return -1;
 	}
 
@@ -103,7 +103,8 @@ raw_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		*value_r = mbox->envelope_sender;
 		return 0;
 	case MAIL_FETCH_UIDL_FILE_NAME:
-		*value_r = mbox->have_filename ? _mail->box->path : "";
+		*value_r = mbox->have_filename ?
+			mailbox_get_path(_mail->box) : "";
 		return 0;
 	default:
 		return index_mail_get_special(_mail, field, value_r);
@@ -116,6 +117,7 @@ struct mail_vfuncs raw_mail_vfuncs = {
 	index_mail_set_seq,
 	index_mail_set_uid,
 	index_mail_set_uid_cache_updates,
+	index_mail_prefetch,
 
 	index_mail_get_flags,
 	index_mail_get_keywords,

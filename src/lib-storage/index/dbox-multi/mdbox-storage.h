@@ -16,7 +16,7 @@
 #define MDBOX_INDEX_HEADER_MIN_SIZE (sizeof(uint32_t))
 struct mdbox_index_header {
 	uint32_t map_uid_validity;
-	uint8_t mailbox_guid[MAIL_GUID_128_SIZE];
+	guid_128_t mailbox_guid;
 };
 
 struct mdbox_storage {
@@ -60,10 +60,6 @@ struct mdbox_mailbox {
 };
 
 extern struct mail_vfuncs mdbox_mail_vfuncs;
-
-struct mailbox *
-mdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
-		    const char *name, enum mailbox_flags flags);
 
 int mdbox_mail_open(struct dbox_mail *mail, uoff_t *offset_r,
 		    struct dbox_file **file_r);
