@@ -62,6 +62,7 @@ struct client {
 	struct client_state state;
 	struct istream *dot_input;
 	struct lmtp_proxy *proxy;
+	unsigned int proxy_ttl;
 
 	unsigned int disconnected:1;
 };
@@ -82,6 +83,7 @@ int client_input_read(struct client *client);
 
 void client_send_line(struct client *client, const char *fmt, ...)
 	ATTR_FORMAT(2, 3);
+bool client_is_trusted(struct client *client);
 
 void clients_destroy(void);
 

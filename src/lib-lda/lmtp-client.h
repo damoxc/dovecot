@@ -1,6 +1,8 @@
 #ifndef LMTP_CLIENT_H
 #define LMTP_CLIENT_H
 
+#include "network.h"
+
 #define ERRSTR_TEMP_REMOTE_FAILURE "451 4.4.0 Remote server not answering"
 
 /* LMTP/SMTP client code. */
@@ -14,6 +16,13 @@ struct lmtp_client_settings {
 	const char *my_hostname;
 	const char *mail_from;
 	const char *dns_client_socket_path;
+
+	/* if remote server supports XCLIENT capability,
+	   send the these as ADDR/PORT */
+	struct ip_addr source_ip;
+	unsigned int source_port;
+	/* send TTL as this -1, so the default 0 means "don't send it" */
+	unsigned int proxy_ttl_plus_1;
 };
 
 /* reply contains the reply coming from remote server, or NULL

@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([Dovecot],[2.1.6],[dovecot@dovecot.org])
+AC_INIT([Dovecot],[2.2.UNSTABLE],[dovecot@dovecot.org])
 AC_CONFIG_SRCDIR([src])
 
 AM_INIT_AUTOMAKE([foreign])
@@ -292,7 +292,7 @@ AC_CHECK_HEADERS(strings.h stdint.h unistd.h dirent.h malloc.h inttypes.h \
   sys/quota.h sys/fs/ufs_quota.h ufs/ufs/quota.h jfs/quota.h sys/fs/quota_common.h \
   mntent.h sys/mnttab.h sys/event.h sys/time.h sys/mkdev.h linux/dqblk_xfs.h \
   xfs/xqm.h execinfo.h ucontext.h malloc_np.h sys/utsname.h sys/vmount.h \
-  sys/utsname.h glob.h linux/falloc.h ucred.h)
+  sys/utsname.h glob.h linux/falloc.h ucred.h sys/ucred.h)
 
 dnl * clang check
 have_clang=no
@@ -407,6 +407,8 @@ AC_CHECK_FUNCS(fcntl flock lockf inet_aton sigaction getpagesize madvise \
 	       setpriority quotactl getmntent kqueue kevent backtrace_symbols \
 	       walkcontext dirfd clearenv malloc_usable_size glob fallocate \
 	       posix_fadvise getpeereid getpeerucred)
+
+AC_CHECK_TYPES([struct sockpeercred])
 
 AC_CHECK_LIB(rt, clock_gettime, [
   AC_DEFINE(HAVE_CLOCK_GETTIME,, Define if you have the clock_gettime function)
@@ -2857,3 +2859,6 @@ echo "Full text search :$fts"
 if test "$not_fts" != ""; then
   echo "                 :$not_fts"
 fi
+
+echo
+echo "NOTE: This is the UNSTABLE development branch of Dovecot v2.2."

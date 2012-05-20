@@ -243,7 +243,6 @@ struct mailbox {
 	struct mail_index_view *tmp_sync_view;
 
 	/* Mailbox notification settings: */
-	unsigned int notify_min_interval;
 	mailbox_notify_callback_t *notify_callback;
 	void *notify_context;
 

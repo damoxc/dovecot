@@ -9,6 +9,11 @@ typedef void command_func_t(struct client *client);
 #define MSGS_BITMASK_SIZE(client) \
 	(((client)->messages_count + (CHAR_BIT-1)) / CHAR_BIT)
 
+struct pop3_client_vfuncs {
+	void (*destroy)(struct client *client, const char *reason);
+
+};
+
 /*
    pop3_msn = 1..n in the POP3 protocol
    msgnum = 0..n-1 = pop3_msn-1
@@ -18,7 +23,9 @@ typedef void command_func_t(struct client *client);
 struct client {
 	struct client *prev, *next;
 
-	char *session_id;
+	struct pop3_client_vfuncs v;
+	const char *session_id;
+
 	int fd_in, fd_out;
 	struct io *io;
 	struct istream *input;
@@ -28,6 +35,7 @@ struct client {
 	command_func_t *cmd;
 	void *cmd_context;
 
+	pool_t pool;
 	struct mail_storage_service_user *service_user;
 	struct mail_user *user;
 	struct mail_namespace *inbox_ns;
@@ -67,12 +75,25 @@ struct client {
 	pool_t uidl_pool;
 	enum uidl_keys uidl_keymask;
 
+	/* Module-specific contexts. */
+	ARRAY_DEFINE(module_contexts, union pop3_module_context *);
+
 	unsigned int disconnected:1;
 	unsigned int deleted:1;
 	unsigned int waiting_input:1;
 	unsigned int anvil_sent:1;
 	unsigned int message_uidls_save:1;
 };
+
+struct pop3_module_register {
+	unsigned int id;
+};
+
+union pop3_module_context {
+	struct pop3_client_vfuncs super;
+	struct pop3_module_register *reg;
+};
+extern struct pop3_module_register pop3_module_register;
 
 extern struct client *pop3_clients;
 extern unsigned int pop3_client_count;

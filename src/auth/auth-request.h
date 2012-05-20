@@ -56,6 +56,7 @@ struct auth_request {
 	struct auth_stream_reply *extra_cache_fields;
 	/* the whole userdb result reply */
 	struct auth_stream_reply *userdb_reply;
+	struct auth_request_proxy_dns_lookup_ctx *dns_lookup_ctx;
 	/* Result of passdb lookup */
 	enum passdb_result passdb_result;
 
