@@ -234,8 +234,7 @@ mail_storage_create_root(struct mailbox_list *list,
 	bool autocreate;
 	int ret;
 
-	root_dir = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	root_dir = mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	if (root_dir == NULL) {
 		/* storage doesn't use directories (e.g. shared root) */
 		return 0;
@@ -860,7 +859,8 @@ static int mailbox_autocreate_and_reopen(struct mailbox *box)
 	return ret;
 }
 
-static int mailbox_open_full(struct mailbox *box, struct istream *input)
+static int ATTR_NULL(2)
+mailbox_open_full(struct mailbox *box, struct istream *input)
 {
 	int ret;
 
@@ -1301,10 +1301,12 @@ int mailbox_get_metadata(struct mailbox *box, enum mailbox_metadata_items items,
 
 enum mail_flags mailbox_get_private_flags_mask(struct mailbox *box)
 {
-	if (box->v.get_private_flags_mask == NULL)
-		return 0;
-	else
+	if (box->v.get_private_flags_mask != NULL)
 		return box->v.get_private_flags_mask(box);
+	else if (box->list->set.index_pvt_dir != NULL)
+		return MAIL_SEEN; /* FIXME */
+	else
+		return 0;
 }
 
 struct mailbox_sync_context *
@@ -1370,10 +1372,9 @@ int mailbox_sync(struct mailbox *box, enum mailbox_sync_flags flags)
 }
 
 #undef mailbox_notify_changes
-void mailbox_notify_changes(struct mailbox *box, unsigned int min_interval,
+void mailbox_notify_changes(struct mailbox *box,
 			    mailbox_notify_callback_t *callback, void *context)
 {
-	box->notify_min_interval = min_interval;
 	box->notify_callback = callback;
 	box->notify_context = context;
 
@@ -1382,7 +1383,10 @@ void mailbox_notify_changes(struct mailbox *box, unsigned int min_interval,
 
 void mailbox_notify_changes_stop(struct mailbox *box)
 {
-	mailbox_notify_changes(box, 0, NULL, NULL);
+	box->notify_callback = NULL;
+	box->notify_context = NULL;
+
+	box->v.notify_changes(box);
 }
 
 struct mail_search_context *
@@ -1708,6 +1712,18 @@ int mailbox_copy(struct mail_save_context **_ctx, struct mail *mail)
 	if (keywords != NULL)
 		mailbox_keywords_unref(&keywords);
 	return ret;
+}
+
+int mailbox_move(struct mail_save_context **_ctx, struct mail *mail)
+{
+	struct mail_save_context *ctx = *_ctx;
+
+	ctx->moving = TRUE;
+	if (mailbox_copy(_ctx, mail) < 0)
+		return -1;
+
+	mail_expunge(mail);
+	return 0;
 }
 
 int mailbox_save_using_mail(struct mail_save_context **ctx, struct mail *mail)

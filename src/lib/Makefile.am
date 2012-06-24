@@ -52,8 +52,10 @@ liblib_la_SOURCES = \
 	ipwd.c \
 	iostream.c \
 	iostream-rawlog.c \
+	iso8601-date.c \
 	istream.c \
 	istream-base64-encoder.c \
+	istream-chain.c \
 	istream-concat.c \
 	istream-crlf.c \
 	istream-data.c \
@@ -120,6 +122,7 @@ liblib_la_SOURCES = \
 	unlink-directory.c \
 	unlink-old-files.c \
 	unichar.c \
+	uri-util.c \
 	utc-offset.c \
 	utc-mktime.c \
 	var-expand.c \
@@ -171,8 +174,10 @@ headers = \
 	iostream-private.h \
 	iostream-rawlog.h \
 	iostream-rawlog-private.h \
+	iso8601-date.h \
 	istream.h \
 	istream-base64-encoder.h \
+	istream-chain.h \
 	istream-concat.h \
 	istream-crlf.h \
 	istream-private.h \
@@ -226,6 +231,7 @@ headers = \
 	unlink-directory.h \
 	unlink-old-files.h \
 	unichar.h \
+	uri-util.h \
 	utc-offset.h \
 	utc-mktime.h \
 	var-expand.h \
@@ -252,6 +258,7 @@ test_lib_SOURCES = \
 	test-crc32.c \
 	test-hash-format.c \
 	test-hex-binary.c \
+	test-iso8601-date.c \
 	test-istream-base64-encoder.c \
 	test-istream-concat.c \
 	test-istream-crlf.c \

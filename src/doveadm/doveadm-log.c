@@ -25,7 +25,8 @@
 
 extern struct doveadm_cmd doveadm_cmd_log[];
 
-static void cmd_log_test(int argc ATTR_UNUSED, char *argv[] ATTR_UNUSED)
+static void ATTR_NULL(2)
+cmd_log_test(int argc ATTR_UNUSED, char *argv[] ATTR_UNUSED)
 {
 	struct failure_context ctx;
 	unsigned int i;

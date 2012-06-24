@@ -246,9 +246,10 @@ static bool dotlock_callback(unsigned int secs_left, bool stale, void *context)
 	return TRUE;
 }
 
-static int mbox_dotlock_privileged_op(struct mbox_mailbox *mbox,
-				      struct dotlock_settings *set,
-				      enum mbox_dotlock_op op)
+static int ATTR_NULL(2)
+mbox_dotlock_privileged_op(struct mbox_mailbox *mbox,
+			   struct dotlock_settings *set,
+			   enum mbox_dotlock_op op)
 {
 	const char *box_path, *dir, *fname;
 	int ret = -1, orig_dir_fd, orig_errno;
@@ -314,7 +315,7 @@ static int mbox_dotlock_privileged_op(struct mbox_mailbox *mbox,
 		break;
 	case MBOX_DOTLOCK_OP_UNLOCK:
 		/* we're now privileged - avoid doing as much as possible */
-		ret = file_dotlock_delete(&mbox->mbox_dotlock);
+		ret = file_dotlock_delete_verified(&mbox->mbox_dotlock);
 		if (ret < 0)
 			mbox_set_syscall_error(mbox, "file_dotlock_delete()");
 		mbox->mbox_used_privileges = FALSE;
@@ -357,8 +358,8 @@ mbox_dotlock_log_eacces_error(struct mbox_mailbox *mbox, const char *path)
 		mail_storage_set_critical(&mbox->storage->storage,
 			"%s (not INBOX -> no privileged locking)", errmsg);
 	} else if (!mbox->mbox_privileged_locking) {
-		dir = mailbox_list_get_path(mbox->box.list, NULL,
-					    MAILBOX_LIST_PATH_TYPE_DIR);
+		dir = mailbox_list_get_root_path(mbox->box.list,
+						 MAILBOX_LIST_PATH_TYPE_DIR);
 		mail_storage_set_critical(&mbox->storage->storage,
 			"%s (under root dir %s -> no privileged locking)",
 			errmsg, dir);
@@ -390,7 +391,7 @@ mbox_lock_dotlock_int(struct mbox_lock_context *ctx, int lock_type, bool try)
 			return 1;
 
 		if (!mbox->mbox_used_privileges) {
-			if (file_dotlock_delete(&mbox->mbox_dotlock) <= 0) {
+			if (file_dotlock_delete_verified(&mbox->mbox_dotlock) <= 0) {
 				mbox_set_syscall_error(mbox,
 						       "file_dotlock_delete()");
 			}

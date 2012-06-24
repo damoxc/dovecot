@@ -165,6 +165,14 @@ struct timeout *timeout_add(unsigned int msecs, unsigned int source_linenum,
 	return timeout;
 }
 
+#undef timeout_add_short
+struct timeout *
+timeout_add_short(unsigned int msecs, unsigned int source_linenum,
+		  timeout_callback_t *callback, void *context)
+{
+	return timeout_add(msecs, source_linenum, callback, context);
+}
+
 static void timeout_free(struct timeout *timeout)
 {
 	if (timeout->ctx != NULL)
@@ -181,7 +189,7 @@ void timeout_remove(struct timeout **_timeout)
 	timeout_free(timeout);
 }
 
-static void
+static void ATTR_NULL(2)
 timeout_reset_timeval(struct timeout *timeout, struct timeval *tv_now)
 {
 	timeout_update_next(timeout, tv_now);

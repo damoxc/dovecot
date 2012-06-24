@@ -37,13 +37,15 @@ static void proxy_send_login(struct pop3_client *client, struct ostream *output)
 {
 	string_t *str;
 
+	i_assert(client->common.proxy_ttl > 0);
 	if (client->proxy_xclient) {
 		/* remote supports XCLIENT, send it */
 		(void)o_stream_send_str(output, t_strdup_printf(
-			"XCLIENT ADDR=%s PORT=%u SESSION=%s\r\n",
+			"XCLIENT ADDR=%s PORT=%u SESSION=%s TTL=%u\r\n",
 			net_ip2addr(&client->common.ip),
 			client->common.remote_port,
-			client_get_session_id(&client->common)));
+			client_get_session_id(&client->common),
+			client->common.proxy_ttl - 1));
 		client->common.proxy_state = POP3_PROXY_XCLIENT;
 	} else {
 		client->common.proxy_state = POP3_PROXY_LOGIN1;
@@ -168,8 +170,8 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 	   shouldn't be a real problem since of course everyone will
 	   be using only Dovecot as their backend :) */
 	if (strncmp(line, "-ERR ", 5) != 0) {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-				 AUTH_FAILED_MSG);
+		client_send_reply(client, POP3_CMD_REPLY_ERROR,
+				  AUTH_FAILED_MSG);
 	} else {
 		client_send_raw(client, t_strconcat(line, "\r\n", NULL));
 	}
@@ -187,4 +189,9 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 void pop3_proxy_reset(struct client *client)
 {
 	client->proxy_state = POP3_PROXY_BANNER;
+}
+
+void pop3_proxy_error(struct client *client, const char *text)
+{
+	client_send_reply(client, POP3_CMD_REPLY_ERROR, text);
 }

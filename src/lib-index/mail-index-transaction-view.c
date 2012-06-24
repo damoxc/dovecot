@@ -85,7 +85,7 @@ tview_apply_flag_updates(struct mail_index_view_transaction *tview,
 			 const struct mail_index_record *rec, uint32_t seq)
 {
 	struct mail_index_transaction *t = tview->t;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	struct mail_index_record *trec;
 	unsigned int idx, count;
 
@@ -295,12 +295,6 @@ static void tview_lookup_keywords(struct mail_index_view *view, uint32_t seq,
 	if (seq < t->min_flagupdate_seq || seq > t->max_flagupdate_seq) {
 		/* no keyword updates for this sequence */
 		return;
-	}
-
-	/* apply any keyword updates in this transaction */
-	if (array_is_created(&t->keyword_resets)) {
-		if (seq_range_exists(&t->keyword_resets, seq))
-			array_clear(keyword_idx);
 	}
 
 	if (array_is_created(&t->keyword_updates))

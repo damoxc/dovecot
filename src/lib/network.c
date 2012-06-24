@@ -13,8 +13,10 @@
 #include <ctype.h>
 #include <sys/un.h>
 #include <netinet/tcp.h>
-#ifdef HAVE_UCRED_H
+#if defined(HAVE_UCRED_H)
 #  include <ucred.h> /* for getpeerucred() */
+#elif defined(HAVE_SYS_UCRED_H)
+#  include <sys/ucred.h> /* for FreeBSD struct xucred */
 #endif
 
 union sockaddr_union {
@@ -332,8 +334,7 @@ void net_disconnect(int fd)
 
 void net_set_nonblock(int fd, bool nonblock)
 {
-	if (fd_set_nonblock(fd, nonblock) < 0)
-		i_fatal("fd_set_nonblock(%d) failed: %m", fd);
+	fd_set_nonblock(fd, nonblock);
 }
 
 int net_set_cork(int fd ATTR_UNUSED, bool cork ATTR_UNUSED)
@@ -498,7 +499,7 @@ int net_listen_unix_unlink_stale(const char *path, int backlog)
 	return fd;
 }
 
-int net_accept(int fd, struct ip_addr *addr, unsigned int *port)
+int net_accept(int fd, struct ip_addr *addr_r, unsigned int *port_r)
 {
 	union sockaddr_union so;
 	int ret;
@@ -516,12 +517,12 @@ int net_accept(int fd, struct ip_addr *addr, unsigned int *port)
 			return -2;
 	}
 	if (so.sin.sin_family == AF_UNIX) {
-		if (addr != NULL)
-			memset(addr, 0, sizeof(*addr));
-		if (port != NULL) *port = 0;
+		if (addr_r != NULL)
+			memset(addr_r, 0, sizeof(*addr_r));
+		if (port_r != NULL) *port_r = 0;
 	} else {
-		if (addr != NULL) sin_get_ip(&so, addr);
-		if (port != NULL) *port = sin_get_port(&so);
+		if (addr_r != NULL) sin_get_ip(&so, addr_r);
+		if (port_r != NULL) *port_r = sin_get_port(&so);
 	}
 	return ret;
 }
@@ -694,16 +695,14 @@ int net_getunixname(int fd, const char **name_r)
 
 int net_getunixcred(int fd, struct net_unix_cred *cred_r)
 {
-#if defined(HAVE_GETPEEREID)
-	/* OSX 10.4+, FreeBSD 4.6+, OpenBSD 3.0+, NetBSD 5.0+ */
-	if (getpeereid(fd, &cred_r->uid, &cred_r->gid) < 0) {
-		i_error("getpeereid() failed: %m");
-		return -1;
-	}
-	return 0;
-#elif defined(SO_PEERCRED)
+#if defined(SO_PEERCRED)
+# if defined(HAVE_STRUCT_SOCKPEERCRED)
+	/* OpenBSD (may also provide getpeereid, but we also want pid) */
+	struct sockpeercred ucred;
+# else
 	/* Linux */
 	struct ucred ucred;
+# endif
 	socklen_t len = sizeof(ucred);
 
 	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &ucred, &len) < 0) {
@@ -712,6 +711,48 @@ int net_getunixcred(int fd, struct net_unix_cred *cred_r)
 	}
 	cred_r->uid = ucred.uid;
 	cred_r->gid = ucred.gid;
+	cred_r->pid = ucred.pid;
+	return 0;
+#elif defined(LOCAL_PEEREID)
+	/* NetBSD (may also provide getpeereid, but we also want pid) */
+	struct unpcbid ucred;
+	socklen_t len = sizeof(ucred);
+
+	if (getsockopt(s, 0, LOCAL_PEEREID, &ucred, &len) < 0) {
+		i_error("getsockopt(LOCAL_PEEREID) failed: %m");
+		return -1;
+	}
+	
+	cred_r->uid = ucred.unp_euid;
+	cred_r->gid = ucred.unp_egid;
+	cred_r->pid = ucred.unp_pid;
+	return 0;
+#elif defined(HAVE_GETPEEREID)
+	/* OSX 10.4+, FreeBSD 4.6+, OpenBSD 3.0+, NetBSD 5.0+ */
+	if (getpeereid(fd, &cred_r->uid, &cred_r->gid) < 0) {
+		i_error("getpeereid() failed: %m");
+		return -1;
+	}
+	cred_r->pid = (pid_t)-1;
+	return 0;
+#elif defined(LOCAL_PEERCRED)
+	/* Older FreeBSD */
+	struct xucred ucred;
+	socklen_t len = sizeof(ucred);
+
+	if (getsockopt(fd, 0, LOCAL_PEERCRED, &ucred, &len) < 0) {
+		i_error("getsockopt(LOCAL_PEERCRED) failed: %m");
+		return -1;
+	}
+
+	if (ucred.cr_version != XUCRED_VERSION) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	cred_r->uid = ucred.cr_uid;
+	cred_r->gid = ucred.cr_gid;
+	cred_r->pid = (pid_t)-1;
 	return 0;
 #elif defined(HAVE_GETPEERUCRED)
 	/* Solaris */
@@ -723,6 +764,7 @@ int net_getunixcred(int fd, struct net_unix_cred *cred_r)
 	}
 	cred_r->uid = ucred_geteuid(ucred);
 	cred_r->gid = ucred_getrgid(ucred);
+	cred_r->pid = ucred_getpid(ucred);
 	ucred_free(ucred);
 
 	if (cred_r->uid == (uid_t)-1 ||

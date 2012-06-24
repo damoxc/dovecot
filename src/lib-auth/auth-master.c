@@ -518,6 +518,8 @@ void auth_user_fields_parse(const char *const *fields, pool_t pool,
 			reply_r->home = p_strdup(pool, *fields + 5);
 		else if (strncmp(*fields, "chroot=", 7) == 0)
 			reply_r->chroot = p_strdup(pool, *fields + 7);
+		else if (strcmp(*fields, "anonymous") == 0)
+			reply_r->anonymous = TRUE;
 		else {
 			const char *field = p_strdup(pool, *fields);
 			array_append(&reply_r->extra_fields, &field, 1);
@@ -613,7 +615,7 @@ auth_master_user_list_init(struct auth_master_connection *conn,
 	str = t_str_new(128);
 	str_printfa(str, "LIST\t%u",
 		    auth_master_next_request_id(conn));
-	if (user_mask != NULL && *user_mask != '\0')
+	if (*user_mask != '\0')
 		str_printfa(str, "\tuser=%s", user_mask);
 	if (info != NULL)
 		auth_user_info_export(str, info);

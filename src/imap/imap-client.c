@@ -20,6 +20,8 @@
 #include <unistd.h>
 
 extern struct mail_storage_callbacks mail_storage_callbacks;
+extern struct imap_client_vfuncs imap_client_vfuncs;
+
 struct imap_module_register imap_module_register = { 0 };
 
 struct client *imap_clients = NULL;
@@ -48,6 +50,7 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
 	pool = pool_alloconly_create("imap client", 2048);
 	client = p_new(pool, struct client, 1);
 	client->pool = pool;
+	client->v = imap_client_vfuncs;
 	client->set = set;
 	client->service_user = service_user;
 	client->session_id = p_strdup(pool, session_id);
@@ -173,6 +176,11 @@ static const char *client_get_disconnect_reason(struct client *client)
 }
 
 void client_destroy(struct client *client, const char *reason)
+{
+	client->v.destroy(client, reason);
+}
+
+static void client_default_destroy(struct client *client, const char *reason)
 {
 	struct client_command_context *cmd;
 
@@ -1006,3 +1014,7 @@ void clients_destroy_all(void)
 		client_destroy(imap_clients, "Server shutting down.");
 	}
 }
+
+struct imap_client_vfuncs imap_client_vfuncs = {
+	client_default_destroy
+};

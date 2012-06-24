@@ -29,17 +29,21 @@ enum imap_proxy_state {
 
 static void proxy_write_id(struct imap_client *client, string_t *str)
 {
+	i_assert(client->common.proxy_ttl > 0);
+
 	str_printfa(str, "I ID ("
 		    "\"x-session-id\" \"%s\" "
 		    "\"x-originating-ip\" \"%s\" "
 		    "\"x-originating-port\" \"%u\" "
 		    "\"x-connected-ip\" \"%s\" "
-		    "\"x-connected-port\" \"%u\")\r\n",
+		    "\"x-connected-port\" \"%u\" "
+		    "\"x-proxy-ttl\" \"%u\")\r\n",
 		    client_get_session_id(&client->common),
 		    net_ip2addr(&client->common.ip),
 		    client->common.remote_port,
 		    net_ip2addr(&client->common.local_ip),
-		    client->common.local_port);
+		    client->common.local_port,
+		    client->common.proxy_ttl - 1);
 }
 
 static void proxy_free_password(struct client *client)
@@ -248,8 +252,9 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 			   the remote is sending a different error message
 			   an attacker can't find out what users exist in
 			   the system. */
-			client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-					 AUTH_FAILED_MSG);
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       IMAP_RESP_CODE_AUTHFAILED,
+					       AUTH_FAILED_MSG);
 		} else if (strncmp(line, "NO [", 4) == 0) {
 			/* remote sent some other resp-code. forward it. */
 			client_send_raw(client, t_strconcat(
@@ -262,8 +267,9 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 			   failures. since other errors are pretty rare,
 			   it's safer to just hide them. they're still
 			   available in logs though. */
-			client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-					 AUTH_FAILED_MSG);
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       IMAP_RESP_CODE_AUTHFAILED,
+					       AUTH_FAILED_MSG);
 		}
 
 		client->proxy_auth_failed = TRUE;
@@ -303,4 +309,10 @@ void imap_proxy_reset(struct client *client)
 	imap_client->proxy_seen_banner = FALSE;
 	imap_client->proxy_wait_auth_continue = FALSE;
 	client->proxy_state = IMAP_PROXY_STATE_NONE;
+}
+
+void imap_proxy_error(struct client *client, const char *text)
+{
+	client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+			       IMAP_RESP_CODE_UNAVAILABLE, text);
 }

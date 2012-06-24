@@ -64,7 +64,7 @@ static void index_mail_parse_header_finish(struct index_mail *mail)
 				i_assert((match[match_idx] &
 					  HEADER_MATCH_FLAG_FOUND) == 0);
 				index_mail_cache_add_idx(mail, match_idx,
-							 NULL, 0);
+							 "", 0);
 			}
 			match_idx++;
 		}
@@ -125,7 +125,7 @@ static void index_mail_parse_header_finish(struct index_mail *mail)
 			/* this header doesn't exist. remember that. */
 			i_assert((match[match_idx] &
 				  HEADER_MATCH_FLAG_FOUND) == 0);
-			index_mail_cache_add_idx(mail, match_idx, NULL, 0);
+			index_mail_cache_add_idx(mail, match_idx, "", 0);
 		}
 	}
 
@@ -715,8 +715,9 @@ index_mail_headers_decode(struct index_mail *mail, const char *const **_list,
 			return -1;
 
 		/* decode MIME encoded-words. decoding may also add new LFs. */
-		if (message_header_decode_utf8((const unsigned char *)input,
-					       strlen(input), str, FALSE))
+		message_header_decode_utf8((const unsigned char *)input,
+					   strlen(input), str, FALSE);
+		if (strcmp(str_c(str), input) != 0)
 			input = p_strdup(mail->data_pool, str_c(str));
 		decoded_list[i] = input;
 	}

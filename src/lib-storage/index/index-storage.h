@@ -62,7 +62,8 @@ void index_storage_mailbox_alloc(struct mailbox *box, const char *vname,
 int index_storage_mailbox_exists(struct mailbox *box, bool auto_boxes,
 				 enum mailbox_existence *existence_r);
 int index_storage_mailbox_exists_full(struct mailbox *box, const char *subdir,
-				      enum mailbox_existence *existence_r);
+				      enum mailbox_existence *existence_r)
+	ATTR_NULL(2);
 int index_storage_mailbox_open(struct mailbox *box, bool move_to_memory);
 int index_storage_mailbox_enable(struct mailbox *box,
 				 enum mailbox_feature feature);
@@ -129,6 +130,7 @@ index_transaction_begin(struct mailbox *box,
 void index_transaction_init(struct mailbox_transaction_context *t,
 			    struct mailbox *box,
 			    enum mailbox_transaction_flags flags);
+void index_transaction_init_pvt(struct mailbox_transaction_context *t);
 int index_transaction_commit(struct mailbox_transaction_context *t,
 			     struct mail_transaction_commit_changes *changes_r);
 void index_transaction_rollback(struct mailbox_transaction_context *t);

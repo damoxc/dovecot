@@ -28,8 +28,9 @@ static void client_send_sendalive_if_needed(struct client *client)
 	}
 }
 
-static int fetch_and_copy(struct client *client,
+static int fetch_and_copy(struct client *client, bool move,
 			  struct mailbox_transaction_context *t,
+			  struct mailbox_transaction_context **src_trans_r,
 			  struct mail_search_args *search_args,
 			  const char **src_uidset_r,
 			  unsigned int *copy_count_r)
@@ -62,8 +63,15 @@ static int fetch_and_copy(struct client *client,
 		save_ctx = mailbox_save_alloc(t);
 		mailbox_save_copy_flags(save_ctx, mail);
 
-		if (mailbox_copy(&save_ctx, mail) < 0)
-			ret = mail->expunged ? 0 : -1;
+		if (move) {
+			if (mailbox_move(&save_ctx, mail) < 0)
+				ret = -1;
+		} else {
+			if (mailbox_copy(&save_ctx, mail) < 0)
+				ret = -1;
+		}
+		if (ret < 0 && mail->expunged)
+			ret = 0;
 
 		msgset_generator_next(&srcset_ctx, mail->uid);
 	}
@@ -72,20 +80,18 @@ static int fetch_and_copy(struct client *client,
 	if (mailbox_search_deinit(&search_ctx) < 0)
 		ret = -1;
 
-	if (mailbox_transaction_commit(&src_trans) < 0)
-		ret = -1;
-
+	*src_trans_r = src_trans;
 	*src_uidset_r = str_c(src_uidset);
 	*copy_count_r = copy_count;
 	return ret;
 }
 
-bool cmd_copy(struct client_command_context *cmd)
+static bool cmd_copy_full(struct client_command_context *cmd, bool move)
 {
 	struct client *client = cmd->client;
 	struct mail_storage *dest_storage;
 	struct mailbox *destbox;
-	struct mailbox_transaction_context *t;
+	struct mailbox_transaction_context *t, *src_trans;
         struct mail_search_args *search_args;
 	const char *messageset, *mailbox, *src_uidset;
 	enum mailbox_sync_flags sync_flags = 0;
@@ -114,7 +120,8 @@ bool cmd_copy(struct client_command_context *cmd)
 	t = mailbox_transaction_begin(destbox,
 				      MAILBOX_TRANSACTION_FLAG_EXTERNAL |
 				      MAILBOX_TRANSACTION_FLAG_ASSIGN_UIDS);
-	ret = fetch_and_copy(client, t, search_args, &src_uidset, &copy_count);
+	ret = fetch_and_copy(client, move, t, &src_trans, search_args,
+			     &src_uidset, &copy_count);
 	mail_search_args_unref(&search_args);
 
 	msg = t_str_new(256);
@@ -123,11 +130,12 @@ bool cmd_copy(struct client_command_context *cmd)
 	else if (mailbox_transaction_commit_get_changes(&t, &changes) < 0)
 		ret = -1;
 	else if (copy_count == 0) {
-		str_append(msg, "OK No messages copied.");
+		str_append(msg, "OK No messages found.");
 		pool_unref(&changes.pool);
 	} else if (seq_range_count(&changes.saved_uids) == 0) {
 		/* not supported by backend (virtual) */
-		str_append(msg, "OK Copy completed.");
+		str_append(msg, move ? "OK Move completed." :
+			   "OK Copy completed.");
 		pool_unref(&changes.pool);
 	} else {
 		i_assert(copy_count == seq_range_count(&changes.saved_uids));
@@ -135,11 +143,22 @@ bool cmd_copy(struct client_command_context *cmd)
 		str_printfa(msg, "OK [COPYUID %u %s ", changes.uid_validity,
 			    src_uidset);
 		imap_write_seq_range(msg, &changes.saved_uids);
-		str_append(msg, "] Copy completed.");
+		if (move)
+			str_append(msg, "] Move completed.");
+		else
+			str_append(msg, "] Copy completed.");
 		pool_unref(&changes.pool);
 	}
 
-	dest_storage = mailbox_get_storage(destbox);
+	if (ret <= 0 && move) {
+		/* move failed, don't expunge anything */
+		mailbox_transaction_rollback(&src_trans);
+	} else {
+		if (mailbox_transaction_commit(&src_trans) < 0)
+			ret = -1;
+	}
+
+ 	dest_storage = mailbox_get_storage(destbox);
 	if (destbox != client->mailbox) {
 		sync_flags |= MAILBOX_SYNC_FLAG_FAST;
 		imap_flags |= IMAP_SYNC_FLAG_SAFE;
@@ -157,4 +176,14 @@ bool cmd_copy(struct client_command_context *cmd)
 		client_send_storage_error(cmd, dest_storage);
 		return TRUE;
 	}
+}
+
+bool cmd_copy(struct client_command_context *cmd)
+{
+	return cmd_copy_full(cmd, FALSE);
+}
+
+bool cmd_uid_move(struct client_command_context *cmd)
+{
+	return cmd_copy_full(cmd, TRUE);
 }

@@ -37,6 +37,10 @@
    transaction. This allows the mailbox to become unlocked. */
 #define CLIENT_COMMIT_TIMEOUT_MSECS (10*1000)
 
+extern struct pop3_client_vfuncs pop3_client_vfuncs;
+
+struct pop3_module_register pop3_module_register = { 0 };
+
 struct client *pop3_clients;
 unsigned int pop3_client_count;
 
@@ -284,21 +288,26 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
         enum mailbox_flags flags;
 	const char *errmsg;
 	enum mail_error error;
+	pool_t pool;
 
 	/* always use nonblocking I/O */
 	net_set_nonblock(fd_in, TRUE);
 	net_set_nonblock(fd_out, TRUE);
 
-	client = i_new(struct client, 1);
+	pool = pool_alloconly_create("pop3 client", 256);
+	client = p_new(pool, struct client, 1);
+	client->pool = pool;
 	client->service_user = service_user;
+	client->v = pop3_client_vfuncs;
 	client->set = set;
-	client->session_id = i_strdup(session_id);
+	client->session_id = p_strdup(pool, session_id);
 	client->fd_in = fd_in;
 	client->fd_out = fd_out;
 	client->input = i_stream_create_fd(fd_in, MAX_INBUF_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd_out, (size_t)-1, FALSE);
 	o_stream_set_flush_callback(client->output, client_output, client);
 
+	p_array_init(&client->module_contexts, client->pool, 5);
 	client->io = io_add(fd_in, IO_READ, client_input, client);
         client->last_input = ioloop_time;
 	client->to_idle = timeout_add(CLIENT_IDLE_TIMEOUT_MSECS,
@@ -469,6 +478,11 @@ static const char *client_get_disconnect_reason(struct client *client)
 
 void client_destroy(struct client *client, const char *reason)
 {
+	client->v.destroy(client, reason);
+}
+
+static void client_default_destroy(struct client *client, const char *reason)
+{
 	if (client->seen_change_count > 0)
 		client_update_mails(client);
 
@@ -524,8 +538,7 @@ void client_destroy(struct client *client, const char *reason)
 	if (client->fd_in != client->fd_out)
 		net_disconnect(client->fd_out);
 	mail_storage_service_user_free(&client->service_user);
-	i_free(client->session_id);
-	i_free(client);
+	pool_unref(&client->pool);
 
 	master_service_client_connection_destroyed(master_service);
 	pop3_refresh_proctitle();
@@ -735,3 +748,7 @@ void clients_destroy_all(void)
 		client_destroy(pop3_clients, "Server shutting down.");
 	}
 }
+
+struct pop3_client_vfuncs pop3_client_vfuncs = {
+	client_default_destroy
+};

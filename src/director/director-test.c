@@ -450,8 +450,8 @@ static struct admin_connection *admin_connect(const char *path)
 	if (conn->fd == -1)
 		i_fatal("net_connect_unix(%s) failed: %m", path);
 	conn->io = io_add(conn->fd, IO_READ, admin_input, conn);
-	conn->to_random = timeout_add(ADMIN_RANDOM_TIMEOUT_MSECS,
-				      admin_random_action, conn);
+	conn->to_random = timeout_add_short(ADMIN_RANDOM_TIMEOUT_MSECS,
+					    admin_random_action, conn);
 
 	net_set_nonblock(conn->fd, FALSE);
 	conn->input = i_stream_create_fd(conn->fd, (size_t)-1, TRUE);
@@ -508,7 +508,7 @@ static void admin_read_hosts(struct admin_connection *conn)
 	net_set_nonblock(admin->fd, TRUE);
 }
 
-static void
+static void ATTR_NULL(1)
 director_connection_disconnect_timeout(void *context ATTR_UNUSED)
 {
 	struct director_connection *conn;
@@ -586,7 +586,7 @@ int main(int argc, char *argv[])
 	const char *admin_path;
 
 	master_service = master_service_init("director-test", 0,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 	admin_path = argv[optind];

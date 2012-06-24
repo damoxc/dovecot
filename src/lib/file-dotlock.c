@@ -721,7 +721,12 @@ static bool file_dotlock_has_mtime_changed(time_t t1, time_t t2)
 	return diff > FILE_DOTLOCK_MAX_STAT_MTIME_DIFF;
 }
 
-int file_dotlock_delete(struct dotlock **dotlock_p)
+void file_dotlock_delete(struct dotlock **dotlock_p)
+{
+	(void)file_dotlock_delete_verified(dotlock_p);
+}
+
+int file_dotlock_delete_verified(struct dotlock **dotlock_p)
 {
 	struct dotlock *dotlock;
 	const char *lock_path;
@@ -800,7 +805,7 @@ int file_dotlock_open(const struct dotlock_settings *set, const char *path,
 	return dotlock->fd;
 }
 
-static int
+static int ATTR_NULL(7)
 file_dotlock_open_mode_full(const struct dotlock_settings *set, const char *path,
 			    enum dotlock_create_flags flags,
 			    mode_t mode, uid_t uid, gid_t gid,

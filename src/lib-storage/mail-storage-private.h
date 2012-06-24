@@ -203,6 +203,12 @@ union mailbox_module_context {
 	struct mail_storage_module_register *reg;
 };
 
+struct mail_msgpart_partial_cache {
+	uint32_t uid;
+	uoff_t physical_start;
+	uoff_t physical_pos, virtual_pos;
+};
+
 struct mailbox {
 	const char *name;
 	/* mailbox's virtual name (from mail_namespace_get_vname()) */
@@ -220,6 +226,11 @@ struct mailbox {
 	struct mail_index *index;
 	struct mail_index_view *view;
 	struct mail_cache *cache;
+	/* Private per-user index/view for shared mailboxes. These are synced
+	   against the primary index and used to store per-user flags.
+	   These are non-NULL only when mailbox has per-user flags. */
+	struct mail_index *index_pvt;
+	struct mail_index_view *view_pvt;
 	/* Filled lazily by mailbox_get_permissions() */
 	struct mailbox_permissions _perm;
 	/* Filled lazily by mailbox_get_path() */
@@ -239,11 +250,11 @@ struct mailbox {
 	enum mailbox_flags flags;
 	unsigned int transaction_count;
 	enum mailbox_feature enabled_features;
+	struct mail_msgpart_partial_cache partial_cache;
 
 	struct mail_index_view *tmp_sync_view;
 
 	/* Mailbox notification settings: */
-	unsigned int notify_min_interval;
 	mailbox_notify_callback_t *notify_callback;
 	void *notify_context;
 
@@ -346,6 +357,8 @@ struct mail_private {
 	struct mail mail;
 	struct mail_vfuncs v, *vlast;
 
+	uint32_t seq_pvt;
+
 	/* initial wanted fields/headers, set by mail_alloc(): */
 	enum mail_fetch_field wanted_fields;
 	struct mailbox_header_lookup_ctx *wanted_headers;
@@ -387,6 +400,10 @@ struct mailbox_transaction_context {
 	struct mail_index_transaction *itrans;
 	/* view contains all changes done within this transaction */
 	struct mail_index_view *view;
+
+	/* for private index updates: */
+	struct mail_index_transaction *itrans_pvt;
+	struct mail_index_view *view_pvt;
 
 	struct mail_cache_view *cache_view;
 	struct mail_cache_transaction_ctx *cache_trans;
@@ -460,6 +477,8 @@ struct mail_save_context {
 	unsigned int copying_via_save:1;
 	/* mail is being saved, not copied */
 	unsigned int saving:1;
+	/* mail is being moved - ignore quota */
+	unsigned int moving:1;
 };
 
 struct mailbox_sync_context {
