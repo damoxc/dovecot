@@ -111,15 +111,15 @@ winbind_helper_connect(const struct auth_settings *set,
 		return;
 	}
 	if (pipe(outfd) < 0) {
-		(void)close(infd[0]); (void)close(infd[1]);
+		i_close_fd(&infd[0]); i_close_fd(&infd[1]);
 		return;
 	}
 
 	pid = fork();
 	if (pid < 0) {
 		i_error("fork() failed: %m");
-		(void)close(infd[0]); (void)close(infd[1]);
-		(void)close(outfd[0]); (void)close(outfd[1]);
+		i_close_fd(&infd[0]); i_close_fd(&infd[1]);
+		i_close_fd(&outfd[0]); i_close_fd(&outfd[1]);
 		return;
 	}
 
@@ -127,8 +127,8 @@ winbind_helper_connect(const struct auth_settings *set,
 		/* child */
 		const char *args[3];
 
-		(void)close(infd[0]);
-		(void)close(outfd[1]);
+		i_close_fd(&infd[0]);
+		i_close_fd(&outfd[1]);
 
 		if (dup2(outfd[0], STDIN_FILENO) < 0 ||
 		    dup2(infd[1], STDOUT_FILENO) < 0)
@@ -141,8 +141,8 @@ winbind_helper_connect(const struct auth_settings *set,
 	}
 
 	/* parent */
-	(void)close(infd[1]);
-	(void)close(outfd[0]);
+	i_close_fd(&infd[1]);
+	i_close_fd(&outfd[0]);
 
 	winbind->pid = pid;
 	winbind->in_pipe =
@@ -177,7 +177,8 @@ do_auth_continue(struct auth_request *auth_request,
 	base64_encode(data, data_size, str);
 	str_append_c(str, '\n');
 
-	if (o_stream_send_str(request->winbind->out_pipe, str_c(str)) < 0 ||
+	if (o_stream_send(request->winbind->out_pipe,
+			  str_data(str), str_len(str)) < 0 ||
 	    o_stream_flush(request->winbind->out_pipe) < 0) {
 		auth_request_log_error(auth_request, "winbind",
 				       "write(out_pipe) failed: %m");
@@ -264,7 +265,7 @@ do_auth_continue(struct auth_request *auth_request,
 			auth_request_success(&request->auth_request,
 					     buf->data, buf->used);
 		} else {
-			auth_request_success(&request->auth_request, NULL, 0);
+			auth_request_success(&request->auth_request, "", 0);
 		}
 		return HR_OK;
 	} else if (strcmp(token[0], "BH") == 0) {

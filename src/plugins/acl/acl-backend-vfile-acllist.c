@@ -43,20 +43,20 @@ static const char *acl_list_get_root_dir(struct acl_backend_vfile *backend)
 	struct mail_storage *storage;
 	const char *rootdir, *maildir;
 
-	rootdir = mailbox_list_get_path(backend->backend.list, NULL,
-					MAILBOX_LIST_PATH_TYPE_DIR);
+	rootdir = mailbox_list_get_root_path(backend->backend.list,
+					     MAILBOX_LIST_PATH_TYPE_DIR);
 
 	storage = mailbox_list_get_namespace(backend->backend.list)->storage;
 	if (mail_storage_is_mailbox_file(storage)) {
-		maildir = mailbox_list_get_path(backend->backend.list, NULL,
-						MAILBOX_LIST_PATH_TYPE_MAILBOX);
+		maildir = mailbox_list_get_root_path(backend->backend.list,
+						     MAILBOX_LIST_PATH_TYPE_MAILBOX);
 		if (strcmp(maildir, rootdir) == 0) {
 			/* dovecot-acl-list would show up as a mailbox if we
 			   created it to root dir. since we don't really have
 			   any other good alternatives, place it to control
 			   dir */
-			rootdir = mailbox_list_get_path(backend->backend.list,
-					NULL, MAILBOX_LIST_PATH_TYPE_CONTROL);
+			rootdir = mailbox_list_get_root_path(backend->backend.list,
+					MAILBOX_LIST_PATH_TYPE_CONTROL);
 		}
 	}
 	return rootdir;
@@ -109,7 +109,7 @@ static int acl_backend_vfile_acllist_read(struct acl_backend_vfile *backend)
 	}
 	if (fstat(fd, &st) < 0) {
 		i_error("fstat(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	backend->acllist_mtime = st.st_mtime;
@@ -187,7 +187,7 @@ acllist_append(struct acl_backend_vfile *backend, struct ostream *output,
 			const char *line;
 			line = t_strdup_printf("%s %s\n",
 					       dec2str(acllist.mtime), name);
-			o_stream_send_str(output, line);
+			o_stream_nsend_str(output, line);
 		} T_END;
 	}
 	acl_object_deinit(&aclobj);
@@ -246,6 +246,7 @@ acl_backend_vfile_acllist_try_rebuild(struct acl_backend_vfile *backend)
 		return -1;
 	}
 	output = o_stream_create_fd_file(fd, 0, FALSE);
+	o_stream_cork(output);
 
 	ret = 0;
 	acllist_clear(backend, 0);
@@ -261,7 +262,7 @@ acl_backend_vfile_acllist_try_rebuild(struct acl_backend_vfile *backend)
 		}
 	}
 
-	if (output->stream_errno != 0) {
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", str_c(path));
 		ret = -1;
 	}

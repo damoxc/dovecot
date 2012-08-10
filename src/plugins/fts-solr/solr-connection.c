@@ -319,7 +319,7 @@ static void solr_lookup_add_doc(struct solr_lookup_xml_context *ctx)
 	}
 	result = solr_result_get(ctx, box_id);
 
-	seq_range_array_add(&result->uids, 0, ctx->uid);
+	seq_range_array_add(&result->uids, ctx->uid);
 	if (ctx->score != 0) {
 		score = array_append_space(&result->scores);
 		score->uid = ctx->uid;
@@ -448,10 +448,10 @@ int solr_connection_select(struct solr_connection *conn, const char *query,
 		i_error("fts_solr: Lookup failed: %s", conn->http_failure);
 		return -1;
 	}
-	parse_ret = solr_xml_parse(conn, NULL, 0, TRUE);
+	parse_ret = solr_xml_parse(conn, "", 0, TRUE);
 	hash_table_destroy(&solr_lookup_context.mailboxes);
 
-	(void)array_append_space(&solr_lookup_context.results);
+	array_append_zero(&solr_lookup_context.results);
 	*box_results_r = array_idx_modifiable(&solr_lookup_context.results, 0);
 	return parse_ret;
 }
@@ -577,7 +577,7 @@ int solr_connection_post_end(struct solr_connection_post *post)
 
 	i_assert(conn->posting);
 
-	solr_connection_post_more(post, NULL, 0);
+	solr_connection_post_more(post, &uchar_nul, 0);
 
 	curl_easy_getinfo(conn->curl, CURLINFO_RESPONSE_CODE, &httpret);
 	if (httpret != 200 && ret == 0) {

@@ -132,7 +132,7 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	fd_in = nfs_safe_open(path, O_RDONLY);
 	if (fd_in == -1 && errno != ENOENT) {
 		subswrite_set_syscall_error(list, "open()", path);
-		(void)file_dotlock_delete(&dotlock);
+		file_dotlock_delete(&dotlock);
 		return -1;
 	}
 
@@ -152,8 +152,8 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 				}
 			}
 
-			(void)o_stream_send_str(output, line);
-			(void)o_stream_send(output, "\n", 1);
+			o_stream_nsend_str(output, line);
+			o_stream_nsend(output, "\n", 1);
 		}
 		i_stream_destroy(&input);
 	}
@@ -161,12 +161,12 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	if (!failed && set && !found) {
 		/* append subscription */
 		line = t_strconcat(name, "\n", NULL);
-		(void)o_stream_send_str(output, line);
+		o_stream_nsend_str(output, line);
 		changed = TRUE;
 	}
 
 	if (changed && !failed) {
-		if (o_stream_flush(output) < 0) {
+		if (o_stream_nfinish(output) < 0) {
 			subswrite_set_syscall_error(list, "write()", path);
 			failed = TRUE;
 		} else if (mail_set->parsed_fsync_mode != FSYNC_MODE_NEVER) {

@@ -20,6 +20,8 @@
 #include <unistd.h>
 
 extern struct mail_storage_callbacks mail_storage_callbacks;
+extern struct imap_client_vfuncs imap_client_vfuncs;
+
 struct imap_module_register imap_module_register = { 0 };
 
 struct client *imap_clients = NULL;
@@ -48,6 +50,7 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
 	pool = pool_alloconly_create("imap client", 2048);
 	client = p_new(pool, struct client, 1);
 	client->pool = pool;
+	client->v = imap_client_vfuncs;
 	client->set = set;
 	client->service_user = service_user;
 	client->session_id = p_strdup(pool, session_id);
@@ -56,6 +59,7 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
 	client->input = i_stream_create_fd(fd_in,
 					   set->imap_max_line_length, FALSE);
 	client->output = o_stream_create_fd(fd_out, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 
 	o_stream_set_flush_callback(client->output, client_output, client);
 
@@ -174,6 +178,11 @@ static const char *client_get_disconnect_reason(struct client *client)
 
 void client_destroy(struct client *client, const char *reason)
 {
+	client->v.destroy(client, reason);
+}
+
+static void client_default_destroy(struct client *client, const char *reason)
+{
 	struct client_command_context *cmd;
 
 	i_assert(!client->destroyed);
@@ -259,7 +268,7 @@ void client_disconnect(struct client *client, const char *reason)
 
 	i_info("Disconnected: %s %s", reason, client_stats(client));
 	client->disconnected = TRUE;
-	(void)o_stream_flush(client->output);
+	o_stream_nflush(client->output);
 	o_stream_uncork(client->output);
 
 	i_stream_close(client->input);
@@ -276,7 +285,12 @@ void client_disconnect_with_error(struct client *client, const char *msg)
 	client_disconnect(client, msg);
 }
 
-int client_send_line(struct client *client, const char *data)
+void client_send_line(struct client *client, const char *data)
+{
+	(void)client_send_line_next(client, data);
+}
+
+int client_send_line_next(struct client *client, const char *data)
 {
 	struct const_iovec iov[2];
 
@@ -311,10 +325,10 @@ void client_send_tagline(struct client_command_context *cmd, const char *data)
 	if (tag == NULL || *tag == '\0')
 		tag = "*";
 
-	(void)o_stream_send_str(client->output, tag);
-	(void)o_stream_send(client->output, " ", 1);
-	(void)o_stream_send_str(client->output, data);
-	(void)o_stream_send(client->output, "\r\n", 2);
+	o_stream_nsend_str(client->output, tag);
+	o_stream_nsend(client->output, " ", 1);
+	o_stream_nsend_str(client->output, data);
+	o_stream_nsend(client->output, "\r\n", 2);
 
 	client->last_output = ioloop_time;
 }
@@ -586,8 +600,6 @@ static void client_add_missing_io(struct client *client)
 
 void client_continue_pending_input(struct client *client)
 {
-	size_t size;
-
 	i_assert(!client->handling_input);
 
 	if (client->input_lock != NULL) {
@@ -612,8 +624,8 @@ void client_continue_pending_input(struct client *client)
 	client_add_missing_io(client);
 
 	/* if there's unread data in buffer, handle it. */
-	(void)i_stream_get_data(client->input, &size);
-	if (size > 0 && !client->disconnected) {
+	if (i_stream_get_data_size(client->input) > 0 &&
+	    !client->disconnected) {
 		if (client_handle_input(client))
 			client_continue_pending_input(client);
 	}
@@ -736,8 +748,6 @@ static bool client_command_input(struct client_command_context *cmd)
 
 static bool client_handle_next_command(struct client *client, bool *remove_io_r)
 {
-	size_t size;
-
 	*remove_io_r = FALSE;
 
 	if (client->input_lock != NULL) {
@@ -758,8 +768,7 @@ static bool client_handle_next_command(struct client *client, bool *remove_io_r)
 
 	/* don't bother creating a new client command before there's at least
 	   some input */
-	(void)i_stream_get_data(client->input, &size);
-	if (size == 0)
+	if (i_stream_get_data_size(client->input) == 0)
 		return FALSE;
 
 	/* beginning a new command */
@@ -903,7 +912,7 @@ int client_output(struct client *client)
 		}
 	}
 
-	(void)cmd_sync_delayed(client);
+	cmd_sync_delayed(client);
 	o_stream_uncork(client->output);
 	if (client->disconnected)
 		client_destroy(client, NULL);
@@ -1006,3 +1015,7 @@ void clients_destroy_all(void)
 		client_destroy(imap_clients, "Server shutting down.");
 	}
 }
+
+struct imap_client_vfuncs imap_client_vfuncs = {
+	client_default_destroy
+};

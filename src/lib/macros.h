@@ -109,6 +109,16 @@
 #  define ATTR_CONST
 #  define ATTR_PURE
 #endif
+#ifdef HAVE_ATTR_NULL
+#  define ATTR_NULL(...) __attribute__((null(__VA_ARGS__)))
+#else
+#  define ATTR_NULL(...)
+#endif
+#ifdef HAVE_ATTR_NOWARN_UNUSED_RESULT
+#  define ATTR_NOWARN_UNUSED_RESULT __attribute__((nowarn_unused_result))
+#else
+#  define ATTR_NOWARN_UNUSED_RESULT
+#endif
 #if __GNUC__ > 2
 #  define ATTR_MALLOC __attribute__((malloc))
 #else
@@ -192,6 +202,12 @@
 	      #expr);			}STMT_END
 
 #endif
+
+#define i_close_fd(fd) STMT_START {  \
+	if (unlikely(close_keep_errno(fd)) < 0) \
+		i_error("close(%d[%s:%d]) failed: %m", \
+			*(fd), __FILE__, __LINE__); \
+	} STMT_END
 
 #define i_unreached() \
 	i_panic("file %s: line %d: unreached", __FILE__, __LINE__)

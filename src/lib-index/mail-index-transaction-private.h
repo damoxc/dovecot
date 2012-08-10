@@ -29,6 +29,12 @@ union mail_index_transaction_module_context {
 	struct mail_index_module_register *reg;
 };
 
+struct mail_index_flag_update {
+	uint32_t uid1, uid2;
+	uint16_t add_flags;
+	uint16_t remove_flags;
+};
+
 struct mail_index_transaction {
 	int refcount;
 
@@ -47,7 +53,7 @@ struct mail_index_transaction {
 
 	ARRAY_DEFINE(modseq_updates, struct mail_transaction_modseq_update);
 	ARRAY_DEFINE(expunges, struct mail_transaction_expunge_guid);
-	ARRAY_DEFINE(updates, struct mail_transaction_flag_update);
+	ARRAY_DEFINE(updates, struct mail_index_flag_update);
 	size_t last_update_idx;
 
 	unsigned char pre_hdr_change[sizeof(struct mail_index_header)];
@@ -66,7 +72,6 @@ struct mail_index_transaction {
 
 	ARRAY_DEFINE(keyword_updates,
 		     struct mail_index_transaction_keyword_update);
-	ARRAY_TYPE(seq_range) keyword_resets;
 
 	uint64_t min_highest_modseq;
 	uint64_t max_modseq;
@@ -142,7 +147,7 @@ mail_index_transaction_get_flag_update_pos(struct mail_index_transaction *t,
 					   unsigned int right_idx,
 					   uint32_t seq);
 
-bool mail_index_ext_using_reset_id(struct mail_index_transaction *t,
+void mail_index_ext_using_reset_id(struct mail_index_transaction *t,
 				   uint32_t ext_id, uint32_t reset_id);
 
 #endif

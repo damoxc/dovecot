@@ -21,7 +21,7 @@ static int i_stream_read_parent(struct istream_private *stream)
 	size_t size;
 	ssize_t ret;
 
-	(void)i_stream_get_data(stream->parent, &size);
+	size = i_stream_get_data_size(stream->parent);
 	if (size >= 4)
 		return 1;
 
@@ -33,7 +33,7 @@ static int i_stream_read_parent(struct istream_private *stream)
 		stream->istream.eof = stream->parent->eof;
 		return size > 0 ? 1 : ret;
 	}
-	(void)i_stream_get_data(stream->parent, &size);
+	size = i_stream_get_data_size(stream->parent);
 	i_assert(size != 0);
 	return 1;
 }
@@ -43,7 +43,7 @@ i_stream_base64_try_encode_line(struct base64_encoder_istream *bstream)
 {
 	struct istream_private *stream = &bstream->istream;
 	const unsigned char *data;
-	size_t size, buffer_avail;
+	size_t size, avail, buffer_avail;
 	buffer_t buf;
 
 	data = i_stream_get_data(stream->parent, &size);
@@ -52,8 +52,7 @@ i_stream_base64_try_encode_line(struct base64_encoder_istream *bstream)
 
 	if (bstream->cur_line_len == bstream->chars_per_line) {
 		/* @UNSAFE: end of line, add newline */
-		if (!i_stream_get_buffer_space(stream,
-					       bstream->crlf ? 2 : 1, NULL))
+		if (!i_stream_try_alloc(stream, bstream->crlf ? 2 : 1, &avail))
 			return FALSE;
 
 		if (bstream->crlf)
@@ -62,7 +61,7 @@ i_stream_base64_try_encode_line(struct base64_encoder_istream *bstream)
 		bstream->cur_line_len = 0;
 	}
 
-	i_stream_get_buffer_space(stream, (size+2)/3*4, NULL);
+	i_stream_try_alloc(stream, (size+2)/3*4, &avail);
 	buffer_avail = stream->buffer_size - stream->pos;
 
 	if ((size + 2) / 3 * 4 > buffer_avail) {
@@ -104,7 +103,7 @@ static ssize_t i_stream_base64_encoder_read(struct istream_private *stream)
 		ret = i_stream_read_parent(stream);
 		if (ret <= 0)
 			return ret;
-		(void)i_stream_get_data(stream->parent, &size);
+		size = i_stream_get_data_size(stream->parent);
 	} while (size < 4 && !stream->parent->eof);
 
 	/* encode as many lines as fits into destination buffer */
@@ -119,17 +118,6 @@ static ssize_t i_stream_base64_encoder_read(struct istream_private *stream)
 
 	i_assert(post_count > pre_count);
 	return post_count - pre_count;
-}
-
-static const struct stat *
-i_stream_base64_encoder_stat(struct istream_private *stream, bool exact)
-{
-	if (exact) {
-		/* too much trouble to implement until it's actually needed */
-		i_panic("istream-base64-encoder: "
-			"stat() doesn't support getting exact size");
-	}
-	return i_stream_stat(stream->parent, exact);
 }
 
 static void
@@ -148,7 +136,7 @@ i_stream_base64_encoder_seek(struct istream_private *stream,
 		bstream->cur_line_len = 0;
 		i_stream_seek(stream->parent, 0);
 	}
-	i_stream_default_seek(stream, v_offset, mark);
+	i_stream_default_seek_nonseekable(stream, v_offset, mark);
 }
 
 struct istream *
@@ -164,9 +152,7 @@ i_stream_create_base64_encoder(struct istream *input,
 	bstream->crlf = crlf;
 	bstream->istream.max_buffer_size = input->real_stream->max_buffer_size;
 
-	bstream->istream.parent = input;
 	bstream->istream.read = i_stream_base64_encoder_read;
-	bstream->istream.stat = i_stream_base64_encoder_stat;
 	bstream->istream.seek = i_stream_base64_encoder_seek;
 
 	bstream->istream.istream.readable_fd = FALSE;

@@ -754,7 +754,7 @@ static void db_ldap_get_fd(struct ldap_connection *conn)
 	net_set_nonblock(conn->fd, TRUE);
 }
 
-static void
+static void ATTR_NULL(1)
 db_ldap_set_opt(struct ldap_connection *conn, int opt, const void *value,
 		const char *optname, const char *value_str)
 {
@@ -767,7 +767,7 @@ db_ldap_set_opt(struct ldap_connection *conn, int opt, const void *value,
 	}
 }
 
-static void
+static void ATTR_NULL(1)
 db_ldap_set_opt_str(struct ldap_connection *conn, int opt, const char *value,
 		    const char *optname)
 {
@@ -1064,7 +1064,7 @@ void db_ldap_set_attrs(struct ldap_connection *conn, const char *attrlist,
 				array_append(&ctx.attr_names, &ldap_attr, 1);
 		}
 	}
-	(void)array_append_space(&ctx.attr_names);
+	array_append_zero(&ctx.attr_names);
 	*attr_names_r = array_idx_modifiable(&ctx.attr_names, 0);
 }
 

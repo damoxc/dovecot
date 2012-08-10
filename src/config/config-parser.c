@@ -11,6 +11,7 @@
 #include "service-settings.h"
 #include "master-service.h"
 #include "master-service-settings.h"
+#include "master-service-ssl-settings.h"
 #include "all-settings.h"
 #include "old-set-parser.h"
 #include "config-request.h"
@@ -439,7 +440,7 @@ str_append_file(string_t *str, const char *key, const char *path,
 		*error_r = t_strdup_printf("%s: read(%s) failed: %m",
 					   key, path);
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret < 0 ? -1 : 0;
 }
 
@@ -681,7 +682,7 @@ static int config_parse_finish(struct config_parser_context *ctx, const char **e
 	int ret;
 
 	new_filter = config_filter_init(ctx->pool);
-	(void)array_append_space(&ctx->all_parsers);
+	array_append_zero(&ctx->all_parsers);
 	config_filter_add_all(new_filter, array_idx(&ctx->all_parsers, 0));
 
 	if (ctx->hide_errors)
@@ -997,17 +998,24 @@ void config_parse_load_modules(void)
 				array_append(&new_roots, &roots[i], 1);
 		}
 
-		service_set = module_get_symbol_quiet(m,
-			t_strdup_printf("%s_service_settings", m->name));
-		if (service_set != NULL)
-			array_append(&new_services, &service_set, 1);
+		services = module_get_symbol_quiet(m,
+			t_strdup_printf("%s_service_settings_array", m->name));
+		if (services != NULL) {
+			for (count = 0; services[count] != NULL; count++) ;
+			array_append(&new_services, services, count);
+		} else {
+			service_set = module_get_symbol_quiet(m,
+				t_strdup_printf("%s_service_settings", m->name));
+			if (service_set != NULL)
+				array_append(&new_services, &service_set, 1);
+		}
 	}
 	if (array_count(&new_roots) > 0) {
 		/* modules added new settings. add the defaults and start
 		   using the new list. */
 		for (i = 0; all_roots[i] != NULL; i++)
 			array_append(&new_roots, &all_roots[i], 1);
-		(void)array_append_space(&new_roots);
+		array_append_zero(&new_roots);
 		all_roots = array_idx(&new_roots, 0);
 	}
 	if (array_count(&new_services) > 0) {
@@ -1049,7 +1057,8 @@ bool config_module_want_parser(struct config_module_parser *parsers,
 
 	if (strcmp(root->module_name, module) == 0)
 		return TRUE;
-	if (root == &master_service_setting_parser_info) {
+	if (root == &master_service_setting_parser_info ||
+	    root == &master_service_ssl_setting_parser_info) {
 		/* everyone wants master service settings */
 		return TRUE;
 	}

@@ -61,7 +61,8 @@ static void mailbox_uidvalidity_write(struct mailbox_list *list,
 		}
 	}
 
-	i_snprintf(buf, sizeof(buf), "%08x", uid_validity);
+	if (i_snprintf(buf, sizeof(buf), "%08x", uid_validity) < 0)
+		i_unreached();
 	if (pwrite_full(fd, buf, strlen(buf), 0) < 0)
 		i_error("write(%s) failed: %m", path);
 	if (close(fd) < 0)
@@ -167,7 +168,7 @@ mailbox_uidvalidity_next_rescan(struct mailbox_list *list, const char *path)
 			i_error("creat(%s) failed: %m", tmp);
 			return cur_value;
 		}
-		(void)close(fd);
+		i_close_fd(&fd);
 		mailbox_uidvalidity_write(list, path, cur_value);
 		return cur_value;
 	}
@@ -200,14 +201,14 @@ uint32_t mailbox_uidvalidity_next(struct mailbox_list *list, const char *path)
 	ret = read_full(fd, buf, sizeof(buf)-1);
 	if (ret < 0) {
 		i_error("read(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return mailbox_uidvalidity_next_rescan(list, path);
 	}
 	buf[sizeof(buf)-1] = 0;
 	cur_value = strtoul(buf, &endp, 16);
 	if (ret == 0 || endp != buf+sizeof(buf)-1) {
 		/* broken value */
-		(void)close(fd);
+		i_close_fd(&fd);
 		return mailbox_uidvalidity_next_rescan(list, path);
 	}
 
@@ -217,7 +218,8 @@ uint32_t mailbox_uidvalidity_next(struct mailbox_list *list, const char *path)
 
 	/* fast path succeeded. write the current value to the main
 	   uidvalidity file. */
-	i_snprintf(buf, sizeof(buf), "%08x", cur_value);
+	if (i_snprintf(buf, sizeof(buf), "%08x", cur_value) < 0)
+		i_unreached();
 	if (pwrite_full(fd, buf, strlen(buf), 0) < 0)
 		i_error("write(%s) failed: %m", path);
 	if (close(fd) < 0)

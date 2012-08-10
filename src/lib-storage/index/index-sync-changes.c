@@ -127,15 +127,14 @@ void index_sync_changes_read(struct index_sync_changes_context *ctx,
 		case MAIL_INDEX_SYNC_TYPE_FLAGS:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE:
-		case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
 			if (!ctx->dirty_flag_updates)
 				break;
 
 			/* mark the changes as dirty */
-			mail_index_lookup_seq_range(ctx->sync_view,
-						    sync_rec->uid1,
-						    sync_rec->uid2,
-						    &seq1, &seq2);
+			(void)mail_index_lookup_seq_range(ctx->sync_view,
+							  sync_rec->uid1,
+							  sync_rec->uid2,
+							  &seq1, &seq2);
 			memset(sync_rec, 0, sizeof(*sync_rec));
 
 			if (seq1 == 0)
@@ -184,7 +183,6 @@ void index_sync_changes_apply(struct index_sync_changes_context *ctx,
 			break;
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE:
-		case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
 			if (!array_is_created(keywords)) {
 				/* no existing keywords */
 				if (syncs[i].type !=

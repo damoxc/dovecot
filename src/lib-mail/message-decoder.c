@@ -102,7 +102,7 @@ parse_content_transfer_encoding(struct message_decoder_context *ctx,
 	value = t_str_new(64);
 	rfc822_parser_init(&parser, hdr->full_value, hdr->full_value_len, NULL);
 
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 	(void)rfc822_parse_mime_token(&parser, value);
 
 	ctx->content_type = CONTENT_TYPE_UNKNOWN;
@@ -137,12 +137,12 @@ parse_content_type(struct message_decoder_context *ctx,
 		return;
 
 	rfc822_parser_init(&parser, hdr->full_value, hdr->full_value_len, NULL);
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 	str = t_str_new(64);
 	if (rfc822_parse_content_type(&parser, str) <= 0)
 		return;
 
-	(void)rfc2231_parse(&parser, &results);
+	rfc2231_parse(&parser, &results);
 	for (; *results != NULL; results += 2) {
 		if (strcasecmp(results[0], "charset") == 0) {
 			ctx->content_charset = i_strdup(results[1]);

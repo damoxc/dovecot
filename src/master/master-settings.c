@@ -496,6 +496,13 @@ master_settings_verify(void *_set, pool_t pool, const char **error_r)
 	for (i = 0; i < count; i++) {
 		struct service_settings *service = services[i];
 
+		if (*service->protocol != '\0' &&
+		    !str_array_find((const char **)set->protocols_split,
+				    service->protocol)) {
+			/* protocol not enabled, ignore its settings */
+			continue;
+		}
+
 		if (*service->executable == '\0') {
 			*error_r = t_strdup_printf("service(%s): "
 				"executable is empty", service->name);
@@ -550,9 +557,7 @@ master_settings_verify(void *_set, pool_t pool, const char **error_r)
 		}
 #endif
 
-		if (*service->protocol != '\0' &&
-		    str_array_find((const char **)set->protocols_split,
-				   service->protocol)) {
+		if (*service->protocol != '\0') {
 			/* each imap/pop3/lmtp process can use up a connection,
 			   although if service_count=1 it's only temporary */
 			if (service->service_count != 1 ||
@@ -708,7 +713,7 @@ static void unlink_sockets(const char *path, const char *prefix)
 	(void)closedir(dirp);
 }
 
-bool master_settings_do_fixes(const struct master_settings *set)
+void master_settings_do_fixes(const struct master_settings *set)
 {
 	const char *login_dir, *empty_dir;
 	struct stat st;
@@ -716,19 +721,13 @@ bool master_settings_do_fixes(const struct master_settings *set)
 
 	/* since base dir is under /var/run by default, it may have been
 	   deleted. */
-	if (mkdir_parents(set->base_dir, 0755) < 0 && errno != EEXIST) {
-		i_error("mkdir(%s) failed: %m", set->base_dir);
-		return FALSE;
-	}
+	if (mkdir_parents(set->base_dir, 0755) < 0 && errno != EEXIST)
+		i_fatal("mkdir(%s) failed: %m", set->base_dir);
 	/* allow base_dir to be a symlink, so don't use lstat() */
-	if (stat(set->base_dir, &st) < 0) {
-		i_error("stat(%s) failed: %m", set->base_dir);
-		return FALSE;
-	}
-	if (!S_ISDIR(st.st_mode)) {
-		i_error("%s is not a directory", set->base_dir);
-		return FALSE;
-	}
+	if (stat(set->base_dir, &st) < 0)
+		i_fatal("stat(%s) failed: %m", set->base_dir);
+	if (!S_ISDIR(st.st_mode))
+		i_fatal("%s is not a directory", set->base_dir);
 	if ((st.st_mode & 0755) != 0755) {
 		i_warning("Fixing permissions of %s to be world-readable",
 			  set->base_dir);
@@ -737,10 +736,8 @@ bool master_settings_do_fixes(const struct master_settings *set)
 	}
 
 	/* Make sure our permanent state directory exists */
-	if (mkdir_parents(PKG_STATEDIR, 0750) < 0 && errno != EEXIST) {
-		i_error("mkdir(%s) failed: %m", PKG_STATEDIR);
-		return FALSE;
-	}
+	if (mkdir_parents(PKG_STATEDIR, 0755) < 0 && errno != EEXIST)
+		i_fatal("mkdir(%s) failed: %m", PKG_STATEDIR);
 
 	login_dir = t_strconcat(set->base_dir, "/login", NULL);
 	if (settings_have_auth_unix_listeners_in(set, login_dir)) {
@@ -758,10 +755,8 @@ bool master_settings_do_fixes(const struct master_settings *set)
 		unlink_sockets(login_dir, "");
 	} else {
 		/* still make sure that login directory exists */
-		if (mkdir(login_dir, 0755) < 0 && errno != EEXIST) {
-			i_error("mkdir(%s) failed: %m", login_dir);
-			return FALSE;
-		}
+		if (mkdir(login_dir, 0755) < 0 && errno != EEXIST)
+			i_fatal("mkdir(%s) failed: %m", login_dir);
 	}
 
 	empty_dir = t_strconcat(set->base_dir, "/empty", NULL);
@@ -769,5 +764,4 @@ bool master_settings_do_fixes(const struct master_settings *set)
 		i_warning("Corrected permissions for empty directory "
 			  "%s", empty_dir);
 	}
-	return TRUE;
 }

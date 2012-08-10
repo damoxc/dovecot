@@ -11,11 +11,10 @@
 
 static bool log_lock_failure = FALSE;
 
-int mail_index_file_set_syscall_error(struct mail_index *index ATTR_UNUSED,
-				      const char *filepath ATTR_UNUSED,
-				      const char *function ATTR_UNUSED)
+void mail_index_file_set_syscall_error(struct mail_index *index ATTR_UNUSED,
+				       const char *filepath ATTR_UNUSED,
+				       const char *function ATTR_UNUSED)
 {
-	return -1;
 }
 
 int mail_transaction_log_lock_head(struct mail_transaction_log *log ATTR_UNUSED)
@@ -46,7 +45,7 @@ static void test_append_expunge(struct mail_transaction_log *log)
 	const struct mail_transaction_header *hdr;
 	const unsigned int *bufp;
 
-	test_assert(mail_transaction_log_append_begin(log->index, TRUE, &ctx) == 0);
+	test_assert(mail_transaction_log_append_begin(log->index, MAIL_TRANSACTION_EXTERNAL, &ctx) == 0);
 	mail_transaction_log_append_add(ctx, MAIL_TRANSACTION_APPEND,
 					&buf[0], sizeof(buf[0]));
 	test_assert(ctx->new_highest_modseq == 0);
@@ -89,7 +88,7 @@ static void test_append_sync_offset(struct mail_transaction_log *log)
 	const uint32_t *offsetp;
 
 	test_begin("transaction log append: append_sync_offset only");
-	test_assert(mail_transaction_log_append_begin(log->index, FALSE, &ctx) == 0);
+	test_assert(mail_transaction_log_append_begin(log->index, 0, &ctx) == 0);
 	ctx->append_sync_offset = TRUE;
 	file->max_tail_offset = 123;
 	test_assert(mail_transaction_log_append_commit(&ctx) == 0);
@@ -131,7 +130,7 @@ static void test_mail_transaction_log_append(void)
 
 	test_begin("transaction log append: lock failure");
 	log_lock_failure = TRUE;
-	test_assert(mail_transaction_log_append_begin(log->index, FALSE, &ctx) < 0);
+	test_assert(mail_transaction_log_append_begin(log->index, 0, &ctx) < 0);
 	log_lock_failure = FALSE;
 	test_end();
 
@@ -143,7 +142,7 @@ static void test_mail_transaction_log_append(void)
 	file->buffer_offset = 1;
 	file->last_size = 3;
 	file->fd = fd;
-	test_assert(mail_transaction_log_append_begin(log->index, FALSE, &ctx) == 0);
+	test_assert(mail_transaction_log_append_begin(log->index, 0, &ctx) == 0);
 	test_assert(mail_transaction_log_append_commit(&ctx) == 0);
 	if (fstat(fd, &st) < 0) i_fatal("fstat() failed: %m");
 	test_assert(st.st_size == 1);

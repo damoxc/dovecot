@@ -3,10 +3,15 @@
 
 #include "network.h"
 
+/* Number of settings roots used by lib-master internally. Typically you should
+   use master_service_settings_get_others() to avoid knowing about this. */
+#define MASTER_SERVICE_INTERNAL_SET_PARSERS 2
+
 struct setting_parser_info;
 struct master_service;
 
 struct master_service_settings {
+	const char *base_dir;
 	const char *log_path;
 	const char *info_log_path;
 	const char *debug_log_path;
@@ -59,7 +64,7 @@ int master_service_settings_read(struct master_service *service,
 				 const char **error_r);
 int master_service_settings_read_simple(struct master_service *service,
 					const struct setting_parser_info **roots,
-					const char **error_r);
+					const char **error_r) ATTR_NULL(2);
 /* destroy settings parser and clear service's set_pool, so that
    master_service_settings_read*() can be called without freeing memory used
    by existing settings structures. */

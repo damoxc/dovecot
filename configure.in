@@ -1,5 +1,5 @@
 AC_PREREQ([2.59])
-AC_INIT([Dovecot],[2.1.9],[dovecot@dovecot.org])
+AC_INIT([Dovecot],[2.2.UNSTABLE],[dovecot@dovecot.org])
 AC_CONFIG_SRCDIR([src])
 
 AM_INIT_AUTOMAKE([foreign])
@@ -292,7 +292,7 @@ AC_CHECK_HEADERS(strings.h stdint.h unistd.h dirent.h malloc.h inttypes.h \
   sys/quota.h sys/fs/ufs_quota.h ufs/ufs/quota.h jfs/quota.h sys/fs/quota_common.h \
   mntent.h sys/mnttab.h sys/event.h sys/time.h sys/mkdev.h linux/dqblk_xfs.h \
   xfs/xqm.h execinfo.h ucontext.h malloc_np.h sys/utsname.h sys/vmount.h \
-  sys/utsname.h glob.h linux/falloc.h ucred.h)
+  sys/utsname.h glob.h linux/falloc.h ucred.h sys/ucred.h)
 
 dnl * clang check
 have_clang=no
@@ -407,6 +407,8 @@ AC_CHECK_FUNCS(fcntl flock lockf inet_aton sigaction getpagesize madvise \
 	       setpriority quotactl getmntent kqueue kevent backtrace_symbols \
 	       walkcontext dirfd clearenv malloc_usable_size glob fallocate \
 	       posix_fadvise getpeereid getpeerucred)
+
+AC_CHECK_TYPES([struct sockpeercred])
 
 AC_CHECK_LIB(rt, clock_gettime, [
   AC_DEFINE(HAVE_CLOCK_GETTIME,, Define if you have the clock_gettime function)
@@ -2510,16 +2512,20 @@ dnl **
 if test "$want_shared_libs" = "yes"; then
   LIBDOVECOT_DEPS='$(top_builddir)/src/lib-dovecot/libdovecot.la'
   LIBDOVECOT="$LIBDOVECOT_DEPS"
-  LIBDOVECOT_STORAGE_DEPS='$(top_builddir)/src/lib-storage/libdovecot-storage.la'
+  LIBDOVECOT_STORAGE_DEPS='$(top_builddir)/src/lib-storage/libdovecot-storage.la $(top_builddir)/src/lib-imap-storage/libimap-storage.la'
   LIBDOVECOT_LOGIN='$(top_builddir)/src/login-common/libdovecot-login.la'
+  LIBDOVECOT_SSL='$(top_builddir)/src/lib-master/libmaster_ssl.la $(top_builddir)/src/lib-ssl-iostream/libssl_iostream.la'
+  LIBDOVECOT_COMPRESS='$(top_builddir)/src/lib-compression/libcompression.la'
   LIBDOVECOT_LDA='$(top_builddir)/src/lib-lda/libdovecot-lda.la'
 else
-  LIBDOVECOT_DEPS='$(top_builddir)/src/lib-master/libmaster.la $(top_builddir)/src/lib-settings/libsettings.la $(top_builddir)/src/lib-dict/libdict.la $(top_builddir)/src/lib-dns/libdns.la $(top_builddir)/src/lib-fs/libfs.la $(top_builddir)/src/lib-imap/libimap.la $(top_builddir)/src/lib-mail/libmail.la $(top_builddir)/src/lib-auth/libauth.la $(top_builddir)/src/lib-charset/libcharset.la $(top_builddir)/src/lib/liblib.la'
+  LIBDOVECOT_DEPS='$(top_builddir)/src/lib-master/libmaster.la $(top_builddir)/src/lib-settings/libsettings.la $(top_builddir)/src/lib-dict/libdict.la $(top_builddir)/src/lib-dns/libdns.la $(top_builddir)/src/lib-fs/libfs.la $(top_builddir)/src/lib-imap/libimap.la $(top_builddir)/src/lib-mail/libmail.la $(top_builddir)/src/lib-auth/libauth.la $(top_builddir)/src/lib-charset/libcharset.la $(top_builddir)/src/lib-test/libtest.la $(top_builddir)/src/lib/liblib.la'
   LIBDOVECOT="$LIBDOVECOT_DEPS \$(LIBICONV)"
-  LIBDOVECOT_STORAGE_LAST='$(top_builddir)/src/lib-storage/list/libstorage_list.la $(top_builddir)/src/lib-storage/index/libstorage_index.la $(top_builddir)/src/lib-storage/libstorage.la $(top_builddir)/src/lib-index/libindex.la'
+  LIBDOVECOT_STORAGE_LAST='$(top_builddir)/src/lib-storage/list/libstorage_list.la $(top_builddir)/src/lib-storage/index/libstorage_index.la $(top_builddir)/src/lib-storage/libstorage.la $(top_builddir)/src/lib-index/libindex.la $(top_builddir)/src/lib-imap-storage/libimap-storage.la'
   LIBDOVECOT_STORAGE_FIRST='$(top_builddir)/src/lib-storage/libstorage_service.la $(top_builddir)/src/lib-storage/register/libstorage_register.la'
   LIBDOVECOT_STORAGE_DEPS="$LIBDOVECOT_STORAGE_FIRST $LINKED_STORAGE_LIBS $LIBDOVECOT_STORAGE_LAST"
   LIBDOVECOT_LOGIN='$(top_builddir)/src/login-common/liblogin.la $(top_builddir)/src/lib-ssl-iostream/libssl_iostream.la'
+  LIBDOVECOT_SSL='$(top_builddir)/src/lib-master/libmaster_ssl.la $(top_builddir)/src/lib-ssl-iostream/libssl_iostream.la'
+  LIBDOVECOT_COMPRESS='$(top_builddir)/src/lib-compression/libcompression.la'
   LIBDOVECOT_LDA='$(top_builddir)/src/lib-lda/liblda.la'
 fi
 LIBDOVECOT_STORAGE="$LIBDOVECOT_STORAGE_DEPS $LINKED_STORAGE_LDADD"
@@ -2530,6 +2536,8 @@ AC_SUBST(LIBDOVECOT_STORAGE)
 AC_SUBST(LIBDOVECOT_STORAGE_DEPS)
 AC_SUBST(LIBDOVECOT_LOGIN)
 AC_SUBST(LIBDOVECOT_SQL)
+AC_SUBST(LIBDOVECOT_SSL)
+AC_SUBST(LIBDOVECOT_COMPRESS)
 AC_SUBST(LIBDOVECOT_LDA)
 
 dnl **
@@ -2571,25 +2579,27 @@ dnl **
 dnl ** Plugins
 dnl **
 
+COMPRESS_LIBS=
 if test "$want_zlib" != "no"; then
   AC_CHECK_HEADER(zlib.h, [
     have_zlib=yes
-    have_zlib_plugin=yes
+    have_compress_lib=yes
     AC_DEFINE(HAVE_ZLIB,, Define if you have zlib library)
+    COMPRESS_LIBS="$COMPRESS_LIBS -lz"
   ], [
     if test "$want_zlib" = "yes"; then
       AC_ERROR([Can't build with zlib support: zlib.h not found])
     fi
   ])
 fi
-AM_CONDITIONAL(BUILD_ZLIB, test "$have_zlib" = "yes")
 
 if test "$want_bzlib" != "no"; then
   AC_CHECK_HEADER(bzlib.h, [
     AC_CHECK_LIB(bz2, BZ2_bzdopen, [
       have_bzlib=yes
-      have_zlib_plugin=yes
+      have_compress_lib=yes
       AC_DEFINE(HAVE_BZLIB,, Define if you have bzlib library)
+      COMPRESS_LIBS="$COMPRESS_LIBS -lbz2"
     ], [
       if test "$want_bzlib" = "yes"; then
 	AC_ERROR([Can't build with bzlib support: libbz2 not found])
@@ -2601,8 +2611,8 @@ if test "$want_bzlib" != "no"; then
     fi
   ])
 fi
-AM_CONDITIONAL(BUILD_BZLIB, test "$have_bzlib" = "yes")
-AM_CONDITIONAL(BUILD_ZLIB_PLUGIN, test "$have_zlib_plugin" = "yes")
+AC_SUBST(COMPRESS_LIBS)
+AM_CONDITIONAL(BUILD_ZLIB_PLUGIN, test "$have_compress_lib" = "yes")
 
 RPCGEN=${RPCGEN-rpcgen}
 if ! $RPCGEN -c /dev/null > /dev/null; then
@@ -2708,7 +2718,7 @@ dnl **
 dnl IDLE doesn't really belong to banner. It's there just to make Blackberries
 dnl happy, because otherwise BIS server disables push email.
 capability_banner="IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE IDLE"
-capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS MULTIAPPEND UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS SPECIAL-USE"
+capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS MULTIAPPEND URL-PARTIAL CATENATE UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS SPECIAL-USE"
 AC_DEFINE_UNQUOTED(CAPABILITY_STRING, "$capability", IMAP capabilities)
 AC_DEFINE_UNQUOTED(CAPABILITY_BANNER_STRING, "$capability_banner", IMAP capabilities advertised in banner) 
 
@@ -2748,10 +2758,12 @@ src/lib/Makefile
 src/lib-sql/Makefile
 src/lib-auth/Makefile
 src/lib-charset/Makefile
+src/lib-compression/Makefile
 src/lib-dict/Makefile
 src/lib-dns/Makefile
 src/lib-fs/Makefile
 src/lib-imap/Makefile
+src/lib-imap-storage/Makefile
 src/lib-imap-client/Makefile
 src/lib-index/Makefile
 src/lib-lda/Makefile
@@ -2863,3 +2875,6 @@ echo "Full text search :$fts"
 if test "$not_fts" != ""; then
   echo "                 :$not_fts"
 fi
+
+echo
+echo "NOTE: This is the UNSTABLE development branch of Dovecot v2.2."

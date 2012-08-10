@@ -183,7 +183,7 @@ int quota_user_read_settings(struct mail_user *user,
 			     const char **error_r)
 {
 	struct quota_settings *quota_set;
-	char root_name[6 + MAX_INT_STRLEN];
+	char root_name[5 + MAX_INT_STRLEN + 1];
 	const char *env, *error;
 	unsigned int i;
 	pool_t pool;
@@ -201,7 +201,8 @@ int quota_user_read_settings(struct mail_user *user,
 		quota_set->quota_exceeded_msg = DEFAULT_QUOTA_EXCEEDED_MSG;
 
 	p_array_init(&quota_set->root_sets, pool, 4);
-	i_strocpy(root_name, "quota", sizeof(root_name));
+	if (i_strocpy(root_name, "quota", sizeof(root_name)) < 0)
+		i_unreached();
 	for (i = 2;; i++) {
 		env = mail_user_plugin_getenv(user, root_name);
 		if (env == NULL || *env == '\0')
@@ -214,7 +215,8 @@ int quota_user_read_settings(struct mail_user *user,
 			pool_unref(&pool);
 			return -1;
 		}
-		i_snprintf(root_name, sizeof(root_name), "quota%d", i);
+		if (i_snprintf(root_name, sizeof(root_name), "quota%d", i) < 0)
+			i_unreached();
 	}
 	if (array_count(&quota_set->root_sets) == 0) {
 		pool_unref(&pool);
@@ -634,12 +636,11 @@ void quota_add_user_namespace(struct quota *quota, struct mail_namespace *ns)
 
 	/* first check if there already exists a namespace with the exact same
 	   path. we don't want to count them twice. */
-	path = mailbox_list_get_path(ns->list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	path = mailbox_list_get_root_path(ns->list, MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	if (path != NULL) {
 		namespaces = array_get(&quota->namespaces, &count);
 		for (i = 0; i < count; i++) {
-			path2 = mailbox_list_get_path(namespaces[i]->list, NULL,
+			path2 = mailbox_list_get_root_path(namespaces[i]->list,
 				     	MAILBOX_LIST_PATH_TYPE_MAILBOX);
 			if (path2 != NULL && strcmp(path, path2) == 0) {
 				/* duplicate */

@@ -79,7 +79,7 @@ static int script_contents_read(struct mail_user *user)
 	cmd = t_strdup_printf(SCRIPT_HANDSHAKE"\n");
 	if (write_full(fd, cmd, strlen(cmd)) < 0) {
 		i_error("write(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	input = i_stream_create_fd(fd, 1024, TRUE);
@@ -162,14 +162,14 @@ static void parse_content_disposition(const char *content_disposition,
 
 	rfc822_parser_init(&parser, (const unsigned char *)content_disposition,
 			   strlen(content_disposition), NULL);
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 
 	/* type; param; param; .. */
 	str = t_str_new(32);
 	if (rfc822_parse_mime_token(&parser, str) < 0)
 		return;
 
-	(void)rfc2231_parse(&parser, &results);
+	rfc2231_parse(&parser, &results);
 	filename2 = NULL;
 	for (; *results != NULL; results += 2) {
 		if (strcasecmp(results[0], "filename") == 0) {
@@ -205,7 +205,7 @@ fts_parser_script_try_init(struct mail_user *user,
 	cmd = t_strdup_printf(SCRIPT_HANDSHAKE"%s\n\n", content_type);
 	if (write_full(fd, cmd, strlen(cmd)) < 0) {
 		i_error("write(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return NULL;
 	}
 

@@ -26,8 +26,9 @@
 
 static struct db_passwd_file *passwd_files;
 
-static void passwd_file_add(struct passwd_file *pw, const char *username,
-			    const char *pass, const char *const *args)
+static void ATTR_NULL(3)
+passwd_file_add(struct passwd_file *pw, const char *username,
+		const char *pass, const char *const *args)
 {
 	/* args = uid, gid, user info, home dir, shell, extra_fields */
 	struct passwd_user *pu;
@@ -184,7 +185,7 @@ static bool passwd_file_open(struct passwd_file *pw, bool startup)
 
 	if (fstat(fd, &st) != 0) {
 		i_error("passwd-file %s: fstat() failed: %m", pw->path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return FALSE;
 	}
 

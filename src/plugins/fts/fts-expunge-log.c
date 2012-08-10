@@ -99,7 +99,7 @@ static int fts_expunge_log_open(struct fts_expunge_log *log, bool create)
 	}
 	if (fstat(fd, &log->st) < 0) {
 		i_error("fstat(%s) failed: %m", log->path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	log->fd = fd;
@@ -214,7 +214,7 @@ void fts_expunge_log_append_next(struct fts_expunge_log_append_ctx *ctx,
 			mailbox = fts_expunge_log_mailbox_alloc(ctx, mailbox_guid);
 		ctx->prev_mailbox = mailbox;
 	}
-	if (!seq_range_array_add(&mailbox->uids, 0, uid))
+	if (!seq_range_array_add(&mailbox->uids, uid))
 		mailbox->uids_count++;
 }
 
@@ -368,7 +368,7 @@ fts_expunge_log_read_failure(struct fts_expunge_log_read_ctx *ctx,
 		ctx->failed = TRUE;
 		i_error("read(%s) failed: %m", ctx->log->path);
 	} else {
-		(void)i_stream_get_data(ctx->input, &size);
+		size = i_stream_get_data_size(ctx->input);
 		ctx->corrupted = TRUE;
 		i_error("Corrupted fts expunge log %s: "
 			"Unexpected EOF (read %"PRIuSIZE_T" / %u bytes)",

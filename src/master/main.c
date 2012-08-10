@@ -155,8 +155,8 @@ master_fatal_callback(const struct failure_context *ctx,
 		if (fd != -1) {
 			VA_COPY(args2, args);
 			str = t_strdup_vprintf(format, args2);
-			write_full(fd, str, strlen(str));
-			(void)close(fd);
+			(void)write_full(fd, str, strlen(str));
+			i_close_fd(&fd);
 		}
 	}
 
@@ -245,7 +245,7 @@ static bool pid_file_read(const char *path, pid_t *pid_r)
 		found = !(*pid_r == getpid() ||
 			  (kill(*pid_r, 0) < 0 && errno == ESRCH));
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 	return found;
 }
 
@@ -272,7 +272,7 @@ static void create_pid_file(const char *path)
 		i_fatal("open(%s) failed: %m", path);
 	if (write_full(fd, pid, strlen(pid)) < 0)
 		i_fatal("write() failed in %s: %m", path);
-	(void)close(fd);
+	i_close_fd(&fd);
 }
 
 static void create_config_symlink(const struct master_settings *set)
@@ -331,7 +331,7 @@ static void instance_update_now(struct master_instance_list *list)
 					    services->set->instance_name);
 	if (ret == 0) {
 		/* duplicate instance names. allow without warning.. */
-		master_instance_list_update(list, services->set->base_dir);
+		(void)master_instance_list_update(list, services->set->base_dir);
 	}
 	
 	if (to_instance != NULL)
@@ -473,7 +473,7 @@ static void master_set_import_environment(const struct master_settings *set)
 		}
 		array_append(&keys, &key, 1);
 	}
-	(void)array_append_space(&keys);
+	array_append_zero(&keys);
 
 	value = t_strarray_join(array_idx(&keys, 0), " ");
 	env_put(t_strconcat(DOVECOT_PRESERVE_ENVS_ENV"=", value, NULL));

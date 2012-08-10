@@ -208,6 +208,7 @@ static void service_process_setup_config_environment(struct service *service)
 		env_put(t_strconcat("DEBUG_LOG_PATH=", set->debug_log_path, NULL));
 		env_put(t_strconcat("LOG_TIMESTAMP=", set->log_timestamp, NULL));
 		env_put(t_strconcat("SYSLOG_FACILITY=", set->syslog_facility, NULL));
+		env_put("SSL=no");
 		break;
 	default:
 		env_put(t_strconcat(MASTER_CONFIG_FILE_ENV"=",
@@ -365,17 +366,15 @@ void service_process_ref(struct service_process *process)
 	process->refcount++;
 }
 
-int service_process_unref(struct service_process *process)
+void service_process_unref(struct service_process *process)
 {
 	i_assert(process->refcount > 0);
 
 	if (--process->refcount > 0)
-		return TRUE;
+		return;
 
 	i_assert(process->destroyed);
-
 	i_free(process);
-	return FALSE;
 }
 
 static const char *

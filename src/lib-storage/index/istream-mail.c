@@ -65,7 +65,7 @@ i_stream_mail_read(struct istream_private *stream)
 		      stream->istream.v_offset);
 
 	ret = i_stream_read_copy_from_parent(&stream->istream);
-	(void)i_stream_get_data(&stream->istream, &size);
+	size = i_stream_get_data_size(&stream->istream);
 	if (ret > 0) {
 		mstream->mail->transaction->stats.files_read_bytes += ret;
 		if (!mstream->files_read_increased) {
@@ -93,20 +93,6 @@ i_stream_mail_read(struct istream_private *stream)
 	return ret;
 }
 
-static void
-i_stream_mail_seek(struct istream_private *stream,
-		   uoff_t v_offset, bool mark ATTR_UNUSED)
-{
-	stream->istream.v_offset = v_offset;
-	stream->skip = stream->pos = 0;
-}
-
-static const struct stat *
-i_stream_mail_stat(struct istream_private *stream, bool exact)
-{
-	return i_stream_stat(stream->parent, exact);
-}
-
 struct istream *i_stream_create_mail(struct mail *mail, struct istream *input,
 				     bool input_has_body)
 {
@@ -118,11 +104,9 @@ struct istream *i_stream_create_mail(struct mail *mail, struct istream *input,
 	mstream->expected_size = (uoff_t)-1;
 	(void)i_stream_mail_try_get_cached_size(mstream);
 	mstream->istream.max_buffer_size = input->real_stream->max_buffer_size;
+	mstream->istream.stream_size_passthrough = TRUE;
 
-	mstream->istream.parent = input;
 	mstream->istream.read = i_stream_mail_read;
-	mstream->istream.seek = i_stream_mail_seek;
-	mstream->istream.stat = i_stream_mail_stat;
 
 	mstream->istream.istream.blocking = input->blocking;
 	mstream->istream.istream.seekable = input->seekable;

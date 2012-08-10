@@ -487,7 +487,7 @@ list_namespace_mailboxes(struct cmd_list_context *ctx)
 		imap_quote_append_string(str, str_c(mutf7_name), FALSE);
 		mailbox_childinfo2str(ctx, str, flags);
 
-		ret = client_send_line(ctx->cmd->client, str_c(str));
+		ret = client_send_line_next(ctx->cmd->client, str_c(str));
 		if (ctx->used_status) T_BEGIN {
 			list_send_status(ctx, name, str_c(mutf7_name), flags);
 		} T_END;
@@ -790,7 +790,7 @@ static void list_namespace_init(struct cmd_list_context *ctx)
 		pattern = "INBOX";
 		array_append(&used_patterns, &pattern, 1);
 	}
-	(void)array_append_space(&used_patterns); /* NULL-terminate */
+	array_append_zero(&used_patterns); /* NULL-terminate */
 	pat = array_idx(&used_patterns, 0);
 
 	ctx->list_iter = mailbox_list_iter_init_multiple(ns->list, pat,
@@ -1000,7 +1000,7 @@ bool cmd_list_full(struct client_command_context *cmd, bool lsub)
 		return TRUE;
 	}
 
-	(void)array_append_space(&patterns); /* NULL-terminate */
+	array_append_zero(&patterns); /* NULL-terminate */
 	patterns_strarr = array_idx(&patterns, 0);
 	if (!ctx->used_listext && !lsub && *patterns_strarr[0] == '\0') {
 		/* Only LIST ref "" gets us here */

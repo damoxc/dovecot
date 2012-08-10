@@ -328,7 +328,7 @@ void dbox_file_unlock(struct dbox_file *file)
 #ifdef DBOX_FILE_LOCK_METHOD_FLOCK
 		file_unlock(&file->lock);
 #else
-		(void)file_dotlock_delete(&file->lock);
+		file_dotlock_delete(&file->lock);
 #endif
 	}
 	if (file->input != NULL)
@@ -519,8 +519,10 @@ void dbox_file_append_rollback(struct dbox_file_append_context **_ctx)
 		if (ftruncate(file->fd, ctx->first_append_offset) < 0)
 			dbox_file_set_syscall_error(file, "ftruncate()");
 	}
-	if (ctx->output != NULL)
+	if (ctx->output != NULL) {
+		o_stream_ignore_last_errors(ctx->output);
 		o_stream_unref(&ctx->output);
+	}
 	i_free(ctx);
 
 	if (close_file)
@@ -535,7 +537,7 @@ int dbox_file_append_flush(struct dbox_file_append_context *ctx)
 	if (ctx->last_flush_offset == ctx->output->offset)
 		return 0;
 
-	if (o_stream_flush(ctx->output) < 0) {
+	if (o_stream_nfinish(ctx->output) < 0) {
 		dbox_file_set_syscall_error(ctx->file, "write()");
 		return -1;
 	}
@@ -599,7 +601,10 @@ int dbox_file_get_append_stream(struct dbox_file_append_context *ctx,
 				"dbox file size too small");
 			return 0;
 		}
-		o_stream_seek(ctx->output, st.st_size);
+		if (o_stream_seek(ctx->output, st.st_size) < 0) {
+			dbox_file_set_syscall_error(file, "lseek()");
+			return -1;
+		}
 	}
 	*output_r = ctx->output;
 	return 1;

@@ -37,6 +37,10 @@
    transaction. This allows the mailbox to become unlocked. */
 #define CLIENT_COMMIT_TIMEOUT_MSECS (10*1000)
 
+extern struct pop3_client_vfuncs pop3_client_vfuncs;
+
+struct pop3_module_register pop3_module_register = { 0 };
+
 struct client *pop3_clients;
 unsigned int pop3_client_count;
 
@@ -73,7 +77,6 @@ static void client_idle_timeout(struct client *client)
 static int
 pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 {
-	enum mail_error error;
 	int ret;
 
 	if (!client->set->pop3_fast_size_lookups)
@@ -86,8 +89,7 @@ pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 	if (ret == 0)
 		return 0;
 
-	(void)mailbox_get_last_error(mail->box, &error);
-	if (error != MAIL_ERROR_NOTPOSSIBLE)
+	if (mailbox_get_last_mail_error(mail->box) != MAIL_ERROR_NOTPOSSIBLE)
 		return -1;
 
 	/* virtual size not available with a fast lookup.
@@ -98,8 +100,7 @@ pop3_mail_get_size(struct client *client, struct mail *mail, uoff_t *size_r)
 	if (ret == 0)
 		return 0;
 
-	(void)mailbox_get_last_error(mail->box, &error);
-	if (error != MAIL_ERROR_NOTPOSSIBLE)
+	if (mailbox_get_last_mail_error(mail->box) != MAIL_ERROR_NOTPOSSIBLE)
 		return -1;
 
 	/* no way to quickly get the size. fallback to doing a slow virtual
@@ -284,21 +285,27 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
         enum mailbox_flags flags;
 	const char *errmsg;
 	enum mail_error error;
+	pool_t pool;
 
 	/* always use nonblocking I/O */
 	net_set_nonblock(fd_in, TRUE);
 	net_set_nonblock(fd_out, TRUE);
 
-	client = i_new(struct client, 1);
+	pool = pool_alloconly_create("pop3 client", 256);
+	client = p_new(pool, struct client, 1);
+	client->pool = pool;
 	client->service_user = service_user;
+	client->v = pop3_client_vfuncs;
 	client->set = set;
-	client->session_id = i_strdup(session_id);
+	client->session_id = p_strdup(pool, session_id);
 	client->fd_in = fd_in;
 	client->fd_out = fd_out;
 	client->input = i_stream_create_fd(fd_in, MAX_INBUF_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd_out, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	o_stream_set_flush_callback(client->output, client_output, client);
 
+	p_array_init(&client->module_contexts, client->pool, 5);
 	client->io = io_add(fd_in, IO_READ, client_input, client);
         client->last_input = ioloop_time;
 	client->to_idle = timeout_add(CLIENT_IDLE_TIMEOUT_MSECS,
@@ -469,8 +476,13 @@ static const char *client_get_disconnect_reason(struct client *client)
 
 void client_destroy(struct client *client, const char *reason)
 {
+	client->v.destroy(client, reason);
+}
+
+static void client_default_destroy(struct client *client, const char *reason)
+{
 	if (client->seen_change_count > 0)
-		client_update_mails(client);
+		(void)client_update_mails(client);
 
 	if (!client->disconnected) {
 		if (reason == NULL)
@@ -524,8 +536,7 @@ void client_destroy(struct client *client, const char *reason)
 	if (client->fd_in != client->fd_out)
 		net_disconnect(client->fd_out);
 	mail_storage_service_user_free(&client->service_user);
-	i_free(client->session_id);
-	i_free(client);
+	pool_unref(&client->pool);
 
 	master_service_client_connection_destroyed(master_service);
 	pop3_refresh_proctitle();
@@ -554,13 +565,13 @@ void client_disconnect(struct client *client, const char *reason)
 	client->to_idle = timeout_add(0, client_destroy_timeout, client);
 }
 
-int client_send_line(struct client *client, const char *fmt, ...)
+void client_send_line(struct client *client, const char *fmt, ...)
 {
 	va_list va;
 	ssize_t ret;
 
 	if (client->output->closed)
-		return -1;
+		return;
 
 	va_start(va, fmt);
 
@@ -578,10 +589,8 @@ int client_send_line(struct client *client, const char *fmt, ...)
 	if (ret >= 0) {
 		if (o_stream_get_buffer_used_size(client->output) <
 		    OUTBUF_THROTTLE_SIZE) {
-			ret = 1;
 			client->last_output = ioloop_time;
 		} else {
-			ret = 0;
 			if (client->io != NULL) {
 				/* no more input until client has read
 				   our output */
@@ -595,9 +604,7 @@ int client_send_line(struct client *client, const char *fmt, ...)
 			}
 		}
 	}
-
 	va_end(va);
-	return (int)ret;
 }
 
 void client_send_storage_error(struct client *client)
@@ -735,3 +742,7 @@ void clients_destroy_all(void)
 		client_destroy(pop3_clients, "Server shutting down.");
 	}
 }
+
+struct pop3_client_vfuncs pop3_client_vfuncs = {
+	client_default_destroy
+};

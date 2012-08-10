@@ -176,7 +176,8 @@ imapc_mail_get_stream(struct mail *_mail, bool get_body,
 	if (data->stream == NULL) {
 		if (!data->initialized) {
 			/* coming here from mail_set_seq() */
-			return mail_set_aborted(_mail);
+			mail_set_aborted(_mail);
+			return -1;
 		}
 		fetch_field = get_body ||
 			(data->access_part & READ_BODY) != 0 ?
@@ -196,7 +197,7 @@ imapc_mail_get_stream(struct mail *_mail, bool get_body,
 			   return them as empty mails instead of disconnecting
 			   the client. */
 			mail->body_fetched = TRUE;
-			data->stream = i_stream_create_from_data(NULL, 0);
+			data->stream = i_stream_create_from_data(&uchar_nul, 0);
 			imapc_mail_init_stream(mail, TRUE);
 		}
 	}

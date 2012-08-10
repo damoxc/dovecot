@@ -17,7 +17,7 @@
 const char *imap_quota_plugin_version = DOVECOT_VERSION;
 
 static struct module *imap_quota_module;
-static void (*next_hook_client_created)(struct client **client);
+static imap_client_created_func_t *next_hook_client_created;
 
 static const char *
 imap_quota_root_get_name(struct mail_user *user, struct mail_user *owner,
@@ -120,8 +120,8 @@ static bool cmd_getquotaroot(struct client_command_context *cmd)
 		client_send_tagline(cmd, "OK No quota.");
 	else {
 		client_send_line(client, str_c(quotaroot_reply));
-		o_stream_send(client->output, str_data(quota_reply),
-			      str_len(quota_reply));
+		o_stream_nsend(client->output, str_data(quota_reply),
+			       str_len(quota_reply));
 		client_send_tagline(cmd, "OK Getquotaroot completed.");
 	}
 	return TRUE;
@@ -157,8 +157,8 @@ static bool cmd_getquota(struct client_command_context *cmd)
 
 	quota_reply = t_str_new(128);
 	quota_reply_write(quota_reply, cmd->client->user, owner, root);
-	o_stream_send(cmd->client->output, str_data(quota_reply),
-		      str_len(quota_reply));
+	o_stream_nsend(cmd->client->output, str_data(quota_reply),
+		       str_len(quota_reply));
 
 	client_send_tagline(cmd, "OK Getquota completed.");
 	return TRUE;

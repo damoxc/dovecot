@@ -49,6 +49,7 @@ struct connection_settings {
 	enum connection_behavior input_full_behavior;
 
 	bool client;
+	bool dont_send_version;
 };
 
 struct connection {

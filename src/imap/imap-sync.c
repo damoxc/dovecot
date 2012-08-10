@@ -102,7 +102,7 @@ imap_sync_send_search_update(struct imap_sync_context *ctx,
 		str_append_c(cmd, ')');
 	}
 	str_append(cmd, "\r\n");
-	o_stream_send(ctx->client->output, str_data(cmd), str_len(cmd));
+	o_stream_nsend(ctx->client->output, str_data(cmd), str_len(cmd));
 }
 
 static void imap_sync_send_search_updates(struct imap_sync_context *ctx)
@@ -306,7 +306,7 @@ static int imap_sync_send_flags(struct imap_sync_context *ctx, string_t *str)
 	str_append(str, "FLAGS (");
 	imap_write_flags(str, flags, keywords);
 	str_append(str, "))");
-	return client_send_line(ctx->client, str_c(str));
+	return client_send_line_next(ctx->client, str_c(str));
 }
 
 static int imap_sync_send_modseq(struct imap_sync_context *ctx, string_t *str)
@@ -319,7 +319,7 @@ static int imap_sync_send_modseq(struct imap_sync_context *ctx, string_t *str)
 		str_printfa(str, "UID %u ", ctx->mail->uid);
 	imap_sync_add_modseq(ctx, str);
 	str_append_c(str, ')');
-	return client_send_line(ctx->client, str_c(str));
+	return client_send_line_next(ctx->client, str_c(str));
 }
 
 static void imap_sync_vanished(struct imap_sync_context *ctx)
@@ -366,7 +366,7 @@ static void imap_sync_vanished(struct imap_sync_context *ctx)
 			str_printfa(line, ":%u", prev_uid);
 	}
 	str_append(line, "\r\n");
-	o_stream_send(ctx->client->output, str_data(line), str_len(line));
+	o_stream_nsend(ctx->client->output, str_data(line), str_len(line));
 }
 
 int imap_sync_more(struct imap_sync_context *ctx)
@@ -437,7 +437,7 @@ int imap_sync_more(struct imap_sync_context *ctx)
 
 				str_truncate(str, 0);
 				str_printfa(str, "* %u EXPUNGE", ctx->seq);
-				ret = client_send_line(ctx->client, str_c(str));
+				ret = client_send_line_next(ctx->client, str_c(str));
 			}
 			if (ctx->seq < ctx->sync_rec.seq1) {
 				/* update only after we're finished, so that
@@ -603,11 +603,11 @@ static bool cmd_sync_client(struct client_command_context *sync_cmd)
 	}
 
 	client_command_free(&sync_cmd);
-	(void)cmd_sync_delayed(client);
+	cmd_sync_delayed(client);
 	return TRUE;
 }
 
-static bool
+static bool ATTR_NULL(4, 5)
 cmd_sync_full(struct client_command_context *cmd, enum mailbox_sync_flags flags,
 	      enum imap_sync_flags imap_flags, const char *tagline,
 	      imap_sync_callback_t *callback)

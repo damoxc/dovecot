@@ -50,7 +50,8 @@ void i_stream_ref(struct istream *stream);
 void i_stream_unref(struct istream **stream);
 /* Call the given callback function when stream is destroyed. */
 void i_stream_set_destroy_callback(struct istream *stream,
-				   istream_callback_t *callback, void *context);
+				   istream_callback_t *callback, void *context)
+	ATTR_NULL(3);
 #define i_stream_set_destroy_callback(stream, callback, context) \
 	CONTEXT_CALLBACK(i_stream_set_destroy_callback, istream_callback_t, \
 			 callback, context, stream)
@@ -125,6 +126,7 @@ char *i_stream_read_next_line(struct istream *stream);
    buffered. */
 const unsigned char *
 i_stream_get_data(const struct istream *stream, size_t *size_r);
+size_t i_stream_get_data_size(const struct istream *stream);
 /* Like i_stream_get_data(), but returns non-const data. This only works with
    buffered streams (currently only file), others return NULL. */
 unsigned char *i_stream_get_modifiable_data(const struct istream *stream,

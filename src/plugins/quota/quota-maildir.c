@@ -592,8 +592,7 @@ static int maildirsize_read(struct maildir_quota_root *root, bool *retry)
 
 	if (ret < 0 && size == 0) {
 		/* the read failed and there's no usable header, fail. */
-		(void)close(root->fd);
-		root->fd = -1;
+		i_close_fd(&root->fd);
 		return -1;
 	}
 
@@ -609,8 +608,7 @@ static int maildirsize_read(struct maildir_quota_root *root, bool *retry)
 		ret = 1;
 	else {
 		/* broken file / need recalculation */
-		(void)close(root->fd);
-		root->fd = -1;
+		i_close_fd(&root->fd);
 		ret = 0;
 	}
 	return ret;
@@ -696,7 +694,7 @@ maildirquota_refresh(struct maildir_quota_root *root, bool *recalculated_r)
 static int maildirsize_update(struct maildir_quota_root *root,
 			      int count_diff, int64_t bytes_diff)
 {
-	char str[MAX_INT_STRLEN*2 + 2];
+	char str[MAX_INT_STRLEN*2 + 2 + 1];
 	int ret = 0;
 
 	if (count_diff == 0 && bytes_diff == 0)
@@ -707,8 +705,9 @@ static int maildirsize_update(struct maildir_quota_root *root,
 	   a while, and sooner if corruption causes calculations to go
 	   over quota. This is also how Maildir++ spec specifies it should be
 	   done.. */
-	i_snprintf(str, sizeof(str), "%lld %d\n",
-		   (long long)bytes_diff, count_diff);
+	if (i_snprintf(str, sizeof(str), "%lld %d\n",
+		       (long long)bytes_diff, count_diff) < 0)
+		i_unreached();
 	if (write_full(root->fd, str, strlen(str)) < 0) {
 		ret = -1;
 		if (errno == ESTALE) {
@@ -765,7 +764,7 @@ static void maildir_quota_deinit(struct quota_root *_root)
 	struct maildir_quota_root *root = (struct maildir_quota_root *)_root;
 
 	if (root->fd != -1)
-		(void)close(root->fd);
+		i_close_fd(&root->fd);
 	i_free(root);
 }
 
@@ -806,8 +805,7 @@ maildir_quota_root_namespace_added(struct quota_root *_root,
 	if (root->maildirsize_path != NULL)
 		return;
 
-	control_dir = mailbox_list_get_path(ns->list, NULL,
-					    MAILBOX_LIST_PATH_TYPE_CONTROL);
+	control_dir = mailbox_list_get_root_path(ns->list, MAILBOX_LIST_PATH_TYPE_CONTROL);
 	root->maildirsize_ns = ns;
 	root->maildirsize_path =
 		p_strconcat(_root->pool, control_dir,
@@ -885,14 +883,11 @@ maildir_quota_update(struct quota_root *_root,
 	} else if (root->fd == -1)
 		(void)maildirsize_recalculate(root);
 	else if (ctx->recalculate) {
-		(void)close(root->fd);
-		root->fd = -1;
+		i_close_fd(&root->fd);
 		(void)maildirsize_recalculate(root);
 	} else if (maildirsize_update(root, ctx->count_used, ctx->bytes_used) < 0) {
-		if (root->fd != -1) {
-			(void)close(root->fd);
-			root->fd = -1;
-		}
+		if (root->fd != -1)
+			i_close_fd(&root->fd);
 		maildirsize_rebuild_later(root);
 	}
 

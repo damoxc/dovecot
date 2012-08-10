@@ -10,7 +10,16 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <time.h>
+#ifdef HAVE_ATTR_NULL
+/* ugly way to tell clang that mysql.h is a system header and we don't want
+   to enable nonnull attributes for it by default.. */
+# 4 "driver-mysql.c" 3
+#endif
 #include <mysql.h>
+#ifdef HAVE_ATTR_NULL
+# 4 "driver-mysql.c" 3
+# line 20
+#endif
 #include <errmsg.h>
 
 struct mysql_db {
@@ -500,7 +509,7 @@ driver_mysql_transaction_commit(struct sql_transaction_context *ctx,
 		callback(NULL, context);
 }
 
-static int
+static int ATTR_NULL(3)
 transaction_send_query(struct mysql_transaction_context *ctx, const char *query,
 		       unsigned int *affected_rows_r)
 {

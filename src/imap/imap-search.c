@@ -177,8 +177,8 @@ static void imap_search_send_result_standard(struct imap_search_context *ctx)
 		for (seq = range->seq1; seq <= range->seq2; seq++)
 			str_printfa(str, " %u", seq);
 		if (str_len(str) >= 1024-32) {
-			o_stream_send(ctx->cmd->client->output,
-				      str_data(str), str_len(str));
+			o_stream_nsend(ctx->cmd->client->output,
+				       str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 	}
@@ -188,8 +188,7 @@ static void imap_search_send_result_standard(struct imap_search_context *ctx)
 			    (unsigned long long)ctx->highest_seen_modseq);
 	}
 	str_append(str, "\r\n");
-	o_stream_send(ctx->cmd->client->output,
-		      str_data(str), str_len(str));
+	o_stream_nsend(ctx->cmd->client->output, str_data(str), str_len(str));
 }
 
 static void
@@ -318,7 +317,7 @@ static void imap_search_send_result(struct imap_search_context *ctx)
 			    (unsigned long long)ctx->highest_seen_modseq);
 	}
 	str_append(str, "\r\n");
-	o_stream_send(client->output, str_data(str), str_len(str));
+	o_stream_nsend(client->output, str_data(str), str_len(str));
 	str_free(&str);
 }
 
@@ -334,7 +333,7 @@ search_update_mail(struct imap_search_context *ctx, struct mail *mail)
 	}
 	if ((ctx->return_options & SEARCH_RETURN_SAVE) != 0) {
 		seq_range_array_add(&ctx->cmd->client->search_saved_uidset,
-				    0, mail->uid);
+				    mail->uid);
 	}
 	if ((ctx->return_options & SEARCH_RETURN_RELEVANCY) != 0) {
 		const char *str;
@@ -491,7 +490,7 @@ static void cmd_search_more_callback(struct client_command_context *cmd)
 		(void)client_handle_unfinished_cmd(cmd);
 	else
 		client_command_free(&cmd);
-	(void)cmd_sync_delayed(client);
+	cmd_sync_delayed(client);
 
 	if (client->disconnected)
 		client_destroy(client, NULL);

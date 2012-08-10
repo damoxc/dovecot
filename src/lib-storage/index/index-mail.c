@@ -138,18 +138,45 @@ bool index_mail_get_cached_uoff_t(struct index_mail *mail,
 					  size_r, sizeof(*size_r));
 }
 
-enum mail_flags index_mail_get_flags(struct mail *mail)
+static bool index_mail_get_pvt(struct mail *_mail)
 {
-	const struct mail_index_record *rec;
-	enum mail_flags flags;
+	struct mail_private *mail = (struct mail_private *)_mail;
 
-	rec = mail_index_lookup(mail->transaction->view, mail->seq);
+	if (mail->seq_pvt != 0)
+		return TRUE;
+	if (_mail->box->view_pvt == NULL) {
+		/* no private view (set by view syncing) -> no private flags */
+		return FALSE;
+	}
+
+	index_transaction_init_pvt(_mail->transaction);
+	if (!mail_index_lookup_seq(_mail->transaction->view_pvt, _mail->uid,
+				   &mail->seq_pvt))
+		mail->seq_pvt = 0;
+	return mail->seq_pvt != 0;
+}
+
+enum mail_flags index_mail_get_flags(struct mail *_mail)
+{
+	struct mail_private *mail = (struct mail_private *)_mail;
+	const struct mail_index_record *rec;
+	enum mail_flags flags, pvt_flags_mask;
+
+	rec = mail_index_lookup(_mail->transaction->view, _mail->seq);
 	flags = rec->flags & (MAIL_FLAGS_NONRECENT |
 			      MAIL_INDEX_MAIL_FLAG_BACKEND);
 
-	if (index_mailbox_is_recent(mail->box, mail->uid))
+	if (index_mailbox_is_recent(_mail->box, _mail->uid))
 		flags |= MAIL_RECENT;
 
+	if (index_mail_get_pvt(_mail)) {
+		/* mailbox has private flags */
+		pvt_flags_mask = mailbox_get_private_flags_mask(_mail->box);
+		flags &= ~pvt_flags_mask;
+		rec = mail_index_lookup(_mail->transaction->view_pvt,
+					mail->seq_pvt);
+		flags |= rec->flags & pvt_flags_mask;
+	}
 	return flags;
 }
 
@@ -191,7 +218,7 @@ const char *const *index_mail_get_keywords(struct mail *_mail)
 	}
 
 	/* end with NULL */
-	(void)array_append_space(&data->keywords);
+	array_append_zero(&data->keywords);
 	return array_idx(&data->keywords, 0);
 }
 
@@ -326,7 +353,7 @@ static bool get_cached_msgpart_sizes(struct index_mail *mail)
 	struct index_mail_data *data = &mail->data;
 
 	if (data->parts == NULL)
-		get_cached_parts(mail);
+		(void)get_cached_parts(mail);
 
 	if (data->parts != NULL) {
 		data->hdr_size_set = TRUE;
@@ -846,6 +873,7 @@ int index_mail_init_stream(struct index_mail *mail,
 	struct mail *_mail = &mail->mail.mail;
 	struct index_mail_data *data = &mail->data;
 	struct istream *input;
+	bool has_nuls;
 	int ret;
 
 	if (!data->initialized_wrapper_stream &&
@@ -876,8 +904,14 @@ int index_mail_init_stream(struct index_mail *mail,
 				if (index_mail_parse_headers(mail, NULL) < 0)
 					return -1;
 			} else {
-				message_get_header_size(data->stream,
-							&data->hdr_size, NULL);
+				if (message_get_header_size(data->stream,
+							    &data->hdr_size,
+							    &has_nuls) < 0) {
+					mail_storage_set_critical(_mail->box->storage,
+						"read(%s) failed: %m",
+						i_stream_get_name(data->stream));
+					return -1;
+				}
 				data->hdr_size_set = TRUE;
 			}
 		}
@@ -896,8 +930,14 @@ int index_mail_init_stream(struct index_mail *mail,
 				if (index_mail_parse_body(mail, 0) < 0)
 					return -1;
 			} else {
-				message_get_body_size(data->stream,
-						      &data->body_size, NULL);
+				if (message_get_body_size(data->stream,
+							  &data->body_size,
+							  &has_nuls) < 0) {
+					mail_storage_set_critical(_mail->box->storage,
+						"read(%s) failed: %m",
+						i_stream_get_name(data->stream));
+					return -1;
+				}
 				data->body_size_set = TRUE;
 			}
 		}
@@ -1224,6 +1264,7 @@ static void index_mail_reset(struct index_mail *mail)
 
 	mail->mail.mail.seq = 0;
 	mail->mail.mail.uid = 0;
+	mail->mail.seq_pvt = 0;
 	mail->mail.mail.expunged = FALSE;
 	mail->mail.mail.has_nuls = FALSE;
 	mail->mail.mail.has_no_nuls = FALSE;
@@ -1487,7 +1528,7 @@ void index_mail_add_temp_wanted_fields(struct mail *_mail,
 			array_append(&names, &data->wanted_headers->name[i], 1);
 		for (i = 0; i < headers->count; i++)
 			array_append(&names, &headers->name[i], 1);
-		(void)array_append_space(&names);
+		array_append_zero(&names);
 		data->wanted_headers =
 			mailbox_header_lookup_init(_mail->box,
 						   array_idx(&names, 0));
@@ -1600,15 +1641,43 @@ static void index_mail_drop_recent_flag(struct mail *mail)
 	}
 }
 
-void index_mail_update_flags(struct mail *mail, enum modify_type modify_type,
+void index_mail_update_flags(struct mail *_mail, enum modify_type modify_type,
 			     enum mail_flags flags)
 {
-	if ((flags & MAIL_RECENT) == 0 &&
-	    index_mailbox_is_recent(mail->box, mail->uid))
-		index_mail_drop_recent_flag(mail);
+	struct mail_private *mail = (struct mail_private *)_mail;
+	enum mail_flags pvt_flags_mask, pvt_flags = 0;
+	bool update_modseq = FALSE;
 
+	if ((flags & MAIL_RECENT) == 0 &&
+	    index_mailbox_is_recent(_mail->box, _mail->uid))
+		index_mail_drop_recent_flag(_mail);
 	flags &= MAIL_FLAGS_NONRECENT | MAIL_INDEX_MAIL_FLAG_BACKEND;
-	mail_index_update_flags(mail->transaction->itrans, mail->seq,
+
+	if (_mail->box->view_pvt != NULL) {
+		/* mailbox has private flags */
+		pvt_flags_mask = mailbox_get_private_flags_mask(_mail->box);
+		pvt_flags = flags & pvt_flags_mask;
+		flags &= ~pvt_flags_mask;
+		if (index_mail_get_pvt(_mail) &&
+		    (pvt_flags != 0 || modify_type == MODIFY_REPLACE)) {
+			mail_index_update_flags(_mail->transaction->itrans_pvt,
+						mail->seq_pvt,
+						modify_type, pvt_flags);
+			update_modseq = TRUE;
+		}
+	}
+
+	if (!update_modseq) {
+		/* no forced modseq update */
+	} else if (modify_type == MODIFY_REMOVE) {
+		/* add the modseq update separately */
+		mail_index_update_flags(_mail->transaction->itrans, _mail->seq,
+			MODIFY_ADD, (enum mail_flags )MAIL_INDEX_MAIL_FLAG_UPDATE_MODSEQ);
+	} else {
+		/* add as part of the flag updates */
+		flags |= MAIL_INDEX_MAIL_FLAG_UPDATE_MODSEQ;
+	}
+	mail_index_update_flags(_mail->transaction->itrans, _mail->seq,
 				modify_type, flags);
 }
 

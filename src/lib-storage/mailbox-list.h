@@ -101,8 +101,10 @@ enum mailbox_list_path_type {
 	MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX,
 	/* Return control directory */
 	MAILBOX_LIST_PATH_TYPE_CONTROL,
-	/* Return index file directory */
-	MAILBOX_LIST_PATH_TYPE_INDEX
+	/* Return index directory ("" for in-memory) */
+	MAILBOX_LIST_PATH_TYPE_INDEX,
+	/* Return the private index directory (NULL if none) */
+	MAILBOX_LIST_PATH_TYPE_INDEX_PRIVATE
 };
 
 enum mailbox_list_file_type {
@@ -117,6 +119,7 @@ struct mailbox_list_settings {
 	const char *layout; /* FIXME: shouldn't be here */
 	const char *root_dir;
 	const char *index_dir;
+	const char *index_pvt_dir;
 	const char *control_dir;
 	const char *alt_dir; /* FIXME: dbox-specific.. */
 
@@ -210,12 +213,13 @@ void mailbox_list_get_root_permissions(struct mailbox_list *list,
 				       gid_t *gid_r, const char **gid_origin_r);
 /* Create path's directory with proper permissions. */
 int mailbox_list_mkdir(struct mailbox_list *list,
-		       const char *mailbox, const char *path);
+		       const char *mailbox, const char *path) ATTR_NULL(2);
 /* Like mailbox_list_mkdir(), but create path's parent parent directory.
    Since most directories are created lazily, this function can be used to
    easily create them whenever file creation fails with ENOENT. */
 int mailbox_list_mkdir_parent(struct mailbox_list *list,
-			      const char *mailbox, const char *path);
+			      const char *mailbox, const char *path)
+	ATTR_NULL(2);
 /* mkdir() a root directory of given type with proper permissions. */
 int mailbox_list_mkdir_root(struct mailbox_list *list, const char *path,
 			    enum mailbox_list_path_type type,
@@ -235,10 +239,12 @@ const char *mailbox_list_get_storage_name(struct mailbox_list *list,
 const char *mailbox_list_get_vname(struct mailbox_list *list, const char *name);
 
 /* Return full path for the given mailbox name. The name must be a valid
-   existing mailbox name, or NULL to get the root directory.
-   For INDEX=MEMORY it returns "" as the path. */
+   existing mailbox name. For INDEX=MEMORY it returns "" as the path. */
 const char *mailbox_list_get_path(struct mailbox_list *list, const char *name,
 				  enum mailbox_list_path_type type);
+/* Returns root directory path for given type. */
+const char *mailbox_list_get_root_path(struct mailbox_list *list,
+				       enum mailbox_list_path_type type);
 /* Returns mailbox's change log, or NULL if it doesn't have one. */
 struct mailbox_log *mailbox_list_get_changelog(struct mailbox_list *list);
 /* Specify timestamp to use when writing mailbox changes to changelog.
@@ -304,7 +310,8 @@ int mailbox_list_delete_dir(struct mailbox_list *list, const char *name);
 int mailbox_list_delete_symlink(struct mailbox_list *list, const char *name);
 
 /* Returns the error message of last occurred error. */
-const char *mailbox_list_get_last_error(struct mailbox_list *list,
-					enum mail_error *error_r);
+const char * ATTR_NOWARN_UNUSED_RESULT
+mailbox_list_get_last_error(struct mailbox_list *list,
+			    enum mail_error *error_r);
 
 #endif

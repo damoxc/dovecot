@@ -31,7 +31,6 @@
 #include "ostream.h"
 #include "str.h"
 #include "file-dotlock.h"
-#include "close-keep-errno.h"
 #include "nfs-workarounds.h"
 #include "eacces-error.h"
 #include "maildir-storage.h"
@@ -243,7 +242,7 @@ void maildir_uidlist_unlock(struct maildir_uidlist *uidlist)
 		return;
 
 	uidlist->locked_refresh = FALSE;
-	(void)file_dotlock_delete(&uidlist->dotlock);
+	file_dotlock_delete(&uidlist->dotlock);
 }
 
 static bool dotlock_callback(unsigned int secs_left, bool stale, void *context)
@@ -328,7 +327,7 @@ void maildir_uidlist_deinit(struct maildir_uidlist **_uidlist)
 	i_assert(!UIDLIST_IS_LOCKED(uidlist));
 
 	*_uidlist = NULL;
-	maildir_uidlist_update(uidlist);
+	(void)maildir_uidlist_update(uidlist);
 	maildir_uidlist_close(uidlist);
 
 	hash_table_destroy(&uidlist->files);
@@ -553,7 +552,7 @@ static bool maildir_uidlist_next(struct maildir_uidlist *uidlist,
 		if (uidlist->retry_rewind)
 			return FALSE;
 		/* Delete the old UID */
-		maildir_uidlist_records_array_delete(uidlist, old_rec);
+		(void)maildir_uidlist_records_array_delete(uidlist, old_rec);
 		/* Replace the old record with this new one */
 		*old_rec = *rec;
 		rec = old_rec;
@@ -741,7 +740,7 @@ maildir_uidlist_update_read(struct maildir_uidlist *uidlist,
 	}
 
 	if (fstat(fd, &st) < 0) {
-                close_keep_errno(fd);
+                i_close_fd(&fd);
                 if (errno == ESTALE && try_retry) {
                         *retry_r = TRUE;
                         return -1;
@@ -1165,9 +1164,10 @@ maildir_uidlist_rec_set_ext(struct maildir_uidlist_rec *rec, pool_t pool,
 	memcpy(rec->extensions, buf->data, buf->used);
 }
 
-void maildir_uidlist_set_ext(struct maildir_uidlist *uidlist, uint32_t uid,
-			     enum maildir_uidlist_rec_ext_key key,
-			     const char *value)
+static void ATTR_NULL(4)
+maildir_uidlist_set_ext_internal(struct maildir_uidlist *uidlist, uint32_t uid,
+				 enum maildir_uidlist_rec_ext_key key,
+				 const char *value)
 {
 	struct maildir_uidlist_rec *rec;
 	int ret;
@@ -1199,6 +1199,19 @@ void maildir_uidlist_set_ext(struct maildir_uidlist *uidlist, uint32_t uid,
 	}
 }
 
+void maildir_uidlist_set_ext(struct maildir_uidlist *uidlist, uint32_t uid,
+			     enum maildir_uidlist_rec_ext_key key,
+			     const char *value)
+{
+	return maildir_uidlist_set_ext_internal(uidlist, uid, key, value);
+}
+
+void maildir_uidlist_unset_ext(struct maildir_uidlist *uidlist, uint32_t uid,
+			       enum maildir_uidlist_rec_ext_key key)
+{
+	return maildir_uidlist_set_ext_internal(uidlist, uid, key, NULL);
+}
+
 static void
 maildir_uidlist_generate_uid_validity(struct maildir_uidlist *uidlist)
 {
@@ -1227,7 +1240,6 @@ static int maildir_uidlist_write_fd(struct maildir_uidlist *uidlist, int fd,
 	const unsigned char *p;
 	const char *strp;
 	unsigned int len;
-	int ret;
 
 	i_assert(fd != -1);
 
@@ -1257,7 +1269,7 @@ static int maildir_uidlist_write_fd(struct maildir_uidlist *uidlist, int fd,
 			str_append_str(str, uidlist->hdr_extensions);
 		}
 		str_append_c(str, '\n');
-		o_stream_send(output, str_data(str), str_len(str));
+		o_stream_nsend(output, str_data(str), str_len(str));
 	}
 
 	iter = maildir_uidlist_iter_init(uidlist);
@@ -1284,21 +1296,18 @@ static int maildir_uidlist_write_fd(struct maildir_uidlist *uidlist, int fd,
 		else
 			str_append_n(str, rec->filename, strp - rec->filename);
 		str_append_c(str, '\n');
-		o_stream_send(output, str_data(str), str_len(str));
+		o_stream_nsend(output, str_data(str), str_len(str));
 	}
 	maildir_uidlist_iter_deinit(&iter);
-	o_stream_flush(output);
 
-	ret = output->stream_errno == 0 ? 0 : -1;
+	if (o_stream_nfinish(output) < 0) {
+		mail_storage_set_critical(storage, "write(%s) failed: %m", path);
+		o_stream_unref(&output);
+		return -1;
+	}
 
 	*file_size_r = output->offset;
 	o_stream_unref(&output);
-
-	if (ret < 0) {
-		mail_storage_set_critical(storage,
-			"o_stream_send(%s) failed: %m", path);
-		return -1;
-	}
 
 	if (storage->set->parsed_fsync_mode != FSYNC_MODE_NEVER) {
 		if (fdatasync(fd) < 0) {
@@ -1459,7 +1468,7 @@ static int maildir_uidlist_recreate(struct maildir_uidlist *uidlist)
 		maildir_uidlist_update_hdr(uidlist, &st);
 	}
 	if (ret < 0)
-		(void)close(fd);
+		i_close_fd(&fd);
 	return ret;
 }
 

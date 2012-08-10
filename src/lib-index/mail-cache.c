@@ -85,7 +85,7 @@ static void mail_cache_init_file_cache(struct mail_cache *cache)
 	file_cache_set_fd(cache->file_cache, cache->fd);
 
 	if (fstat(cache->fd, &st) == 0)
-		file_cache_set_size(cache->file_cache, st.st_size);
+		(void)file_cache_set_size(cache->file_cache, st.st_size);
 	else if (!ESTALE_FSTAT(errno))
 		mail_cache_set_syscall_error(cache, "fstat()");
 
@@ -542,7 +542,7 @@ static void mail_cache_unlock_file(struct mail_cache *cache)
 	if (cache->index->lock_method != FILE_LOCK_METHOD_DOTLOCK)
 		file_unlock(&cache->file_lock);
 	else
-		(void)file_dotlock_delete(&cache->dotlock);
+		file_dotlock_delete(&cache->dotlock);
 }
 
 static int

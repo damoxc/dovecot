@@ -96,6 +96,7 @@ int connection_input_line_default(struct connection *conn, const char *line)
 		if (connection_verify_version(conn, args) < 0)
 			return -1;
 		conn->version_received = TRUE;
+		return 1;
 	}
 
 	return conn->list->v.input_args(conn, args);
@@ -119,14 +120,15 @@ static void connection_init_streams(struct connection *conn)
 	if (set->output_max_size != 0) {
 		conn->output = o_stream_create_fd(conn->fd_out,
 						  set->output_max_size, FALSE);
+		o_stream_set_no_error_handling(conn->output, TRUE);
 	}
 	conn->io = io_add(conn->fd_in, IO_READ, conn->list->v.input, conn);
 	if (set->input_idle_timeout_secs != 0) {
 		conn->to = timeout_add(set->input_idle_timeout_secs*1000,
 				       connection_idle_timeout, conn);
 	}
-	if (set->major_version != 0) {
-		o_stream_send_str(conn->output, t_strdup_printf(
+	if (set->major_version != 0 && !set->dont_send_version) {
+		o_stream_nsend_str(conn->output, t_strdup_printf(
 			"VERSION\t%s\t%u\t%u\n", set->service_name_out,
 			set->major_version, set->minor_version));
 	}

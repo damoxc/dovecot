@@ -105,7 +105,7 @@ mdbox_file_metadata_copy(struct dbox_file *file, struct ostream *output)
 	if ((ret = mdbox_file_read_metadata_hdr(file, &meta_hdr)) <= 0)
 		return ret;
 
-	o_stream_send(output, &meta_hdr, sizeof(meta_hdr));
+	o_stream_nsend(output, &meta_hdr, sizeof(meta_hdr));
 	buf_size = i_stream_get_max_buffer_size(file->input);
 	/* use unlimited line length for metadata */
 	i_stream_set_max_buffer_size(file->input, (size_t)-1);
@@ -114,8 +114,8 @@ mdbox_file_metadata_copy(struct dbox_file *file, struct ostream *output)
 			/* end of metadata */
 			break;
 		}
-		o_stream_send_str(output, line);
-		o_stream_send(output, "\n", 1);
+		o_stream_nsend_str(output, line);
+		o_stream_nsend(output, "\n", 1);
 	}
 	i_stream_set_max_buffer_size(file->input, buf_size);
 
@@ -123,7 +123,7 @@ mdbox_file_metadata_copy(struct dbox_file *file, struct ostream *output)
 		dbox_file_set_corrupted(file, "missing end-of-metadata line");
 		return 0;
 	}
-	o_stream_send(output, "\n", 1);
+	o_stream_nsend(output, "\n", 1);
 	return 1;
 }
 
@@ -217,8 +217,7 @@ mdbox_purge_save_msg(struct mdbox_purge_context *ctx, struct dbox_file *file,
 			"read(%s) failed: %m", file->cur_path);
 		return -1;
 	}
-	if (output->stream_errno != 0) {
-		errno = output->stream_errno;
+	if (o_stream_nfinish(output) < 0) {
 		mail_storage_set_critical(&file->storage->storage,
 					  "write(%s) failed: %m",
 					  out_file_append->file->cur_path);
@@ -369,7 +368,7 @@ mdbox_file_purge(struct mdbox_purge_context *ctx, struct dbox_file *file,
 							 &ext_refs);
 			if (ret <= 0)
 				break;
-			seq_range_array_add(&expunged_map_uids, 0,
+			seq_range_array_add(&expunged_map_uids,
 					    msgs[i].map_uid);
 		} else {
 			/* non-expunged message. write it to output file. */
@@ -424,7 +423,8 @@ mdbox_file_purge(struct mdbox_purge_context *ctx, struct dbox_file *file,
 	   temporarily vanished */
 	if (ret > 0) {
 		(void)dbox_file_unlink(file);
-		mdbox_map_remove_file_id(ctx->storage->map, file_id);
+		if (mdbox_map_remove_file_id(ctx->storage->map, file_id) < 0)
+			ret = -1;
 	} else {
 		dbox_file_unlock(file);
 	}
@@ -534,7 +534,7 @@ static int mdbox_purge_get_primary_files(struct mdbox_purge_context *ctx)
 
 		str_truncate(path, dir_len);
 		str_append(path, d->d_name);
-		seq_range_array_add(&ctx->primary_file_ids, 0, file_id);
+		seq_range_array_add(&ctx->primary_file_ids, file_id);
 	}
 	if (array_count(&ctx->primary_file_ids) > 0) {
 		const struct seq_range *range =
@@ -602,7 +602,7 @@ static int mdbox_altmove_add_files(struct mdbox_purge_context *ctx)
 			hash_table_insert(ctx->altmoves,
 				POINTER_CAST(cur_map_uid),
 				POINTER_CAST(MDBOX_MSG_ACTION_MOVE_TO_ALT));
-			seq_range_array_add(&ctx->purge_file_ids, 0,
+			seq_range_array_add(&ctx->purge_file_ids,
 					    cur_rec.file_id);
 		}
 	}
@@ -634,7 +634,7 @@ static int mdbox_altmove_add_files(struct mdbox_purge_context *ctx)
 
 		hash_table_insert(ctx->altmoves, POINTER_CAST(cur_map_uid),
 				  POINTER_CAST(MDBOX_MSG_ACTION_MOVE_FROM_ALT));
-		seq_range_array_add(&ctx->purge_file_ids, 0, cur_rec.file_id);
+		seq_range_array_add(&ctx->purge_file_ids, cur_rec.file_id);
 	}
 	ctx->have_altmoves = hash_table_count(ctx->altmoves) > 0;
 	return ret;
@@ -671,7 +671,8 @@ int mdbox_purge(struct mail_storage *_storage)
 			if (mdbox_file_purge(ctx, file, file_id) < 0)
 				ret = -1;
 		} else {
-			mdbox_map_remove_file_id(storage->map, file_id);
+			if (mdbox_map_remove_file_id(storage->map, file_id) < 0)
+				ret = -1;
 		}
 		dbox_file_unref(&file);
 	} T_END;

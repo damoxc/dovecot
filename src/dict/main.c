@@ -23,7 +23,7 @@ static void dict_die(void)
 static void client_connected(struct master_service_connection *conn)
 {
 	master_service_client_connection_accept(conn);
-	dict_connection_create(conn->fd);
+	(void)dict_connection_create(conn->fd);
 }
 
 static void main_preinit(void)
@@ -85,7 +85,7 @@ int main(int argc, char *argv[])
 	};
 	const char *error;
 
-	master_service = master_service_init("dict", 0, &argc, &argv, NULL);
+	master_service = master_service_init("dict", 0, &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 

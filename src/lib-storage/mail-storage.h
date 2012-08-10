@@ -157,7 +157,10 @@ enum mailbox_transaction_flags {
 	MAILBOX_TRANSACTION_FLAG_REFRESH	= 0x08,
 	/* Don't update caching decisions no matter what we do in this
 	   transaction (useful for e.g. precaching) */
-	MAILBOX_TRANSACTION_FLAG_NO_CACHE_DEC	= 0x10
+	MAILBOX_TRANSACTION_FLAG_NO_CACHE_DEC	= 0x10,
+	/* Sync transaction describes changes to mailbox that already happened
+	   to another mailbox with whom we're syncing with (dsync) */
+	MAILBOX_TRANSACTION_FLAG_SYNC		= 0x20
 };
 
 enum mailbox_sync_flags {
@@ -352,7 +355,8 @@ struct mail_storage *mail_storage_find_class(const char *name);
    from ns location. If ns location is NULL, it uses the first storage that
    exists. The storage is put into ns->storage. */
 int mail_storage_create(struct mail_namespace *ns, const char *driver,
-			enum mail_storage_flags flags, const char **error_r);
+			enum mail_storage_flags flags, const char **error_r)
+	ATTR_NULL(2);
 void mail_storage_unref(struct mail_storage **storage);
 
 /* Returns the mail storage settings. */
@@ -363,18 +367,20 @@ struct mail_user *mail_storage_get_user(struct mail_storage *storage) ATTR_PURE;
 /* Set storage callback functions to use. */
 void mail_storage_set_callbacks(struct mail_storage *storage,
 				struct mail_storage_callbacks *callbacks,
-				void *context);
+				void *context) ATTR_NULL(3);
 
 /* Purge storage's mailboxes (freeing disk space from expunged mails),
    if supported by the storage. Otherwise just a no-op. */
 int mail_storage_purge(struct mail_storage *storage);
 
 /* Returns the error message of last occurred error. */
-const char *mail_storage_get_last_error(struct mail_storage *storage,
-					enum mail_error *error_r);
+const char * ATTR_NOWARN_UNUSED_RESULT
+mail_storage_get_last_error(struct mail_storage *storage,
+			    enum mail_error *error_r) ATTR_NULL(2);
 /* Wrapper for mail_storage_get_last_error(); */
-const char *mailbox_get_last_error(struct mailbox *box,
-				   enum mail_error *error_r);
+const char * ATTR_NOWARN_UNUSED_RESULT
+mailbox_get_last_error(struct mailbox *box, enum mail_error *error_r)
+	ATTR_NULL(2);
 /* Wrapper for mail_storage_get_last_error(); */
 enum mail_error mailbox_get_last_mail_error(struct mailbox *box);
 
@@ -412,7 +418,7 @@ void mailbox_free(struct mailbox **box);
    If update is non-NULL, its contents are used to set initial mailbox
    metadata. */
 int mailbox_create(struct mailbox *box, const struct mailbox_update *update,
-		   bool directory);
+		   bool directory) ATTR_NULL(2);
 /* Update existing mailbox's metadata. */
 int mailbox_update(struct mailbox *box, const struct mailbox_update *update);
 /* Delete mailbox (and its parent directory, if it has no siblings) */
@@ -491,16 +497,17 @@ int mailbox_sync_deinit(struct mailbox_sync_context **ctx,
 int mailbox_sync(struct mailbox *box, enum mailbox_sync_flags flags);
 
 /* Call given callback function when something changes in the mailbox. */
-void mailbox_notify_changes(struct mailbox *box, unsigned int min_interval,
-			    mailbox_notify_callback_t *callback, void *context);
+void mailbox_notify_changes(struct mailbox *box,
+			    mailbox_notify_callback_t *callback, void *context)
+	ATTR_NULL(3);
 #ifdef CONTEXT_TYPE_SAFETY
-#  define mailbox_notify_changes(box, min_interval, callback, context) \
+#  define mailbox_notify_changes(box, callback, context) \
 	({(void)(1 ? 0 : callback((struct mailbox *)NULL, context)); \
-	  mailbox_notify_changes(box, min_interval, \
+	  mailbox_notify_changes(box, \
 		(mailbox_notify_callback_t *)callback, context); })
 #else
-#  define mailbox_notify_changes(box, min_interval, callback, context) \
-	  mailbox_notify_changes(box, min_interval, \
+#  define mailbox_notify_changes(box, callback, context) \
+	  mailbox_notify_changes(box, \
 		(mailbox_notify_callback_t *)callback, context)
 #endif
 void mailbox_notify_changes_stop(struct mailbox *box);
@@ -555,7 +562,7 @@ void mailbox_header_lookup_unref(struct mailbox_header_lookup_ctx **ctx);
 
 /* Initialize new search request. If sort_program is non-NULL, the messages are
    returned in the requested order, otherwise from first to last. */
-struct mail_search_context *
+struct mail_search_context * ATTR_NULL(3, 5)
 mailbox_search_init(struct mailbox_transaction_context *t,
 		    struct mail_search_args *args,
 		    const enum mail_sort_type *sort_program,
@@ -676,6 +683,9 @@ mailbox_save_get_transaction(struct mail_save_context *ctx);
 /* Copy the given message. You'll need to specify the flags etc. using the
    mailbox_save_*() functions. */
 int mailbox_copy(struct mail_save_context **ctx, struct mail *mail);
+/* Move the given message. This is usually equivalent to copy+expunge,
+   but without enforcing quota. */
+int mailbox_move(struct mail_save_context **ctx, struct mail *mail);
 /* Same as mailbox_copy(), but treat the message as if it's being saved,
    not copied. (For example: New mail delivered to multiple maildirs, with
    each mails being hard link copies.) */
@@ -683,7 +693,8 @@ int mailbox_save_using_mail(struct mail_save_context **ctx, struct mail *mail);
 
 struct mail *mail_alloc(struct mailbox_transaction_context *t,
 			enum mail_fetch_field wanted_fields,
-			struct mailbox_header_lookup_ctx *wanted_headers);
+			struct mailbox_header_lookup_ctx *wanted_headers)
+	ATTR_NULL(3);
 void mail_free(struct mail **mail);
 void mail_set_seq(struct mail *mail, uint32_t seq);
 /* Returns TRUE if successful, FALSE if message doesn't exist.
@@ -694,7 +705,8 @@ bool mail_set_uid(struct mail *mail, uint32_t uid);
    after the next mail_set_seq/uid(). */
 void mail_add_temp_wanted_fields(struct mail *mail,
 				 enum mail_fetch_field fields,
-				 struct mailbox_header_lookup_ctx *headers);
+				 struct mailbox_header_lookup_ctx *headers)
+	ATTR_NULL(3);
 
 /* Returns message's flags */
 enum mail_flags mail_get_flags(struct mail *mail);
@@ -752,11 +764,12 @@ int mail_get_header_stream(struct mail *mail,
    hdr_size and body_size are updated unless they're NULL. The returned stream
    is destroyed automatically, don't unreference it. */
 int mail_get_stream(struct mail *mail, struct message_size *hdr_size,
-		    struct message_size *body_size, struct istream **stream_r);
+		    struct message_size *body_size, struct istream **stream_r)
+	ATTR_NULL(2, 3);
 /* Similar to mail_get_stream(), but the stream may or may not contain the
    message body. */
 int mail_get_hdr_stream(struct mail *mail, struct message_size *hdr_size,
-			struct istream **stream_r);
+			struct istream **stream_r) ATTR_NULL(2);
 
 /* Get any of the "special" fields. Unhandled specials are returned as "". */
 int mail_get_special(struct mail *mail, enum mail_fetch_field field,

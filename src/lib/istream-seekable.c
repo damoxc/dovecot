@@ -2,7 +2,6 @@
 
 #include "lib.h"
 #include "buffer.h"
-#include "close-keep-errno.h"
 #include "read-full.h"
 #include "write-full.h"
 #include "istream-private.h"
@@ -88,7 +87,7 @@ static int copy_to_temp_file(struct seekable_istream *sstream)
 	if (write_full(fd, sstream->buffer->data, sstream->buffer->used) < 0) {
 		if (!ENOSPACE(errno))
 			i_error("write_full(%s) failed: %m", path);
-		close_keep_errno(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	sstream->temp_path = i_strdup(path);
@@ -147,7 +146,7 @@ static ssize_t read_more(struct seekable_istream *sstream)
 		}
 
 		/* see if stream has pending data */
-		(void)i_stream_get_data(sstream->cur_input, &size);
+		size = i_stream_get_data_size(sstream->cur_input);
 		if (size != 0)
 			return size;
 	}
@@ -167,10 +166,8 @@ static bool read_from_buffer(struct seekable_istream *sstream, ssize_t *ret_r)
 		if (sstream->buffer->used >= stream->max_buffer_size)
 			return FALSE;
 
-		if (sstream->cur_input == NULL)
-			size = 0;
-		else
-			(void)i_stream_get_data(sstream->cur_input, &size);
+		size = sstream->cur_input == NULL ? 0 :
+			i_stream_get_data_size(sstream->cur_input);
 		if (size == 0) {
 			/* read more to buffer */
 			*ret_r = read_more(sstream);
@@ -212,8 +209,7 @@ static int i_stream_seekable_write_failed(struct seekable_istream *sstream)
 		return -1;
 	}
 	i_stream_destroy(&sstream->fd_input);
-	(void)close(sstream->fd);
-	sstream->fd = -1;
+	i_close_fd(&sstream->fd);
 
 	stream->max_buffer_size = (size_t)-1;
 	i_free_and_null(sstream->temp_path);
@@ -288,13 +284,6 @@ static ssize_t i_stream_seekable_read(struct istream_private *stream)
 	ret = pos > stream->pos ? (ssize_t)(pos - stream->pos) : ret;
 	stream->pos = pos;
 	return ret;
-}
-
-static void i_stream_seekable_seek(struct istream_private *stream,
-				   uoff_t v_offset, bool mark ATTR_UNUSED)
-{
-	stream->istream.v_offset = v_offset;
-	stream->skip = stream->pos = 0;
 }
 
 static const struct stat *
@@ -392,7 +381,6 @@ i_stream_create_seekable(struct istream *input[],
 		i_stream_seekable_set_max_buffer_size;
 
 	sstream->istream.read = i_stream_seekable_read;
-	sstream->istream.seek = i_stream_seekable_seek;
 	sstream->istream.stat = i_stream_seekable_stat;
 
 	sstream->istream.istream.readable_fd = FALSE;

@@ -298,9 +298,9 @@ memcached_dict_lookup_real(struct memcached_dict *dict, pool_t pool,
 			memcached_add_header(dict->conn.cmd, key_len);
 			buffer_append(dict->conn.cmd, key, key_len);
 
-			o_stream_send(dict->conn.conn.output,
-				      dict->conn.cmd->data,
-				      dict->conn.cmd->used);
+			o_stream_nsend(dict->conn.conn.output,
+				       dict->conn.cmd->data,
+				       dict->conn.cmd->used);
 
 			memset(&dict->conn.reply, 0, sizeof(dict->conn.reply));
 			io_loop_run(dict->ioloop);

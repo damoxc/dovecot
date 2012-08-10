@@ -140,6 +140,7 @@ ssize_t i_stream_read(struct istream *stream)
 			errno = stream->stream_errno;
 		} else {
 			i_assert(stream->eof);
+			i_assert(old_size == _stream->pos - _stream->skip);
 		}
 		break;
 	case 0:
@@ -399,6 +400,16 @@ i_stream_get_data(const struct istream *stream, size_t *size_r)
         return _stream->buffer + _stream->skip;
 }
 
+size_t i_stream_get_data_size(const struct istream *stream)
+{
+	const struct istream_private *_stream = stream->real_stream;
+
+	if (_stream->skip >= _stream->pos)
+		return 0;
+	else
+		return _stream->pos - _stream->skip;
+}
+
 unsigned char *i_stream_get_modifiable_data(const struct istream *stream,
 					    size_t *size_r)
 {
@@ -485,8 +496,8 @@ void i_stream_grow_buffer(struct istream_private *stream, size_t bytes)
 	}
 }
 
-bool i_stream_get_buffer_space(struct istream_private *stream,
-			       size_t wanted_size, size_t *size_r)
+bool i_stream_try_alloc(struct istream_private *stream,
+			size_t wanted_size, size_t *size_r)
 {
 	i_assert(wanted_size > 0);
 
@@ -501,9 +512,25 @@ bool i_stream_get_buffer_space(struct istream_private *stream,
 		}
 	}
 
-	if (size_r != NULL)
-		*size_r = stream->buffer_size - stream->pos;
+	*size_r = stream->buffer_size - stream->pos;
 	return stream->pos != stream->buffer_size;
+}
+
+void *i_stream_alloc(struct istream_private *stream, size_t size)
+{
+	size_t old_size, avail_size;
+
+	i_stream_try_alloc(stream, size, &avail_size);
+	if (avail_size < size) {
+		old_size = stream->buffer_size;
+		stream->buffer_size = nearest_power(stream->pos + size);
+		stream->w_buffer = i_realloc(stream->w_buffer, old_size,
+					     stream->buffer_size);
+		stream->buffer = stream->w_buffer;
+		i_stream_try_alloc(stream, size, &avail_size);
+		i_assert(avail_size >= size);
+	}
+	return stream->w_buffer + stream->pos;
 }
 
 bool i_stream_add_data(struct istream *_stream, const unsigned char *data,
@@ -512,7 +539,7 @@ bool i_stream_add_data(struct istream *_stream, const unsigned char *data,
 	struct istream_private *stream = _stream->real_stream;
 	size_t size2;
 
-	(void)i_stream_get_buffer_space(stream, size, &size2);
+	i_stream_try_alloc(stream, size, &size2);
 	if (size > size2)
 		return FALSE;
 
@@ -541,8 +568,16 @@ static void i_stream_default_destroy(struct iostream_private *stream)
 		i_stream_unref(&_stream->parent);
 }
 
-void i_stream_default_seek(struct istream_private *stream,
-			   uoff_t v_offset, bool mark ATTR_UNUSED)
+static void
+i_stream_default_seek_seekable(struct istream_private *stream,
+			       uoff_t v_offset, bool mark ATTR_UNUSED)
+{
+	stream->istream.v_offset = v_offset;
+	stream->skip = stream->pos = 0;
+}
+
+void i_stream_default_seek_nonseekable(struct istream_private *stream,
+				       uoff_t v_offset, bool mark ATTR_UNUSED)
 {
 	size_t available;
 
@@ -567,9 +602,16 @@ void i_stream_default_seek(struct istream_private *stream,
 }
 
 static const struct stat *
-i_stream_default_stat(struct istream_private *stream, bool exact ATTR_UNUSED)
+i_stream_default_stat(struct istream_private *stream, bool exact)
 {
-	return &stream->statbuf;
+	if (stream->parent == NULL)
+		return &stream->statbuf;
+
+	if (exact && !stream->stream_size_passthrough) {
+		i_panic("istream %s: stat() doesn't support getting exact size",
+			i_stream_get_name(&stream->istream));
+	}
+	return i_stream_stat(stream->parent, exact);
 }
 
 static int
@@ -606,8 +648,9 @@ i_stream_create(struct istream_private *_stream, struct istream *parent, int fd)
 	if (_stream->iostream.destroy == NULL)
 		_stream->iostream.destroy = i_stream_default_destroy;
 	if (_stream->seek == NULL) {
-		i_assert(!_stream->istream.seekable);
-		_stream->seek = i_stream_default_seek;
+		_stream->seek = _stream->istream.seekable ?
+			i_stream_default_seek_seekable :
+			i_stream_default_seek_nonseekable;
 	}
 	if (_stream->stat == NULL)
 		_stream->stat = i_stream_default_stat;

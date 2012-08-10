@@ -235,7 +235,6 @@ static int redis_conn_input_more(struct redis_connection *conn)
 static void redis_conn_input(struct connection *_conn)
 {
 	struct redis_connection *conn = (struct redis_connection *)_conn;
-	size_t size;
 	int ret;
 
 	switch (i_stream_read(_conn->input)) {
@@ -249,8 +248,7 @@ static void redis_conn_input(struct connection *_conn)
 	}
 
 	while ((ret = redis_conn_input_more(conn)) > 0) {
-		i_stream_get_data(_conn->input, &size);
-		if (size == 0)
+		if (i_stream_get_data_size(_conn->input) == 0)
 			break;
 	}
 	if (ret < 0)
@@ -437,7 +435,7 @@ redis_dict_lookup_real(struct redis_dict *dict, pool_t pool,
 		if (dict->connected) {
 			cmd = t_strdup_printf("*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n",
 					      (int)strlen(key), key);
-			o_stream_send_str(dict->conn.conn.output, cmd);
+			o_stream_nsend_str(dict->conn.conn.output, cmd);
 
 			str_truncate(dict->conn.last_reply, 0);
 			redis_input_state_add(dict, REDIS_INPUT_STATE_GET);
@@ -525,8 +523,8 @@ redis_transaction_commit(struct dict_transaction_context *_ctx, bool async,
 	} else if (_ctx->changed) {
 		i_assert(ctx->cmd_count > 0);
 
-		o_stream_send_str(dict->conn.conn.output,
-				  "*1\r\n$4\r\nEXEC\r\n");
+		o_stream_nsend_str(dict->conn.conn.output,
+				   "*1\r\n$4\r\nEXEC\r\n");
 		reply = array_append_space(&dict->replies);
 		reply->callback = callback;
 		reply->context = context;
@@ -558,8 +556,8 @@ static void redis_transaction_rollback(struct dict_transaction_context *_ctx)
 		/* make sure we're disconnected */
 		redis_conn_destroy(&dict->conn.conn);
 	} else if (_ctx->changed) {
-		o_stream_send_str(dict->conn.conn.output,
-				  "*1\r\n$7\r\nDISCARD\r\n");
+		o_stream_nsend_str(dict->conn.conn.output,
+				   "*1\r\n$7\r\nDISCARD\r\n");
 		reply = array_append_space(&dict->replies);
 		reply->reply_count = 1;
 		redis_input_state_add(dict, REDIS_INPUT_STATE_DISCARD);

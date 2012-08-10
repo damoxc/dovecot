@@ -20,7 +20,6 @@ liblib_la_SOURCES = \
 	bsearch-insert-pos.c \
 	buffer.c \
 	child-wait.c \
-	close-keep-errno.c \
 	compat.c \
 	connection.c \
 	crc32.c \
@@ -53,8 +52,10 @@ liblib_la_SOURCES = \
 	ipwd.c \
 	iostream.c \
 	iostream-rawlog.c \
+	iso8601-date.c \
 	istream.c \
 	istream-base64-encoder.c \
+	istream-chain.c \
 	istream-concat.c \
 	istream-crlf.c \
 	istream-data.c \
@@ -63,6 +64,7 @@ liblib_la_SOURCES = \
 	istream-mmap.c \
 	istream-rawlog.c \
 	istream-seekable.c \
+	istream-sized.c \
 	istream-tee.c \
 	ioloop.c \
 	ioloop-iolist.c \
@@ -122,6 +124,7 @@ liblib_la_SOURCES = \
 	unlink-directory.c \
 	unlink-old-files.c \
 	unichar.c \
+	uri-util.c \
 	utc-offset.c \
 	utc-mktime.c \
 	var-expand.c \
@@ -139,7 +142,6 @@ headers = \
 	bsearch-insert-pos.h \
 	buffer.h \
 	child-wait.h \
-	close-keep-errno.h \
 	compat.h \
 	connection.h \
 	crc32.h \
@@ -174,13 +176,16 @@ headers = \
 	iostream-private.h \
 	iostream-rawlog.h \
 	iostream-rawlog-private.h \
+	iso8601-date.h \
 	istream.h \
 	istream-base64-encoder.h \
+	istream-chain.h \
 	istream-concat.h \
 	istream-crlf.h \
 	istream-private.h \
 	istream-rawlog.h \
 	istream-seekable.h \
+	istream-sized.h \
 	istream-tee.h \
 	ioloop.h \
 	ioloop-iolist.h \
@@ -230,6 +235,7 @@ headers = \
 	unlink-directory.h \
 	unlink-old-files.h \
 	unichar.h \
+	uri-util.h \
 	utc-offset.h \
 	utc-mktime.h \
 	var-expand.h \
@@ -256,6 +262,7 @@ test_lib_SOURCES = \
 	test-crc32.c \
 	test-hash-format.c \
 	test-hex-binary.c \
+	test-iso8601-date.c \
 	test-istream-base64-encoder.c \
 	test-istream-concat.c \
 	test-istream-crlf.c \

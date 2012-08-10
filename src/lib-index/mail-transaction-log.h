@@ -58,8 +58,11 @@ enum mail_transaction_type {
 	   flag. if it's not present, assume corrupted log. */
 	MAIL_TRANSACTION_EXPUNGE_PROT		= 0x0000cd90,
 
-	/* Mailbox synchronization noticed this change. */
-	MAIL_TRANSACTION_EXTERNAL		= 0x10000000
+	/* Mailbox storage backend synchronization noticed this change. */
+	MAIL_TRANSACTION_EXTERNAL		= 0x10000000,
+	/* This change syncs the state with another mailbox (dsync),
+	   i.e. the change isn't something that a user requested locally. */
+	MAIL_TRANSACTION_SYNC			= 0x20000000
 };
 
 struct mail_transaction_header {
@@ -87,7 +90,8 @@ struct mail_transaction_flag_update {
 	uint32_t uid1, uid2;
 	uint8_t add_flags;
 	uint8_t remove_flags;
-	uint16_t padding;
+	uint8_t modseq_inc_flag;
+	uint8_t padding;
 };
 
 struct mail_transaction_keyword_update {
@@ -166,8 +170,9 @@ struct mail_transaction_log_append_ctx {
 	struct mail_transaction_log *log;
 	buffer_t *output;
 
+	enum mail_transaction_type trans_flags;
+
 	uint64_t new_highest_modseq;
-	unsigned int external:1;
 	unsigned int append_sync_offset:1;
 	unsigned int sync_includes_this:1;
 	unsigned int want_fsync:1;
@@ -217,6 +222,9 @@ int mail_transaction_log_view_set(struct mail_transaction_log_view *view,
 				  uint32_t min_file_seq, uoff_t min_file_offset,
 				  uint32_t max_file_seq, uoff_t max_file_offset,
 				  bool *reset_r);
+/* Scan through all of the log files that we can find.
+   Returns -1 if error, 0 if ok. */
+int mail_transaction_log_view_set_all(struct mail_transaction_log_view *view);
 /* Clear the view. Keep oldest_file_seq and newer log files referenced so we
    don't get desynced. */
 void mail_transaction_log_view_clear(struct mail_transaction_log_view *view,
@@ -253,7 +261,8 @@ mail_transaction_log_view_set_corrupted(struct mail_transaction_log_view *view,
 bool
 mail_transaction_log_view_is_corrupted(struct mail_transaction_log_view *view);
 
-int mail_transaction_log_append_begin(struct mail_index *index, bool external,
+int mail_transaction_log_append_begin(struct mail_index *index,
+				      enum mail_transaction_type flags,
 				      struct mail_transaction_log_append_ctx **ctx_r);
 void mail_transaction_log_append_add(struct mail_transaction_log_append_ctx *ctx,
 				     enum mail_transaction_type type,

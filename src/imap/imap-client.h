@@ -44,15 +44,6 @@ enum client_command_state {
 	CLIENT_COMMAND_STATE_DONE
 };
 
-struct imap_module_register {
-	unsigned int id;
-};
-
-union imap_module_context {
-	struct imap_module_register *reg;
-};
-extern struct imap_module_register imap_module_register;
-
 struct client_command_context {
 	struct client_command_context *prev, *next;
 	struct client *client;
@@ -87,19 +78,16 @@ struct client_command_context {
 	unsigned int temp_executed:1; /* temporary execution state tracking */
 };
 
-struct partial_fetch_cache {
-	unsigned int select_counter;
-	unsigned int uid;
-
-	uoff_t physical_start;
-	bool cr_skipped;
-	struct message_size pos;
+struct imap_client_vfuncs {
+	void (*destroy)(struct client *client, const char *reason);
 };
 
 struct client {
 	struct client *prev, *next;
 
+	struct imap_client_vfuncs v;
 	const char *session_id;
+
 	int fd_in, fd_out;
 	struct io *io;
 	struct istream *input;
@@ -114,7 +102,6 @@ struct client {
         struct mail_user *user;
 	struct mailbox *mailbox;
         struct mailbox_keywords keywords;
-	unsigned int select_counter; /* increased when mailbox is changed */
 	unsigned int sync_counter;
 	uint32_t messages_count, recent_count, uidvalidity;
 	enum mailbox_feature enabled_features;
@@ -132,8 +119,6 @@ struct client {
 
 	uint64_t sync_last_full_modseq;
 	uint64_t highest_fetch_modseq;
-
-	struct partial_fetch_cache last_partial;
 
 	/* SEARCHRES extension: Last saved SEARCH result */
 	ARRAY_TYPE(seq_range) search_saved_uidset;
@@ -166,6 +151,16 @@ struct client {
 	unsigned int modseqs_sent_since_sync:1;
 };
 
+struct imap_module_register {
+	unsigned int id;
+};
+
+union imap_module_context {
+	struct imap_client_vfuncs super;
+	struct imap_module_register *reg;
+};
+extern struct imap_module_register imap_module_register;
+
 extern struct client *imap_clients;
 extern unsigned int imap_client_count;
 
@@ -175,15 +170,18 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
 			     struct mail_user *user,
 			     struct mail_storage_service_user *service_user,
 			     const struct imap_settings *set);
-void client_destroy(struct client *client, const char *reason);
+void client_destroy(struct client *client, const char *reason) ATTR_NULL(2);
 
 /* Disconnect client connection */
 void client_disconnect(struct client *client, const char *reason);
 void client_disconnect_with_error(struct client *client, const char *msg);
 
+/* Send a line of data to client. */
+void client_send_line(struct client *client, const char *data);
 /* Send a line of data to client. Returns 1 if ok, 0 if buffer is getting full,
-   -1 if error */
-int client_send_line(struct client *client, const char *data);
+   -1 if error. This should be used when you're (potentially) sending a lot of
+   lines to client. */
+int client_send_line_next(struct client *client, const char *data);
 /* Send line of data to client, prefixed with client->tag. You need to prefix
    the data with "OK ", "NO " or "BAD ". */
 void client_send_tagline(struct client_command_context *cmd, const char *data);

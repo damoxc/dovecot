@@ -62,6 +62,7 @@ struct client {
 	struct client_state state;
 	struct istream *dot_input;
 	struct lmtp_proxy *proxy;
+	unsigned int proxy_ttl;
 
 	unsigned int disconnected:1;
 };
@@ -71,7 +72,7 @@ extern unsigned int clients_count;
 struct client *client_create(int fd_in, int fd_out,
 			     const struct master_service_connection *conn);
 void client_destroy(struct client *client, const char *prefix,
-		    const char *reason);
+		    const char *reason) ATTR_NULL(2, 3);
 void client_disconnect(struct client *client, const char *prefix,
 		       const char *reason);
 void client_io_reset(struct client *client);
@@ -82,6 +83,7 @@ int client_input_read(struct client *client);
 
 void client_send_line(struct client *client, const char *fmt, ...)
 	ATTR_FORMAT(2, 3);
+bool client_is_trusted(struct client *client);
 
 void clients_destroy(void);
 

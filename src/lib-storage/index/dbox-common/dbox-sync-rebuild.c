@@ -158,7 +158,7 @@ dbox_sync_index_rebuild_init(struct mailbox *box,
 	ctx->trans = trans;
 	mail_index_reset(ctx->trans);
 	index_mailbox_reset_uidvalidity(box);
-	mail_index_ext_lookup(box->index, "cache", &ctx->cache_ext_id);
+	(void)mail_index_ext_lookup(box->index, "cache", &ctx->cache_ext_id);
 
 	/* open cache and read the caching decisions. we'll reset the cache in
 	   case it contains any invalid data, but we want to preserve the
@@ -207,8 +207,7 @@ int dbox_sync_rebuild_verify_alt_storage(struct mailbox_list *list)
 	const char *alt_path, *error;
 	struct stat st;
 
-	alt_path = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_ALT_DIR);
+	alt_path = mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_ALT_DIR);
 	if (alt_path == NULL)
 		return 0;
 

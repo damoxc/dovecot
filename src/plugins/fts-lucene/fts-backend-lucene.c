@@ -144,8 +144,8 @@ fts_backend_lucene_init(struct fts_backend *_backend, const char **error_r)
 		return -1;
 	}
 
-	path = mailbox_list_get_path(_backend->ns->list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_INDEX);
+	path = mailbox_list_get_root_path(_backend->ns->list,
+					  MAILBOX_LIST_PATH_TYPE_INDEX);
 	i_assert(path != NULL); /* fts already checked this */
 
 	backend->dir_path = i_strconcat(path, "/"LUCENE_INDEX_DIR_NAME, NULL);
@@ -198,7 +198,7 @@ fts_backend_lucene_get_last_uid(struct fts_backend *_backend,
 	if (lucene_index_get_last_uid(backend->index, last_uid_r) < 0)
 		return -1;
 
-	(void)fts_index_set_last_uid(box, *last_uid_r);
+	fts_index_set_last_uid(box, *last_uid_r);
 	return 0;
 }
 
@@ -248,8 +248,10 @@ fts_backend_lucene_update_deinit(struct fts_backend_update_context *_ctx)
 	i_assert(backend->updating);
 
 	backend->updating = FALSE;
-	if (ctx->lucene_opened)
-		lucene_index_build_deinit(backend->index);
+	if (ctx->lucene_opened) {
+		if (lucene_index_build_deinit(backend->index) < 0)
+			ret = -1;
+	}
 
 	if (ctx->expunge_ctx != NULL) {
 		if (fts_expunge_log_append_commit(&ctx->expunge_ctx) < 0)
@@ -271,7 +273,7 @@ fts_backend_lucene_update_deinit(struct fts_backend_update_context *_ctx)
 				str_tabescape(ctx->first_box_vname));
 			fd = fts_indexer_cmd(user, cmd, &path);
 			if (fd != -1)
-				(void)close(fd);
+				i_close_fd(&fd);
 		}
 	}
 
@@ -288,7 +290,7 @@ fts_backend_lucene_update_set_mailbox(struct fts_backend_update_context *_ctx,
 		(struct lucene_fts_backend_update_context *)_ctx;
 
 	if (ctx->last_uid != 0) {
-		(void)fts_index_set_last_uid(ctx->box, ctx->last_uid);
+		fts_index_set_last_uid(ctx->box, ctx->last_uid);
 		ctx->last_uid = 0;
 	}
 	if (ctx->first_box_vname == NULL)
@@ -511,7 +513,7 @@ mailboxes_get_guids(struct mailbox *const boxes[],
 		hash_table_insert(guids, guid_dup, box_result);
 	}
 
-	(void)array_append_space(&box_results);
+	array_append_zero(&box_results);
 	result->box_results = array_idx_modifiable(&box_results, 0);
 	return 0;
 }
@@ -547,7 +549,7 @@ static void fts_backend_lucene_lookup_done(struct fts_backend *_backend)
 {
 	/* the next refresh is going to close the index anyway, so we might as
 	   well do it now */
-	fts_backend_lucene_refresh(_backend);
+	(void)fts_backend_lucene_refresh(_backend);
 }
 
 struct fts_backend fts_backend_lucene = {

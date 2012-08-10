@@ -55,7 +55,7 @@ static ssize_t i_stream_file_read(struct istream_private *stream)
 	size_t size;
 	ssize_t ret;
 
-	if (!i_stream_get_buffer_space(stream, 1, &size))
+	if (!i_stream_try_alloc(stream, 1, &size))
 		return -2;
 
 	if (stream->fd == -1) {
@@ -171,6 +171,7 @@ static struct istream *
 i_stream_create_file_common(int fd, size_t max_buffer_size, bool autoclose_fd)
 {
 	struct file_istream *fstream;
+	struct istream *input;
 	struct stat st;
 	bool is_file;
 
@@ -206,7 +207,9 @@ i_stream_create_file_common(int fd, size_t max_buffer_size, bool autoclose_fd)
 	}
 	fstream->istream.istream.readable_fd = TRUE;
 
-	return i_stream_create(&fstream->istream, NULL, fd);
+	input = i_stream_create(&fstream->istream, NULL, fd);
+	i_stream_set_name(input, is_file ? "(file)" : "(fd)");
+	return input;
 }
 
 struct istream *i_stream_create_fd(int fd, size_t max_buffer_size,

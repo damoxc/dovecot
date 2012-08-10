@@ -171,14 +171,12 @@ bool hash_table_lookup_full(const struct hash_table *table,
 	if (node == NULL)
 		return FALSE;
 
-	if (orig_key != NULL)
-		*orig_key = node->key;
-	if (value != NULL)
-		*value = node->value;
+	*orig_key = node->key;
+	*value = node->value;
 	return TRUE;
 }
 
-static struct hash_node *
+static struct hash_node * ATTR_NOWARN_UNUSED_RESULT
 hash_table_insert_node(struct hash_table *table, void *key, void *value,
 		       bool check_existing)
 {
@@ -267,7 +265,7 @@ void hash_table_insert(struct hash_table *table, void *key, void *value)
 
 void hash_table_update(struct hash_table *table, void *key, void *value)
 {
-	(void)hash_table_insert_node(table, key, value, TRUE);
+	hash_table_insert_node(table, key, value, TRUE);
 }
 
 static void

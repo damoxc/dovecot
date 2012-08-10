@@ -2,7 +2,7 @@
 
 #include "lib.h"
 #include "istream.h"
-#include "ostream.h"
+#include "ostream-private.h"
 #include "iostream-openssl.h"
 
 #include <openssl/err.h>
@@ -133,8 +133,13 @@ ssl_iostream_set(struct ssl_iostream *ssl_io,
 				ssl_iostream_error());
 		}
 		return -1;
-
 	}
+	if (set->protocols != NULL) {
+		SSL_clear_options(ssl_io->ssl, OPENSSL_ALL_PROTOCOL_OPTIONS);
+		SSL_set_options(ssl_io->ssl,
+				openssl_get_protocol_options(set->protocols));
+	}
+
 	if (set->cert != NULL && strcmp(ctx_set->cert, set->cert) != 0) {
 		if (ssl_iostream_use_certificate(ssl_io, set->cert) < 0)
 			return -1;
@@ -222,6 +227,13 @@ int io_stream_create_ssl(struct ssl_iostream_context *ctx, const char *source,
 
 	*input = i_stream_create_ssl(ssl_io);
 	*output = o_stream_create_ssl(ssl_io);
+	i_stream_set_name(*input, t_strconcat("SSL ",
+		i_stream_get_name(ssl_io->plain_input), NULL));
+	o_stream_set_name(*output, t_strconcat("SSL ",
+		o_stream_get_name(ssl_io->plain_output), NULL));
+
+	if (ssl_io->plain_output->real_stream->error_handling_disabled)
+		o_stream_set_no_error_handling(*output, TRUE);
 
 	ssl_io->ssl_output = *output;
 	*iostream_r = ssl_io;
@@ -250,6 +262,19 @@ void ssl_iostream_unref(struct ssl_iostream **_ssl_io)
 		return;
 
 	ssl_iostream_free(ssl_io);
+}
+
+void ssl_iostream_destroy(struct ssl_iostream **_ssl_io)
+{
+	struct ssl_iostream *ssl_io = *_ssl_io;
+
+	*_ssl_io = NULL;
+
+	(void)SSL_shutdown(ssl_io->ssl);
+	(void)ssl_iostream_more(ssl_io);
+	(void)o_stream_flush(ssl_io->plain_output);
+
+	ssl_iostream_unref(&ssl_io);
 }
 
 static bool ssl_iostream_bio_output(struct ssl_iostream *ssl_io)
