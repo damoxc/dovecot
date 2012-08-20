@@ -9,6 +9,7 @@
 #include "imap-match.h"
 #include "imap-status.h"
 #include "imap-commands.h"
+#include "imap-list.h"
 #include "mail-namespace.h"
 
 struct cmd_list_context {
@@ -22,7 +23,7 @@ struct cmd_list_context {
 	struct mail_namespace *ns;
 	struct mailbox_list_iterate_context *list_iter;
 
-	ARRAY_DEFINE(ns_prefixes_listed, struct mail_namespace *);
+	ARRAY(struct mail_namespace *) ns_prefixes_listed;
 
 	unsigned int lsub:1;
 	unsigned int lsub_no_unsubscribed:1;
@@ -49,40 +50,22 @@ mailbox_flags2str(struct cmd_list_context *ctx, string_t *str,
 	if ((ctx->list_flags & MAILBOX_LIST_ITER_RETURN_CHILDREN) == 0)
 		flags &= ~(MAILBOX_CHILDREN|MAILBOX_NOCHILDREN);
 
-	if ((flags & MAILBOX_SUBSCRIBED) != 0 &&
-	    (ctx->list_flags & MAILBOX_LIST_ITER_RETURN_SUBSCRIBED) != 0)
-		str_append(str, "\\Subscribed ");
+	if ((ctx->list_flags & MAILBOX_LIST_ITER_RETURN_SUBSCRIBED) == 0)
+		flags &= ~MAILBOX_SUBSCRIBED;
 
 	if ((flags & MAILBOX_CHILD_SUBSCRIBED) != 0 &&
 	    (flags & MAILBOX_SUBSCRIBED) == 0 && !ctx->used_listext) {
 		/* LSUB uses \Noselect for this */
 		flags |= MAILBOX_NOSELECT;
 	}
-
-	if ((flags & MAILBOX_NOSELECT) != 0)
-		str_append(str, "\\Noselect ");
-	if ((flags & MAILBOX_NONEXISTENT) != 0)
-		str_append(str, "\\NonExistent ");
-
-	if ((flags & MAILBOX_CHILDREN) != 0)
-		str_append(str, "\\HasChildren ");
-	else if ((flags & MAILBOX_NOINFERIORS) != 0)
-		str_append(str, "\\NoInferiors ");
-	else if ((flags & MAILBOX_NOCHILDREN) != 0)
-		str_append(str, "\\HasNoChildren ");
-
-	if ((flags & MAILBOX_MARKED) != 0)
-		str_append(str, "\\Marked ");
-	if ((flags & MAILBOX_UNMARKED) != 0)
-		str_append(str, "\\UnMarked ");
+	imap_mailbox_flags2str(str, flags);
 
 	if ((ctx->list_flags & MAILBOX_LIST_ITER_RETURN_SPECIALUSE) != 0 &&
 	    special_use != NULL) {
+		if (str_len(str) != orig_len)
+			str_append_c(str, ' ');
 		str_append(str, special_use);
-		str_append_c(str, ' ');
 	}
-	if (str_len(str) != orig_len)
-		str_truncate(str, str_len(str)-1);
 }
 
 static void
@@ -200,7 +183,7 @@ list_get_inbox_flags(struct cmd_list_context *ctx)
 	list_iter = mailbox_list_iter_init(ns->list, "INBOX", 0);
 	info = mailbox_list_iter_next(list_iter);
 	if (info != NULL) {
-		i_assert(strcasecmp(info->name, "INBOX") == 0);
+		i_assert(strcasecmp(info->vname, "INBOX") == 0);
 		flags = info->flags;
 	}
 	(void)mailbox_list_iter_deinit(&list_iter);
@@ -376,7 +359,6 @@ list_send_status(struct cmd_list_context *ctx, const char *name,
 {
 	struct imap_status_result result;
 	struct mail_namespace *ns;
-	const char *error;
 
 	if ((flags & (MAILBOX_NONEXISTENT | MAILBOX_NOSELECT)) != 0) {
 		/* doesn't exist, don't even try to get STATUS */
@@ -392,9 +374,9 @@ list_send_status(struct cmd_list_context *ctx, const char *name,
 	   namespaces, ctx->ns may not point to correct one */
 	ns = mail_namespace_find(ctx->ns->user->namespaces, name);
 	if (imap_status_get(ctx->cmd, ns, name,
-			    &ctx->status_items, &result, &error) < 0) {
+			    &ctx->status_items, &result) < 0) {
 		client_send_line(ctx->cmd->client,
-				 t_strconcat("* ", error, NULL));
+				 t_strconcat("* ", result.errstr, NULL));
 		return;
 	}
 
@@ -424,7 +406,7 @@ list_namespace_mailboxes(struct cmd_list_context *ctx)
 	str = t_str_new(256);
 	mutf7_name = t_str_new(128);
 	while ((info = mailbox_list_iter_next(ctx->list_iter)) != NULL) {
-		name = info->name;
+		name = info->vname;
 		flags = info->flags;
 
 		if (strcasecmp(name, "INBOX") == 0) {
@@ -489,7 +471,7 @@ list_namespace_mailboxes(struct cmd_list_context *ctx)
 		imap_quote_append_string(str, str_c(mutf7_name), FALSE);
 		mailbox_childinfo2str(ctx, str, flags);
 
-		ret = client_send_line(ctx->cmd->client, str_c(str));
+		ret = client_send_line_next(ctx->cmd->client, str_c(str));
 		if (ctx->used_status) T_BEGIN {
 			list_send_status(ctx, name, str_c(mutf7_name), flags);
 		} T_END;
@@ -746,7 +728,7 @@ static void list_namespace_init(struct cmd_list_context *ctx)
 	struct mail_namespace *ns = ctx->ns;
 	const char *cur_ns_prefix, *cur_ref, *const *pat, *pattern;
 	enum imap_match_result inbox_match;
-	ARRAY_DEFINE(used_patterns, const char *);
+	ARRAY(const char *) used_patterns;
 	bool inboxcase;
 
 	cur_ns_prefix = ns->prefix;
@@ -792,7 +774,7 @@ static void list_namespace_init(struct cmd_list_context *ctx)
 		pattern = "INBOX";
 		array_append(&used_patterns, &pattern, 1);
 	}
-	(void)array_append_space(&used_patterns); /* NULL-terminate */
+	array_append_zero(&used_patterns); /* NULL-terminate */
 	pat = array_idx(&used_patterns, 0);
 
 	ctx->list_iter = mailbox_list_iter_init_multiple(ns->list, pat,
@@ -909,7 +891,7 @@ bool cmd_list_full(struct client_command_context *cmd, bool lsub)
 	const struct imap_arg *args, *list_args;
 	unsigned int arg_count;
 	struct cmd_list_context *ctx;
-	ARRAY_DEFINE(patterns, const char *) = ARRAY_INIT;
+	ARRAY(const char *) patterns = ARRAY_INIT;
 	const char *pattern, *const *patterns_strarr;
 	string_t *str;
 
@@ -1002,7 +984,7 @@ bool cmd_list_full(struct client_command_context *cmd, bool lsub)
 		return TRUE;
 	}
 
-	(void)array_append_space(&patterns); /* NULL-terminate */
+	array_append_zero(&patterns); /* NULL-terminate */
 	patterns_strarr = array_idx(&patterns, 0);
 	if (!ctx->used_listext && !lsub && *patterns_strarr[0] == '\0') {
 		/* Only LIST ref "" gets us here */

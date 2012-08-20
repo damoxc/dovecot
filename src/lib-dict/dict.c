@@ -6,7 +6,7 @@
 #include "dict-sql.h"
 #include "dict-private.h"
 
-static ARRAY_DEFINE(dict_drivers, struct dict *);
+static ARRAY(struct dict *) dict_drivers;
 static struct dict_iterate_context dict_iter_unsupported;
 
 static struct dict *dict_driver_lookup(const char *name)
@@ -57,6 +57,7 @@ void dict_drivers_register_builtin(void)
 	dict_driver_register(&dict_driver_client);
 	dict_driver_register(&dict_driver_file);
 	dict_driver_register(&dict_driver_memcached);
+	dict_driver_register(&dict_driver_memcached_ascii);
 	dict_driver_register(&dict_driver_redis);
 }
 
@@ -65,6 +66,7 @@ void dict_drivers_unregister_builtin(void)
 	dict_driver_unregister(&dict_driver_client);
 	dict_driver_unregister(&dict_driver_file);
 	dict_driver_unregister(&dict_driver_memcached);
+	dict_driver_unregister(&dict_driver_memcached_ascii);
 	dict_driver_unregister(&dict_driver_redis);
 }
 
@@ -209,6 +211,15 @@ void dict_unset(struct dict_transaction_context *ctx,
 	i_assert(dict_key_prefix_is_valid(key));
 
 	ctx->dict->v.unset(ctx, key);
+	ctx->changed = TRUE;
+}
+
+void dict_append(struct dict_transaction_context *ctx,
+		 const char *key, const char *value)
+{
+	i_assert(dict_key_prefix_is_valid(key));
+
+	ctx->dict->v.append(ctx, key, value);
 	ctx->changed = TRUE;
 }
 

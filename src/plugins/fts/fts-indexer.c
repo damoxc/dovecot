@@ -51,7 +51,7 @@ int fts_indexer_cmd(struct mail_user *user, const char *cmd,
 	cmd = t_strconcat(INDEXER_HANDSHAKE, cmd, NULL);
 	if (write_full(fd, cmd, strlen(cmd)) < 0) {
 		i_error("write(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	*path_r = path;
@@ -212,7 +212,7 @@ static int fts_indexer_more_int(struct fts_indexer_context *ctx)
 	   asynchronous waits, get rid of this wait and use the mail IO loop */
 	ioloop = io_loop_create();
 	io = io_add(ctx->fd, IO_READ, io_loop_stop, ioloop);
-	to = timeout_add(INDEXER_WAIT_MSECS, io_loop_stop, ioloop);
+	to = timeout_add_short(INDEXER_WAIT_MSECS, io_loop_stop, ioloop);
 	io_loop_run(ioloop);
 	io_remove(&io);
 	timeout_remove(&to);

@@ -35,11 +35,13 @@ typedef struct buffer string_t;
 struct istream;
 struct ostream;
 
-#include "array-decl.h" /* ARRAY_DEFINE()s may exist in any header */
+#include "array-decl.h" /* ARRAY*()s may exist in any header */
+#include "hash-decl.h" /* HASH_TABLE*()s may exist in any header */
 #include "strfuncs.h"
 #include "strnum.h"
 
 size_t nearest_power(size_t num) ATTR_CONST;
+int close_keep_errno(int *fd);
 
 void lib_init(void);
 void lib_deinit(void);

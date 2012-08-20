@@ -12,10 +12,10 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-storage
 
 libstorage_index_la_SOURCES = \
-	istream-attachment.c \
 	istream-mail.c \
 	index-attachment.c \
 	index-mail.c \
+	index-mail-binary.c \
 	index-mail-headers.c \
 	index-mailbox-check.c \
 	index-search.c \
@@ -26,6 +26,7 @@ libstorage_index_la_SOURCES = \
 	index-storage.c \
 	index-sync.c \
 	index-sync-changes.c \
+	index-sync-pvt.c \
 	index-sync-search.c \
 	index-thread.c \
 	index-thread-finish.c \
@@ -33,7 +34,6 @@ libstorage_index_la_SOURCES = \
 	index-transaction.c
 
 headers = \
-	istream-attachment.h \
 	istream-mail.h \
 	index-attachment.h \
 	index-mail.h \

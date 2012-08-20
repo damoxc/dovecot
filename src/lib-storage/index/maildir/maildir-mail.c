@@ -201,7 +201,7 @@ maildir_mail_get_fname(struct maildir_mailbox *mbox, struct mail *mail,
 	/* one reason this could happen is if we delayed opening
 	   dovecot-uidlist and we're trying to open a mail that got recently
 	   expunged. Let's test this theory first: */
-	(void)mail_index_refresh(mbox->box.index);
+	mail_index_refresh(mbox->box.index);
 	view = mail_index_view_open(mbox->box.index);
 	exists = mail_index_lookup_seq(view, mail->uid, &seq);
 	mail_index_view_close(&view);
@@ -504,8 +504,8 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 				"Maildir %s: Corrupted dovecot-uidlist: "
 				"UID %u had empty GUID, clearing it",
 				mailbox_get_path(_mail->box), _mail->uid);
-			maildir_uidlist_set_ext(mbox->uidlist, _mail->uid,
-				MAILDIR_UIDLIST_REC_EXT_GUID, NULL);
+			maildir_uidlist_unset_ext(mbox->uidlist, _mail->uid,
+				MAILDIR_UIDLIST_REC_EXT_GUID);
 		}
 
 		/* default to base filename: */
@@ -617,19 +617,18 @@ static void maildir_mail_remove_sizes_from_uidlist(struct mail *mail)
 
 	if (maildir_uidlist_lookup_ext(mbox->uidlist, mail->uid,
 				       MAILDIR_UIDLIST_REC_EXT_VSIZE) != NULL) {
-		maildir_uidlist_set_ext(mbox->uidlist, mail->uid,
-					MAILDIR_UIDLIST_REC_EXT_VSIZE, NULL);
+		maildir_uidlist_unset_ext(mbox->uidlist, mail->uid,
+					  MAILDIR_UIDLIST_REC_EXT_VSIZE);
 	}
 	if (maildir_uidlist_lookup_ext(mbox->uidlist, mail->uid,
 				       MAILDIR_UIDLIST_REC_EXT_PSIZE) != NULL) {
-		maildir_uidlist_set_ext(mbox->uidlist, mail->uid,
-					MAILDIR_UIDLIST_REC_EXT_PSIZE, NULL);
+		maildir_uidlist_unset_ext(mbox->uidlist, mail->uid,
+					  MAILDIR_UIDLIST_REC_EXT_PSIZE);
 	}
 }
 
 static int
-do_fix_size(struct maildir_mailbox *mbox, const char *path,
-	    const char *wrong_key_p)
+do_fix_size(struct maildir_mailbox *mbox, const char *path, char *wrong_key_p)
 {
 	const char *fname, *newpath, *extra, *info, *dir;
 	struct stat st;
@@ -736,6 +735,7 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	maildir_mail_get_stream,
+	index_mail_get_binary_stream,
 	maildir_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,

@@ -110,10 +110,6 @@ int mail_get_parts(struct mail *mail, struct message_part **parts_r)
 int mail_get_date(struct mail *mail, time_t *date_r, int *timezone_r)
 {
 	struct mail_private *p = (struct mail_private *)mail;
-	int tz;
-
-	if (timezone_r == NULL)
-		timezone_r = &tz;
 
 	return p->v.get_date(mail, date_r, timezone_r);
 }
@@ -187,31 +183,74 @@ int mail_get_header_stream(struct mail *mail,
 	return p->v.get_header_stream(mail, headers, stream_r);
 }
 
-int mail_set_aborted(struct mail *mail)
+void mail_set_aborted(struct mail *mail)
 {
 	mail_storage_set_error(mail->box->storage, MAIL_ERROR_NOTPOSSIBLE,
 			       "Mail field not cached");
-	return -1;
 }
 
 int mail_get_stream(struct mail *mail, struct message_size *hdr_size,
 		    struct message_size *body_size, struct istream **stream_r)
 {
 	struct mail_private *p = (struct mail_private *)mail;
+	int ret;
 
-	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER)
-		return mail_set_aborted(mail);
-	return p->v.get_stream(mail, TRUE, hdr_size, body_size, stream_r);
+	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(mail);
+		return -1;
+	}
+	T_BEGIN {
+		ret = p->v.get_stream(mail, TRUE, hdr_size, body_size, stream_r);
+	} T_END;
+	return ret;
 }
 
 int mail_get_hdr_stream(struct mail *mail, struct message_size *hdr_size,
 			struct istream **stream_r)
 {
 	struct mail_private *p = (struct mail_private *)mail;
+	int ret;
 
-	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER)
-		return mail_set_aborted(mail);
-	return p->v.get_stream(mail, FALSE, hdr_size, NULL, stream_r);
+	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(mail);
+		return -1;
+	}
+	T_BEGIN {
+		ret = p->v.get_stream(mail, FALSE, hdr_size, NULL, stream_r);
+	} T_END;
+	return ret;
+}
+
+int mail_get_binary_stream(struct mail *mail, const struct message_part *part,
+			   bool include_hdr, uoff_t *size_r, bool *binary_r,
+			   struct istream **stream_r)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+	int ret;
+
+	if (mail->lookup_abort != MAIL_LOOKUP_ABORT_NEVER) {
+		mail_set_aborted(mail);
+		return -1;
+	}
+	T_BEGIN {
+		ret = p->v.get_binary_stream(mail, part, include_hdr,
+					     size_r, binary_r, stream_r);
+	} T_END;
+	return ret;
+}
+
+int mail_get_binary_size(struct mail *mail, const struct message_part *part,
+			 bool include_hdr, uoff_t *size_r)
+{
+	struct mail_private *p = (struct mail_private *)mail;
+	bool binary;
+	int ret;
+
+	T_BEGIN {
+		ret = p->v.get_binary_stream(mail, part, include_hdr,
+					     size_r, &binary, NULL);
+	} T_END;
+	return ret;
 }
 
 int mail_get_special(struct mail *mail, enum mail_fetch_field field,

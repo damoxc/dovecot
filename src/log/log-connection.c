@@ -33,15 +33,16 @@ struct log_connection {
 	struct istream *input;
 
 	char *default_prefix;
-	/* pid -> struct log_client* */
-	struct hash_table *clients;
+	HASH_TABLE(void *, struct log_client *) clients;
 
 	unsigned int master:1;
 	unsigned int handshaked:1;
 };
 
 static struct log_connection *log_connections = NULL;
-static ARRAY_DEFINE(logs_by_fd, struct log_connection *);
+static ARRAY(struct log_connection *) logs_by_fd;
+
+static void log_connection_destroy(struct log_connection *log);
 
 static struct log_client *log_client_get(struct log_connection *log, pid_t pid)
 {
@@ -139,7 +140,7 @@ log_parse_master_line(const char *line, time_t log_time, const struct tm *tm)
 	const char *p, *p2, *cmd;
 	unsigned int count;
 	int service_fd;
-	long pid;
+	pid_t pid;
 
 	p = strchr(line, ' ');
 	if (p == NULL || (p2 = strchr(++p, ' ')) == NULL) {
@@ -304,8 +305,8 @@ static void log_connection_input(struct log_connection *log)
 	}
 }
 
-struct log_connection *
-log_connection_create(struct log_error_buffer *errorbuf, int fd, int listen_fd)
+void log_connection_create(struct log_error_buffer *errorbuf,
+			   int fd, int listen_fd)
 {
 	struct log_connection *log;
 
@@ -315,27 +316,26 @@ log_connection_create(struct log_error_buffer *errorbuf, int fd, int listen_fd)
 	log->listen_fd = listen_fd;
 	log->io = io_add(fd, IO_READ, log_connection_input, log);
 	log->input = i_stream_create_fd(fd, PIPE_BUF, FALSE);
-	log->clients = hash_table_create(default_pool, default_pool, 0,
-					 NULL, NULL);
+	hash_table_create_direct(&log->clients, default_pool, 0);
 	array_idx_set(&logs_by_fd, listen_fd, &log);
 
 	DLLIST_PREPEND(&log_connections, log);
 	log_connection_input(log);
-	return log;
 }
 
-void log_connection_destroy(struct log_connection *log)
+static void log_connection_destroy(struct log_connection *log)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct log_client *client;
 
 	array_idx_clear(&logs_by_fd, log->listen_fd);
 
 	DLLIST_REMOVE(&log_connections, log);
 
 	iter = hash_table_iterate_init(log->clients);
-	while (hash_table_iterate(iter, &key, &value))
-		i_free(value);
+	while (hash_table_iterate(iter, log->clients, &key, &client))
+		i_free(client);
 	hash_table_iterate_deinit(&iter);
 	hash_table_destroy(&log->clients);
 

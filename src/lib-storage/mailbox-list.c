@@ -34,7 +34,7 @@
 
 struct mailbox_list_module_register mailbox_list_module_register = { 0 };
 
-static ARRAY_DEFINE(mailbox_list_drivers, const struct mailbox_list *);
+static ARRAY(const struct mailbox_list *) mailbox_list_drivers;
 
 void mailbox_lists_init(void)
 {
@@ -149,6 +149,9 @@ int mailbox_list_create(const char *driver, struct mail_namespace *ns,
 		list->set.index_dir = set->index_dir == NULL ||
 			strcmp(set->index_dir, set->root_dir) == 0 ? NULL :
 			p_strdup(list->pool, set->index_dir);
+		list->set.index_pvt_dir = set->index_pvt_dir == NULL ||
+			strcmp(set->index_pvt_dir, set->root_dir) == 0 ? NULL :
+			p_strdup(list->pool, set->index_pvt_dir);
 		list->set.control_dir = set->control_dir == NULL ||
 			strcmp(set->control_dir, set->root_dir) == 0 ? NULL :
 			p_strdup(list->pool, set->control_dir);
@@ -175,10 +178,11 @@ int mailbox_list_create(const char *driver, struct mail_namespace *ns,
 	list->set.utf8 = set->utf8;
 
 	if (ns->mail_set->mail_debug) {
-		i_debug("%s: root=%s, index=%s, control=%s, inbox=%s, alt=%s",
+		i_debug("%s: root=%s, index=%s, indexpvt=%s, control=%s, inbox=%s, alt=%s",
 			list->name,
 			list->set.root_dir == NULL ? "" : list->set.root_dir,
 			list->set.index_dir == NULL ? "" : list->set.index_dir,
+			list->set.index_pvt_dir == NULL ? "" : list->set.index_pvt_dir,
 			list->set.control_dir == NULL ?
 			"" : list->set.control_dir,
 			list->set.inbox_path == NULL ?
@@ -289,6 +293,8 @@ int mailbox_list_settings_parse(struct mail_user *user, const char *data,
 			dest = &set_r->inbox_path;
 		else if (strcmp(key, "INDEX") == 0)
 			dest = &set_r->index_dir;
+		else if (strcmp(key, "INDEXPVT") == 0)
+			dest = &set_r->index_pvt_dir;
 		else if (strcmp(key, "CONTROL") == 0)
 			dest = &set_r->control_dir;
 		else if (strcmp(key, "ALT") == 0)
@@ -351,7 +357,7 @@ const char *mailbox_list_get_unexpanded_path(struct mailbox_list *list,
 
 	if (mailbox_list_settings_parse(user, p + 1, &set, &error) < 0)
 		return "";
-	return mailbox_list_get_root_path(&set, type);
+	return mailbox_list_set_get_root_path(&set, type);
 }
 
 static const char *
@@ -565,7 +571,7 @@ void mailbox_list_destroy(struct mailbox_list **_list)
 	*_list = NULL;
 	i_free_and_null(list->error_string);
 
-	if (list->guid_cache != NULL) {
+	if (hash_table_is_created(list->guid_cache)) {
 		hash_table_destroy(&list->guid_cache);
 		pool_unref(&list->guid_cache_pool);
 	}
@@ -630,8 +636,10 @@ char mailbox_list_get_hierarchy_sep(struct mailbox_list *list)
 	return list->v.get_hierarchy_sep(list);
 }
 
-void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
-				  struct mailbox_permissions *permissions_r)
+static void ATTR_NULL(2)
+mailbox_list_get_permissions_internal(struct mailbox_list *list,
+				      const char *name,
+				      struct mailbox_permissions *permissions_r)
 {
 	const char *path, *parent_name, *p;
 	struct stat st;
@@ -646,7 +654,9 @@ void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
 	permissions_r->file_create_gid = (gid_t)-1;
 	permissions_r->file_create_gid_origin = "defaults";
 
-	path = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR);
+	path = name == NULL ?
+		mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_DIR) :
+		mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR);
 	if (path == NULL) {
 		/* no filesystem support in storage */
 	} else if (stat(path, &st) < 0) {
@@ -724,6 +734,12 @@ void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
 	}
 }
 
+void mailbox_list_get_permissions(struct mailbox_list *list, const char *name,
+				  struct mailbox_permissions *permissions_r)
+{
+	mailbox_list_get_permissions_internal(list, name, permissions_r);
+}
+
 void mailbox_list_get_root_permissions(struct mailbox_list *list,
 				       mode_t *file_mode_r, mode_t *dir_mode_r,
 				       gid_t *gid_r, const char **gid_origin_r)
@@ -736,7 +752,7 @@ void mailbox_list_get_root_permissions(struct mailbox_list *list,
 		*gid_r = list->file_create_gid;
 		*gid_origin_r = list->file_create_gid_origin;
 	} else {
-		mailbox_list_get_permissions(list, NULL, &perm);
+		mailbox_list_get_permissions_internal(list, NULL, &perm);
 
 		*file_mode_r = perm.file_create_mode;
 		*dir_mode_r = perm.dir_create_mode;
@@ -844,7 +860,7 @@ int mailbox_list_mkdir_root(struct mailbox_list *list, const char *path,
 		if (p == unexpanded)
 			expanded = "";
 		else {
-			expanded = mailbox_list_get_path(list, NULL, type);
+			expanded = mailbox_list_get_root_path(list, type);
 			expanded = get_expanded_path(unexpanded, p, expanded);
 		}
 	}
@@ -940,9 +956,15 @@ const char *mailbox_list_get_path(struct mailbox_list *list, const char *name,
 	return list->v.get_path(list, name, type);
 }
 
+const char *mailbox_list_get_root_path(struct mailbox_list *list,
+				       enum mailbox_list_path_type type)
+{
+	return list->v.get_path(list, NULL, type);
+}
+
 const char *
-mailbox_list_get_root_path(const struct mailbox_list_settings *set,
-			   enum mailbox_list_path_type type)
+mailbox_list_set_get_root_path(const struct mailbox_list_settings *set,
+			       enum mailbox_list_path_type type)
 {
 	const char *path;
 
@@ -969,6 +991,8 @@ mailbox_list_get_root_path(const struct mailbox_list_settings *set,
 	case MAILBOX_LIST_PATH_TYPE_INDEX:
 		return set->index_dir != NULL ?
 			set->index_dir : set->root_dir;
+	case MAILBOX_LIST_PATH_TYPE_INDEX_PRIVATE:
+		return set->index_pvt_dir;
 	}
 	i_unreached();
 }
@@ -1067,8 +1091,7 @@ int mailbox_list_mailbox(struct mailbox_list *list, const char *name,
 		return mailbox_list_iter_deinit(&iter);
 	}
 
-	rootdir = mailbox_list_get_path(list, NULL,
-					MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	rootdir = mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	i_assert(rootdir != NULL);
 	path = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR);
 
@@ -1120,7 +1143,7 @@ static bool mailbox_list_init_changelog(struct mailbox_list *list)
 
 	/* don't do this in mailbox_list_create(), because _get_path() might be
 	   overridden by storage (mbox). */
-	path = mailbox_list_get_path(list, NULL, MAILBOX_LIST_PATH_TYPE_INDEX);
+	path = mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_INDEX);
 	if (*path == '\0')
 		return FALSE;
 
@@ -1319,8 +1342,7 @@ bool mailbox_list_try_get_absolute_path(struct mailbox_list *list,
 
 	/* okay, we have an absolute path now. but check first if it points to
 	   same directory as one of our regular mailboxes. */
-	root_dir = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	root_dir = mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	len = strlen(root_dir);
 	if (strncmp(root_dir, *name, len) == 0 && (*name)[len] == '/') {
 		mailbox_name = *name + len + 1;
@@ -1341,7 +1363,15 @@ int mailbox_list_mkdir(struct mailbox_list *list,
 {
 	struct mailbox_permissions perm;
 
-	mailbox_list_get_permissions(list, mailbox, &perm);
+	if (mailbox != NULL)
+		mailbox_list_get_permissions(list, mailbox, &perm);
+	else {
+		mailbox_list_get_root_permissions(list, 
+						  &perm.file_create_mode,
+						  &perm.dir_create_mode,
+						  &perm.file_create_gid,
+						  &perm.file_create_gid_origin);
+	}
 	if (mkdir_parents_chgrp(path, perm.dir_create_mode,
 				perm.file_create_gid,
 				perm.file_create_gid_origin) < 0 &&
@@ -1365,19 +1395,19 @@ int mailbox_list_mkdir_parent(struct mailbox_list *list,
 	return mailbox_list_mkdir(list, mailbox, t_strdup_until(path, p));
 }
 
-int mailbox_list_create_missing_index_dir(struct mailbox_list *list,
-					  const char *name)
+static int ATTR_NULL(2)
+mailbox_list_create_missing_dir(struct mailbox_list *list, const char *name,
+				enum mailbox_list_path_type type)
 {
 	const char *root_dir, *index_dir, *parent_dir, *p, *error;
 	struct mailbox_permissions perm;
 	unsigned int n = 0;
 
-	list->index_root_dir_created = TRUE;
-	root_dir = mailbox_list_get_path(list, name,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	index_dir = mailbox_list_get_path(list, name,
-					  MAILBOX_LIST_PATH_TYPE_INDEX);
-	if (*index_dir == '\0')
+	root_dir = name == NULL ?
+		mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_MAILBOX) :
+		mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	index_dir = mailbox_list_get_path(list, name, type);
+	if (index_dir == NULL || *index_dir == '\0')
 		return 0;
 	if (strcmp(index_dir, root_dir) == 0) {
 		if ((list->props & MAILBOX_LIST_PROP_AUTOCREATE_DIRS) == 0)
@@ -1386,8 +1416,7 @@ int mailbox_list_create_missing_index_dir(struct mailbox_list *list,
 	}
 
 	if (name == NULL) {
-		if (mailbox_list_mkdir_root(list, index_dir,
-					    MAILBOX_LIST_PATH_TYPE_INDEX,
+		if (mailbox_list_mkdir_root(list, index_dir, type,
 					    &error) < 0) {
 			mailbox_list_set_critical(list,
 				"Couldn't create index root dir %s: %s",
@@ -1412,8 +1441,7 @@ int mailbox_list_create_missing_index_dir(struct mailbox_list *list,
 		}
 		/* create the parent directory first */
 		parent_dir = t_strdup_until(index_dir, p);
-		if (mailbox_list_mkdir_root(list, parent_dir,
-					    MAILBOX_LIST_PATH_TYPE_INDEX,
+		if (mailbox_list_mkdir_root(list, parent_dir, type,
 					    &error) < 0) {
 			mailbox_list_set_critical(list,
 				"Couldn't create index dir %s: %s",
@@ -1422,6 +1450,21 @@ int mailbox_list_create_missing_index_dir(struct mailbox_list *list,
 		}
 	}
 	return 0;
+}
+
+int mailbox_list_create_missing_index_dir(struct mailbox_list *list,
+					  const char *name)
+{
+	list->index_root_dir_created = TRUE;
+	return mailbox_list_create_missing_dir(list, name,
+		MAILBOX_LIST_PATH_TYPE_INDEX);
+}
+
+int mailbox_list_create_missing_index_pvt_dir(struct mailbox_list *list,
+					      const char *name)
+{
+	return mailbox_list_create_missing_dir(list, name,
+		MAILBOX_LIST_PATH_TYPE_INDEX_PRIVATE);
 }
 
 const char *mailbox_list_get_last_error(struct mailbox_list *list,

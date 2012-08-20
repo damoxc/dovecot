@@ -604,7 +604,7 @@ static void imapc_mailbox_get_selected_status(struct imapc_mailbox *mbox,
 					      enum mailbox_status_items items,
 					      struct mailbox_status *status_r)
 {
-	index_storage_get_status(&mbox->box, items, status_r);
+	index_storage_get_open_status(&mbox->box, items, status_r);
 	if ((items & STATUS_PERMANENT_FLAGS) != 0)
 		status_r->permanent_flags = mbox->permanent_flags;
 }
@@ -719,10 +719,11 @@ static void imapc_idle_noop_callback(const struct imapc_command_reply *reply,
 static void imapc_notify_changes(struct mailbox *box)
 {
 	struct imapc_mailbox *mbox = (struct imapc_mailbox *)box;
+	const struct mail_storage_settings *set = box->storage->set;
 	struct imapc_command *cmd;
 	enum imapc_capability capa;
 
-	if (box->notify_min_interval == 0) {
+	if (box->notify_callback == NULL) {
 		if (mbox->to_idle_check != NULL)
 			timeout_remove(&mbox->to_idle_check);
 		return;
@@ -742,7 +743,7 @@ static void imapc_notify_changes(struct mailbox *box)
 		   check for changes with NOOP every once in a while. */
 		i_assert(!imapc_client_is_running(mbox->storage->client));
 		mbox->to_idle_check =
-			timeout_add(box->notify_min_interval * 1000,
+			timeout_add(set->mailbox_idle_check_interval * 1000,
 				    imapc_idle_timeout, mbox);
 	}
 }

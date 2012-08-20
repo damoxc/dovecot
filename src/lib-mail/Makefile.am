@@ -6,11 +6,17 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-charset
 
 libmail_la_SOURCES = \
+	istream-attachment-connector.c \
+	istream-attachment-extractor.c \
+	istream-binary-converter.c \
 	istream-dot.c \
 	istream-header-filter.c \
+	istream-nonuls.c \
+	istream-qp-decoder.c \
 	mail-user-hash.c \
 	mbox-from.c \
 	message-address.c \
+	message-binary-part.c \
 	message-date.c \
 	message-decoder.c \
 	message-header-decode.c \
@@ -27,12 +33,18 @@ libmail_la_SOURCES = \
 	rfc822-parser.c
 
 headers = \
+	istream-attachment-connector.h \
+	istream-attachment-extractor.h \
+	istream-binary-converter.h \
 	istream-dot.h \
 	istream-header-filter.h \
+	istream-nonuls.h \
+	istream-qp.h \
 	mail-user-hash.h \
 	mbox-from.h \
 	mail-types.h \
 	message-address.h \
+	message-binary-part.h \
 	message-date.h \
 	message-decoder.h \
 	message-header-decode.h \
@@ -53,7 +65,10 @@ pkginc_lib_HEADERS = $(headers)
 
 test_programs = \
 	test-istream-dot \
+	test-istream-attachment \
+	test-istream-binary-converter \
 	test-istream-header-filter \
+	test-istream-qp-decoder \
 	test-mbox-from \
 	test-message-address \
 	test-message-date \
@@ -75,6 +90,25 @@ test_libs = \
 test_istream_dot_SOURCES = test-istream-dot.c
 test_istream_dot_LDADD = istream-dot.lo $(test_libs)
 test_istream_dot_DEPENDENCIES = istream-dot.lo $(test_libs)
+
+test_istream_qp_decoder_SOURCES = test-istream-qp-decoder.c
+test_istream_qp_decoder_LDADD = istream-qp-decoder.lo quoted-printable.lo $(test_libs)
+test_istream_qp_decoder_DEPENDENCIES = istream-qp-decoder.lo quoted-printable.lo $(test_libs)
+
+message_parser_objects = \
+	message-parser.lo \
+	message-header-parser.lo \
+	message-size.lo \
+	rfc822-parser.lo \
+	rfc2231-parser.lo
+
+test_istream_binary_converter_SOURCES = test-istream-binary-converter.c
+test_istream_binary_converter_LDADD = istream-binary-converter.lo $(message_parser_objects)  $(test_libs)
+test_istream_binary_converter_DEPENDENCIES = istream-binary-converter.lo $(message_parser_objects)  $(test_libs)
+
+test_istream_attachment_SOURCES = test-istream-attachment.c
+test_istream_attachment_LDADD = istream-attachment-extractor.lo istream-attachment-connector.lo $(message_parser_objects) $(test_libs)
+test_istream_attachment_DEPENDENCIES = istream-attachment-extractor.lo istream-attachment-connector.lo $(message_parser_objects)  $(test_libs)
 
 test_istream_header_filter_SOURCES = test-istream-header-filter.c
 test_istream_header_filter_LDADD = istream-header-filter.lo message-header-parser.lo $(test_libs)

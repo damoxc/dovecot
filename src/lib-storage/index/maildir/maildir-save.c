@@ -135,7 +135,7 @@ maildir_save_transaction_init(struct mailbox_transaction_context *t)
 	ctx->newdir = p_strconcat(pool, path, "/new", NULL);
 	ctx->curdir = p_strconcat(pool, path, "/cur", NULL);
 
-	buffer_create_const_data(&ctx->keywords_buffer, NULL, 0);
+	buffer_create_const_data(&ctx->keywords_buffer, "", 0);
 	array_create_from_buffer(&ctx->keywords_array, &ctx->keywords_buffer,
 				 sizeof(unsigned int));
 	ctx->last_save_finished = TRUE;
@@ -272,17 +272,18 @@ maildir_get_dest_filename(struct maildir_save_context *ctx,
 			return TRUE;
 		}
 
-		*fname_r = maildir_filename_flags_set(NULL, basename,
-					mf->flags & MAIL_FLAGS_MASK, NULL);
+		*fname_r = maildir_filename_flags_set(basename,
+					mf->flags & MAIL_FLAGS_MASK);
 		return FALSE;
 	}
 
 	i_assert(ctx->keywords_sync_ctx != NULL || mf->keywords_count == 0);
 	buffer_create_const_data(&ctx->keywords_buffer, mf + 1,
 				 mf->keywords_count * sizeof(unsigned int));
-	*fname_r = maildir_filename_flags_set(ctx->keywords_sync_ctx, basename,
-					      mf->flags & MAIL_FLAGS_MASK,
-					      &ctx->keywords_array);
+	*fname_r = maildir_filename_flags_kw_set(ctx->keywords_sync_ctx,
+						 basename,
+						 mf->flags & MAIL_FLAGS_MASK,
+						 &ctx->keywords_array);
 	return FALSE;
 }
 
@@ -528,10 +529,10 @@ static int maildir_save_finish_real(struct mail_save_context *_ctx)
 	}
 
 	path = t_strconcat(ctx->tmpdir, "/", ctx->file_last->tmp_name, NULL);
-	if (!ctx->failed && o_stream_flush(_ctx->output) < 0) {
+	if (!ctx->failed && o_stream_nfinish(_ctx->output) < 0) {
 		if (!mail_storage_set_error_from_errno(storage)) {
 			mail_storage_set_critical(storage,
-				"o_stream_flush(%s) failed: %m", path);
+				"write(%s) failed: %m", path);
 		}
 		ctx->failed = TRUE;
 	}
@@ -561,7 +562,7 @@ static int maildir_save_finish_real(struct mail_save_context *_ctx)
 				  &ctx->file_last->vsize) < 0)
 		ctx->file_last->vsize = (uoff_t)-1;
 
-	output_errno = _ctx->output->stream_errno;
+	output_errno = _ctx->output->last_failed_errno;
 	o_stream_destroy(&_ctx->output);
 
 	if (storage->set->parsed_fsync_mode != FSYNC_MODE_NEVER &&
@@ -851,7 +852,7 @@ maildir_filename_dest_basename_cmp(struct maildir_filename *const *f1,
 static int
 maildir_save_move_files_to_newcur(struct maildir_save_context *ctx)
 {
-	ARRAY_DEFINE(files, struct maildir_filename *);
+	ARRAY(struct maildir_filename *) files;
 	struct maildir_filename *mf, *const *mfp, *prev_mf;
 	bool newdir, new_changed, cur_changed;
 	int ret;

@@ -134,6 +134,8 @@ imap_get_error_string(struct client_command_context *cmd,
 	case MAIL_ERROR_INUSE:
 		resp_code = IMAP_RESP_CODE_INUSE;
 		break;
+	case MAIL_ERROR_CONVERSION:
+		break;
 	}
 	if (resp_code == NULL || *error_string == '[')
 		return t_strconcat("NO ", error_string, NULL);
@@ -196,7 +198,7 @@ bool client_parse_mail_flags(struct client_command_context *cmd,
 {
 	const char *atom;
 	enum mail_flags flag;
-	ARRAY_DEFINE(keywords, const char *);
+	ARRAY(const char *) keywords;
 
 	*flags_r = 0;
 	*keywords_r = NULL;
@@ -232,7 +234,7 @@ bool client_parse_mail_flags(struct client_command_context *cmd,
 	if (array_count(&keywords) == 0)
 		*keywords_r = NULL;
 	else {
-		(void)array_append_space(&keywords); /* NULL-terminate */
+		array_append_zero(&keywords); /* NULL-terminate */
 		*keywords_r = array_idx(&keywords, 0);
 	}
 	return TRUE;
@@ -309,7 +311,7 @@ client_get_keyword_names(struct client *client, ARRAY_TYPE(keywords) *dest,
 		array_append(dest, &all_names[kw_index], 1);
 	}
 
-	(void)array_append_space(dest);
+	array_append_zero(dest);
 	return array_idx(dest, 0);
 }
 

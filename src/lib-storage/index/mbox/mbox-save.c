@@ -58,11 +58,10 @@ struct mbox_save_context {
 	unsigned int finished:1;
 };
 
-static int write_error(struct mbox_save_context *ctx)
+static void write_error(struct mbox_save_context *ctx)
 {
 	mbox_set_syscall_error(ctx->mbox, "write()");
 	ctx->failed = TRUE;
-	return -1;
 }
 
 static int mbox_seek_to_end(struct mbox_save_context *ctx, uoff_t *offset)
@@ -77,8 +76,10 @@ static int mbox_seek_to_end(struct mbox_save_context *ctx, uoff_t *offset)
 	}
 
 	fd = ctx->mbox->mbox_fd;
-	if (fstat(fd, &st) < 0)
-                return mbox_set_syscall_error(ctx->mbox, "fstat()");
+	if (fstat(fd, &st) < 0) {
+		mbox_set_syscall_error(ctx->mbox, "fstat()");
+		return -1;
+	}
 
 	ctx->orig_atime = st.st_atime;
 
@@ -86,15 +87,21 @@ static int mbox_seek_to_end(struct mbox_save_context *ctx, uoff_t *offset)
 	if (st.st_size == 0)
 		return 0;
 
-	if (lseek(fd, st.st_size-1, SEEK_SET) < 0)
-                return mbox_set_syscall_error(ctx->mbox, "lseek()");
+	if (lseek(fd, st.st_size-1, SEEK_SET) < 0) {
+                mbox_set_syscall_error(ctx->mbox, "lseek()");
+		return -1;
+	}
 
-	if (read(fd, &ch, 1) != 1)
-		return mbox_set_syscall_error(ctx->mbox, "read()");
+	if (read(fd, &ch, 1) != 1) {
+		mbox_set_syscall_error(ctx->mbox, "read()");
+		return -1;
+	}
 
 	if (ch != '\n') {
-		if (write_full(fd, "\n", 1) < 0)
-			return write_error(ctx);
+		if (write_full(fd, "\n", 1) < 0) {
+			write_error(ctx);
+			return -1;
+		}
 		*offset += 1;
 	}
 
@@ -103,8 +110,10 @@ static int mbox_seek_to_end(struct mbox_save_context *ctx, uoff_t *offset)
 
 static int mbox_append_lf(struct mbox_save_context *ctx)
 {
-	if (o_stream_send(ctx->output, "\n", 1) < 0)
-		return write_error(ctx);
+	if (o_stream_send(ctx->output, "\n", 1) < 0) {
+		write_error(ctx);
+		return -1;
+	}
 
 	return 0;
 }
@@ -162,18 +171,26 @@ static int mbox_write_content_length(struct mbox_save_context *ctx)
 
 	/* flush manually here so that we don't confuse seek() errors with
 	   buffer flushing errors */
-	if (o_stream_flush(ctx->output) < 0)
-		return write_error(ctx);
+	if (o_stream_flush(ctx->output) < 0) {
+		write_error(ctx);
+		return -1;
+	}
 	if (o_stream_seek(ctx->output, ctx->extra_hdr_offset +
-			  ctx->space_end_idx - len) < 0)
-		return mbox_set_syscall_error(ctx->mbox, "o_stream_seek()");
+			  ctx->space_end_idx - len) < 0) {
+		mbox_set_syscall_error(ctx->mbox, "lseek()");
+		return -1;
+	}
 
 	if (o_stream_send(ctx->output, str, len) < 0 ||
-	    o_stream_flush(ctx->output) < 0)
-		return write_error(ctx);
+	    o_stream_flush(ctx->output) < 0) {
+		write_error(ctx);
+		return -1;
+	}
 
-	if (o_stream_seek(ctx->output, end_offset) < 0)
-		return mbox_set_syscall_error(ctx->mbox, "o_stream_seek()");
+	if (o_stream_seek(ctx->output, end_offset) < 0) {
+		mbox_set_syscall_error(ctx->mbox, "lseek()");
+		return -1;
+	}
 	return 0;
 }
 
@@ -186,7 +203,7 @@ static void mbox_save_init_sync(struct mailbox_transaction_context *t)
 
 	/* open a new view to get the header. this is required if we just
 	   synced the mailbox so we can get updated next_uid. */
-	(void)mail_index_refresh(mbox->box.index);
+	mail_index_refresh(mbox->box.index);
 	view = mail_index_view_open(mbox->box.index);
 	hdr = mail_index_get_header(view);
 
@@ -324,8 +341,10 @@ mbox_save_init_file(struct mbox_save_context *ctx,
 	return 0;
 }
 
-static void save_header_callback(struct message_header_line *hdr,
-				 bool *matched, struct mbox_save_context *ctx)
+static void
+save_header_callback(struct header_filter_istream *input ATTR_UNUSED,
+		     struct message_header_line *hdr,
+		     bool *matched, struct mbox_save_context *ctx)
 {
 	if (hdr != NULL) {
 		if (strncmp(hdr->name, "From ", 5) == 0) {
@@ -528,8 +547,10 @@ static int mbox_save_body_input(struct mbox_save_context *ctx)
 
 	data = i_stream_get_data(ctx->input, &size);
 	if (size > 0) {
-		if (o_stream_send(ctx->output, data, size) < 0)
-			return write_error(ctx);
+		if (o_stream_send(ctx->output, data, size) < 0) {
+			write_error(ctx);
+			return -1;
+		}
 		ctx->last_char = data[size-1];
 		i_stream_skip(ctx->input, size);
 	}
@@ -564,8 +585,10 @@ static int mbox_save_finish_headers(struct mbox_save_context *ctx)
 	/* append our own headers and ending empty line */
 	ctx->extra_hdr_offset = ctx->output->offset;
 	if (o_stream_send(ctx->output, str_data(ctx->headers),
-			  str_len(ctx->headers)) < 0)
-		return write_error(ctx);
+			  str_len(ctx->headers)) < 0) {
+		write_error(ctx);
+		return -1;
+	}
 	ctx->eoh_offset = ctx->output->offset;
 	return 0;
 }
@@ -602,15 +625,19 @@ int mbox_save_continue(struct mail_save_context *_ctx)
 		if (i != size) {
 			/* found end of headers. write the rest of them
 			   (not including the finishing empty line) */
-			if (o_stream_send(ctx->output, data, i) < 0)
-				return write_error(ctx);
+			if (o_stream_send(ctx->output, data, i) < 0) {
+				write_error(ctx);
+				return -1;
+			}
 			ctx->last_char = '\n';
 			i_stream_skip(ctx->input, i + 1);
 			break;
 		}
 
-		if (o_stream_send(ctx->output, data, size) < 0)
-			return write_error(ctx);
+		if (o_stream_send(ctx->output, data, size) < 0) {
+			write_error(ctx);
+			return -1;
+		}
 		ctx->last_char = data[size-1];
 		i_stream_skip(ctx->input, size);
 	}
@@ -660,7 +687,7 @@ int mbox_save_finish(struct mail_save_context *_ctx)
 
 	if (ctx->output != NULL) {
 		/* make sure everything is written */
-		if (o_stream_flush(ctx->output) < 0)
+		if (o_stream_nfinish(ctx->output) < 0)
 			write_error(ctx);
 	}
 
@@ -684,10 +711,10 @@ int mbox_save_finish(struct mail_save_context *_ctx)
 
 	if (ctx->failed && ctx->mail_offset != (uoff_t)-1) {
 		/* saving this mail failed - truncate back to beginning of it */
-		(void)o_stream_flush(ctx->output);
+		(void)o_stream_nfinish(ctx->output);
 		if (ftruncate(ctx->mbox->mbox_fd, (off_t)ctx->mail_offset) < 0)
 			mbox_set_syscall_error(ctx->mbox, "ftruncate()");
-		o_stream_seek(ctx->output, ctx->mail_offset);
+		(void)o_stream_seek(ctx->output, ctx->mail_offset);
 		ctx->mail_offset = (uoff_t)-1;
 	}
 
@@ -722,7 +749,7 @@ static void mbox_save_truncate(struct mbox_save_context *ctx)
 	/* failed, truncate file back to original size. output stream needs to
 	   be flushed before truncating so unref() won't write anything. */
 	if (ctx->output != NULL)
-		o_stream_flush(ctx->output);
+		(void)o_stream_flush(ctx->output);
 
 	if (ftruncate(ctx->mbox->mbox_fd, (off_t)ctx->append_offset) < 0)
 		mbox_set_syscall_error(ctx->mbox, "ftruncate()");
@@ -777,7 +804,8 @@ int mbox_transaction_save_commit_pre(struct mail_save_context *_ctx)
 
 	if (ctx->output != NULL) {
 		/* flush the final LF */
-		o_stream_flush(ctx->output);
+		if (o_stream_nfinish(ctx->output) < 0)
+			write_error(ctx);
 	}
 	if (mbox->mbox_fd != -1 && !mbox->mbox_writeonly &&
 	    mbox->storage->storage.set->parsed_fsync_mode != FSYNC_MODE_NEVER) {

@@ -19,7 +19,7 @@ struct client {
 	struct ostream *output;
 };
 
-static ARRAY_DEFINE(delayed_fds, int);
+static ARRAY(int) delayed_fds;
 struct ssl_params *param;
 static buffer_t *ssl_params;
 static struct timeout *to_startup;
@@ -46,9 +46,8 @@ static void client_handle(int fd)
 	struct ostream *output;
 
 	output = o_stream_create_fd(fd, (size_t)-1, TRUE);
-	o_stream_send(output, ssl_params->data, ssl_params->used);
-
-	if (o_stream_get_buffer_used_size(output) == 0)
+	if (o_stream_send(output, ssl_params->data, ssl_params->used) < 0 ||
+	    o_stream_get_buffer_used_size(output) == 0)
 		client_deinit(output);
 	else {
 		o_stream_set_flush_callback(output, client_output_flush,
@@ -132,8 +131,7 @@ int main(int argc, char *argv[])
 {
 	const struct ssl_params_settings *set;
 
-	master_service = master_service_init("ssl-params", 0,
-					     &argc, &argv, NULL);
+	master_service = master_service_init("ssl-params", 0, &argc, &argv, "");
 	master_service_init_log(master_service, "ssl-params: ");
 
 	if (master_getopt(master_service) > 0)

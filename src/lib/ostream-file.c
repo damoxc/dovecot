@@ -72,7 +72,7 @@ static void o_stream_file_close(struct iostream_private *stream)
 	struct file_ostream *fstream = (struct file_ostream *)stream;
 
 	/* flush output before really closing it */
-	o_stream_flush(&fstream->ostream.ostream);
+	(void)o_stream_flush(&fstream->ostream.ostream);
 
 	stream_closed(fstream);
 }
@@ -174,6 +174,8 @@ static ssize_t o_stream_writev(struct file_ostream *fstream,
 
 	o_stream_socket_cork(fstream);
 	if (iov_size == 1) {
+		i_assert(iov->iov_len > 0);
+
 		if (!fstream->file ||
 		    fstream->real_offset == fstream->buffer_offset) {
 			ret = write(fstream->fd, iov->iov_base, iov->iov_len);
@@ -505,7 +507,8 @@ static size_t o_stream_add(struct file_ostream *fstream,
 		if (fstream->tail == fstream->buffer_size)
 			fstream->tail = 0;
 
-		if (fstream->head == fstream->tail)
+		if (fstream->head == fstream->tail &&
+		    fstream->buffer_size > 0)
 			fstream->full = TRUE;
 	}
 
@@ -933,7 +936,7 @@ o_stream_create_fd(int fd, size_t max_buffer_size, bool autoclose_fd)
 
 	fstream = o_stream_create_fd_common(fd, autoclose_fd);
 	fstream->ostream.max_buffer_size = max_buffer_size;
-	ostream = o_stream_create(&fstream->ostream, NULL);
+	ostream = o_stream_create(&fstream->ostream, NULL, fd);
 
 	offset = lseek(fd, 0, SEEK_CUR);
 	if (offset >= 0) {
@@ -969,7 +972,7 @@ o_stream_create_fd_file(int fd, uoff_t offset, bool autoclose_fd)
 	fstream->real_offset = offset;
 	fstream->buffer_offset = offset;
 
-	ostream = o_stream_create(&fstream->ostream, NULL);
+	ostream = o_stream_create(&fstream->ostream, NULL, fd);
 	ostream->offset = offset;
 	return ostream;
 }

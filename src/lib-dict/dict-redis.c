@@ -51,8 +51,8 @@ struct redis_dict {
 	struct ioloop *ioloop;
 	struct redis_connection conn;
 
-	ARRAY_DEFINE(input_states, enum redis_input_state);
-	ARRAY_DEFINE(replies, struct redis_dict_reply);
+	ARRAY(enum redis_input_state) input_states;
+	ARRAY(struct redis_dict_reply) replies;
 
 	bool connected;
 	bool transaction_open;
@@ -235,7 +235,6 @@ static int redis_conn_input_more(struct redis_connection *conn)
 static void redis_conn_input(struct connection *_conn)
 {
 	struct redis_connection *conn = (struct redis_connection *)_conn;
-	size_t size;
 	int ret;
 
 	switch (i_stream_read(_conn->input)) {
@@ -249,19 +248,18 @@ static void redis_conn_input(struct connection *_conn)
 	}
 
 	while ((ret = redis_conn_input_more(conn)) > 0) {
-		i_stream_get_data(_conn->input, &size);
-		if (size == 0)
+		if (i_stream_get_data_size(_conn->input) == 0)
 			break;
 	}
 	if (ret < 0)
 		redis_conn_destroy(_conn);
 }
 
-static void redis_conn_connected(struct connection *_conn)
+static void redis_conn_connected(struct connection *_conn, bool success)
 {
 	struct redis_connection *conn = (struct redis_connection *)_conn;
 
-	if ((errno = net_geterror(_conn->fd_in)) != 0) {
+	if (!success) {
 		i_error("redis: connect(%s, %u) failed: %m",
 			net_ip2addr(&conn->dict->ip), conn->dict->port);
 	} else {
@@ -280,7 +278,7 @@ static const struct connection_settings redis_conn_set = {
 static const struct connection_vfuncs redis_conn_vfuncs = {
 	.destroy = redis_conn_destroy,
 	.input = redis_conn_input,
-	.connected = redis_conn_connected
+	.client_connected = redis_conn_connected
 };
 
 static const char *redis_escape_username(const char *username)
@@ -437,7 +435,7 @@ redis_dict_lookup_real(struct redis_dict *dict, pool_t pool,
 		if (dict->connected) {
 			cmd = t_strdup_printf("*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n",
 					      (int)strlen(key), key);
-			o_stream_send_str(dict->conn.conn.output, cmd);
+			o_stream_nsend_str(dict->conn.conn.output, cmd);
 
 			str_truncate(dict->conn.last_reply, 0);
 			redis_input_state_add(dict, REDIS_INPUT_STATE_GET);
@@ -525,8 +523,8 @@ redis_transaction_commit(struct dict_transaction_context *_ctx, bool async,
 	} else if (_ctx->changed) {
 		i_assert(ctx->cmd_count > 0);
 
-		o_stream_send_str(dict->conn.conn.output,
-				  "*1\r\n$4\r\nEXEC\r\n");
+		o_stream_nsend_str(dict->conn.conn.output,
+				   "*1\r\n$4\r\nEXEC\r\n");
 		reply = array_append_space(&dict->replies);
 		reply->callback = callback;
 		reply->context = context;
@@ -558,8 +556,8 @@ static void redis_transaction_rollback(struct dict_transaction_context *_ctx)
 		/* make sure we're disconnected */
 		redis_conn_destroy(&dict->conn.conn);
 	} else if (_ctx->changed) {
-		o_stream_send_str(dict->conn.conn.output,
-				  "*1\r\n$7\r\nDISCARD\r\n");
+		o_stream_nsend_str(dict->conn.conn.output,
+				   "*1\r\n$7\r\nDISCARD\r\n");
 		reply = array_append_space(&dict->replies);
 		reply->reply_count = 1;
 		redis_input_state_add(dict, REDIS_INPUT_STATE_DISCARD);
@@ -626,6 +624,27 @@ static void redis_unset(struct dict_transaction_context *_ctx,
 	ctx->cmd_count++;
 }
 
+static void redis_append(struct dict_transaction_context *_ctx,
+			 const char *key, const char *value)
+{
+	struct redis_dict_transaction_context *ctx =
+		(struct redis_dict_transaction_context *)_ctx;
+	struct redis_dict *dict = (struct redis_dict *)_ctx->dict;
+	const char *cmd;
+
+	if (redis_check_transaction(ctx) < 0)
+		return;
+
+	key = redis_dict_get_full_key(dict, key);
+	cmd = t_strdup_printf("*3\r\n$6\r\nAPPEND\r\n$%u\r\n%s\r\n$%u\r\n%s\r\n",
+			      (unsigned int)strlen(key), key,
+			      (unsigned int)strlen(value), value);
+	if (o_stream_send_str(dict->conn.conn.output, cmd) < 0)
+		ctx->failed = TRUE;
+	redis_input_state_add(dict, REDIS_INPUT_STATE_MULTI);
+	ctx->cmd_count++;
+}
+
 static void redis_atomic_inc(struct dict_transaction_context *_ctx,
 			     const char *key, long long diff)
 {
@@ -663,6 +682,7 @@ struct dict dict_driver_redis = {
 		redis_transaction_rollback,
 		redis_set,
 		redis_unset,
+		redis_append,
 		redis_atomic_inc
 	}
 };

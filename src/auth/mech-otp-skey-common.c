@@ -13,16 +13,15 @@
 #include "otp.h"
 #include "mech-otp-skey-common.h"
 
-static struct hash_table *otp_lock_table;
+static HASH_TABLE(char *, struct auth_request *) otp_lock_table;
 
 void otp_lock_init(void)
 {
-	if (otp_lock_table != NULL)
+	if (hash_table_is_created(otp_lock_table))
 		return;
 
-	otp_lock_table = hash_table_create(system_pool, system_pool,
-					   128, strcase_hash,
-					   (hash_cmp_callback_t *)strcasecmp);
+	hash_table_create(&otp_lock_table, default_pool, 128,
+			  strcase_hash, strcasecmp);
 }
 
 int otp_try_lock(struct auth_request *auth_request)
@@ -31,7 +30,6 @@ int otp_try_lock(struct auth_request *auth_request)
 		return FALSE;
 
 	hash_table_insert(otp_lock_table, auth_request->user, auth_request);
-
 	return TRUE;
 }
 
@@ -51,7 +49,7 @@ void otp_set_credentials_callback(bool success,
 				  struct auth_request *auth_request)
 {
 	if (success)
-		auth_request_success(auth_request, NULL, 0);
+		auth_request_success(auth_request, "", 0);
 	else {
 		auth_request_internal_failure(auth_request);
 		otp_unlock(auth_request);

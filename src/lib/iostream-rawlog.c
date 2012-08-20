@@ -33,9 +33,10 @@ static void rawlog_write_timestamp(struct rawlog_iostream *rstream)
 {
 	char buf[MAX_INT_STRLEN + 6 + 2];
 
-	i_snprintf(buf, sizeof(buf), "%lu.%06u ",
-		   (unsigned long)ioloop_timeval.tv_sec,
-		   (unsigned int)ioloop_timeval.tv_usec);
+	if (i_snprintf(buf, sizeof(buf), "%lu.%06u ",
+		       (unsigned long)ioloop_timeval.tv_sec,
+		       (unsigned int)ioloop_timeval.tv_usec) < 0)
+		i_unreached();
 	rawlog_write(rstream, buf, strlen(buf));
 }
 
@@ -100,7 +101,7 @@ int iostream_rawlog_create(const char *dir, struct istream **input,
 	out_fd = open(out_path, O_CREAT | O_APPEND | O_WRONLY, 0600);
 	if (out_fd == -1) {
 		i_error("creat(%s) failed: %m", out_path);
-		(void)close(in_fd);
+		i_close_fd(&in_fd);
 		(void)unlink(in_path);
 		return -1;
 	}

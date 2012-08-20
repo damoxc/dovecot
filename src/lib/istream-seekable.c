@@ -2,9 +2,10 @@
 
 #include "lib.h"
 #include "buffer.h"
-#include "close-keep-errno.h"
+#include "str.h"
 #include "read-full.h"
 #include "write-full.h"
+#include "safe-mkstemp.h"
 #include "istream-private.h"
 #include "istream-concat.h"
 #include "istream-seekable.h"
@@ -23,11 +24,12 @@ struct seekable_istream {
 	int (*fd_callback)(const char **path_r, void *context);
 	void *context;
 
-	buffer_t *buffer;
+	buffer_t *membuf;
 	struct istream **input, *cur_input;
 	struct istream *fd_input;
 	unsigned int cur_idx;
 	int fd;
+	bool free_context;
 };
 
 static void i_stream_seekable_close(struct iostream_private *stream)
@@ -42,18 +44,26 @@ static void i_stream_seekable_close(struct iostream_private *stream)
 		i_stream_close(sstream->input[i]);
 }
 
+static void unref_streams(struct seekable_istream *sstream)
+{
+	unsigned int i;
+
+	for (i = 0; sstream->input[i] != NULL; i++)
+		i_stream_unref(&sstream->input[i]);
+}
+
 static void i_stream_seekable_destroy(struct iostream_private *stream)
 {
 	struct seekable_istream *sstream = (struct seekable_istream *)stream;
-	unsigned int i;
 
-	if (sstream->buffer != NULL)
-		buffer_free(&sstream->buffer);
+	if (sstream->membuf != NULL)
+		buffer_free(&sstream->membuf);
 	if (sstream->fd_input != NULL)
 		i_stream_unref(&sstream->fd_input);
-	for (i = 0; sstream->input[i] != NULL; i++)
-		i_stream_unref(&sstream->input[i]);
+	unref_streams(sstream);
 
+	if (sstream->free_context)
+		i_free(sstream->context);
 	i_free(sstream->temp_path);
 	i_free(sstream->input);
 }
@@ -85,14 +95,14 @@ static int copy_to_temp_file(struct seekable_istream *sstream)
 		return -1;
 
 	/* copy our currently read buffer to it */
-	if (write_full(fd, sstream->buffer->data, sstream->buffer->used) < 0) {
+	if (write_full(fd, sstream->membuf->data, sstream->membuf->used) < 0) {
 		if (!ENOSPACE(errno))
 			i_error("write_full(%s) failed: %m", path);
-		close_keep_errno(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	sstream->temp_path = i_strdup(path);
-	sstream->write_peak = sstream->buffer->used;
+	sstream->write_peak = sstream->membuf->used;
 
 	sstream->fd = fd;
 	sstream->fd_input =
@@ -115,7 +125,7 @@ static int copy_to_temp_file(struct seekable_istream *sstream)
 	}
 	stream->buffer = buffer;
 	stream->pos = size;
-	buffer_free(&sstream->buffer);
+	buffer_free(&sstream->membuf);
 	return 0;
 }
 
@@ -147,7 +157,7 @@ static ssize_t read_more(struct seekable_istream *sstream)
 		}
 
 		/* see if stream has pending data */
-		(void)i_stream_get_data(sstream->cur_input, &size);
+		size = i_stream_get_data_size(sstream->cur_input);
 		if (size != 0)
 			return size;
 	}
@@ -162,15 +172,13 @@ static bool read_from_buffer(struct seekable_istream *sstream, ssize_t *ret_r)
 
 	i_assert(stream->skip == 0);
 
-	if (stream->istream.v_offset + stream->pos >= sstream->buffer->used) {
+	if (stream->istream.v_offset + stream->pos >= sstream->membuf->used) {
 		/* need to read more */
-		if (sstream->buffer->used >= stream->max_buffer_size)
+		if (sstream->membuf->used >= stream->max_buffer_size)
 			return FALSE;
 
-		if (sstream->cur_input == NULL)
-			size = 0;
-		else
-			(void)i_stream_get_data(sstream->cur_input, &size);
+		size = sstream->cur_input == NULL ? 0 :
+			i_stream_get_data_size(sstream->cur_input);
 		if (size == 0) {
 			/* read more to buffer */
 			*ret_r = read_more(sstream);
@@ -181,13 +189,13 @@ static bool read_from_buffer(struct seekable_istream *sstream, ssize_t *ret_r)
 		/* we should have more now. */
 		data = i_stream_get_data(sstream->cur_input, &size);
 		i_assert(size > 0);
-		buffer_append(sstream->buffer, data, size);
+		buffer_append(sstream->membuf, data, size);
 		i_stream_skip(sstream->cur_input, size);
 	}
 
 	offset = stream->istream.v_offset;
-	stream->buffer = CONST_PTR_OFFSET(sstream->buffer->data, offset);
-	pos = sstream->buffer->used - offset;
+	stream->buffer = CONST_PTR_OFFSET(sstream->membuf->data, offset);
+	pos = sstream->membuf->used - offset;
 
 	*ret_r = pos - stream->pos;
 	i_assert(*ret_r > 0);
@@ -200,20 +208,19 @@ static int i_stream_seekable_write_failed(struct seekable_istream *sstream)
 	struct istream_private *stream = &sstream->istream;
 	void *data;
 
-	i_assert(sstream->buffer == NULL);
+	i_assert(sstream->membuf == NULL);
 
-	sstream->buffer =
+	sstream->membuf =
 		buffer_create_dynamic(default_pool, sstream->write_peak);
-	data = buffer_append_space_unsafe(sstream->buffer, sstream->write_peak);
+	data = buffer_append_space_unsafe(sstream->membuf, sstream->write_peak);
 
 	if (pread_full(sstream->fd, data, sstream->write_peak, 0) < 0) {
 		i_error("read(%s) failed: %m", sstream->temp_path);
-		buffer_free(&sstream->buffer);
+		buffer_free(&sstream->membuf);
 		return -1;
 	}
 	i_stream_destroy(&sstream->fd_input);
-	(void)close(sstream->fd);
-	sstream->fd = -1;
+	i_close_fd(&sstream->fd);
 
 	stream->max_buffer_size = (size_t)-1;
 	i_free_and_null(sstream->temp_path);
@@ -231,7 +238,7 @@ static ssize_t i_stream_seekable_read(struct istream_private *stream)
 	stream->pos -= stream->skip;
 	stream->skip = 0;
 
-	if (sstream->buffer != NULL) {
+	if (sstream->membuf != NULL) {
 		if (read_from_buffer(sstream, &ret))
 			return ret;
 
@@ -242,7 +249,7 @@ static ssize_t i_stream_seekable_read(struct istream_private *stream)
 				i_unreached();
 			return ret;
 		}
-		i_assert(sstream->buffer == NULL);
+		i_assert(sstream->membuf == NULL);
 	}
 
 	i_assert(stream->istream.v_offset + stream->pos <= sstream->write_peak);
@@ -290,13 +297,6 @@ static ssize_t i_stream_seekable_read(struct istream_private *stream)
 	return ret;
 }
 
-static void i_stream_seekable_seek(struct istream_private *stream,
-				   uoff_t v_offset, bool mark ATTR_UNUSED)
-{
-	stream->istream.v_offset = v_offset;
-	stream->skip = stream->pos = 0;
-}
-
 static const struct stat *
 i_stream_seekable_stat(struct istream_private *stream, bool exact)
 {
@@ -310,7 +310,7 @@ i_stream_seekable_stat(struct istream_private *stream, bool exact)
 		return &stream->statbuf;
 	}
 
-	if (sstream->buffer != NULL) {
+	if (sstream->membuf != NULL) {
 		/* we want to know the full size of the file, so read until
 		   we're finished */
 		old_offset = stream->istream.v_offset;
@@ -327,6 +327,7 @@ i_stream_seekable_stat(struct istream_private *stream, bool exact)
 		}
 		i_stream_skip(&stream->istream, stream->pos - stream->skip);
 		i_stream_seek(&stream->istream, old_offset);
+		unref_streams(sstream);
 	}
 
 	if (sstream->fd_input != NULL) {
@@ -334,32 +335,23 @@ i_stream_seekable_stat(struct istream_private *stream, bool exact)
 		return i_stream_stat(sstream->fd_input, exact);
 	} else {
 		/* buffer is completely in memory */
-		i_assert(sstream->buffer != NULL);
+		i_assert(sstream->membuf != NULL);
 
-		stream->statbuf.st_size = sstream->buffer->used;
+		stream->statbuf.st_size = sstream->membuf->used;
 		return &stream->statbuf;
 	}
 }
 
 struct istream *
-i_stream_create_seekable(struct istream *input[],
-			 size_t max_buffer_size,
-			 int (*fd_callback)(const char **path_r, void *context),
-			 void *context)
+i_streams_merge(struct istream *input[], size_t max_buffer_size,
+		int (*fd_callback)(const char **path_r, void *context),
+		void *context) ATTR_NULL(4)
 {
 	struct seekable_istream *sstream;
 	const unsigned char *data;
 	unsigned int count;
 	size_t size;
 	bool blocking = TRUE;
-
-	/* If all input streams are seekable, use concat istream instead */
-	for (count = 0; input[count] != NULL; count++) {
-		if (!input[count]->seekable)
-			break;
-	}
-	if (input[count] == NULL)
-		return i_stream_create_concat(input);
 
 	/* if any of the streams isn't blocking, set ourself also nonblocking */
 	for (count = 0; input[count] != NULL; count++) {
@@ -372,7 +364,7 @@ i_stream_create_seekable(struct istream *input[],
 	sstream = i_new(struct seekable_istream, 1);
 	sstream->fd_callback = fd_callback;
 	sstream->context = context;
-	sstream->buffer = buffer_create_dynamic(default_pool, BUF_INITIAL_SIZE);
+	sstream->membuf = buffer_create_dynamic(default_pool, BUF_INITIAL_SIZE);
         sstream->istream.max_buffer_size = max_buffer_size;
 	sstream->fd = -1;
 	sstream->size = (uoff_t)-1;
@@ -383,7 +375,7 @@ i_stream_create_seekable(struct istream *input[],
 
 	/* initialize our buffer from first stream's pending data */
 	data = i_stream_get_data(sstream->cur_input, &size);
-	buffer_append(sstream->buffer, data, size);
+	buffer_append(sstream->membuf, data, size);
 	i_stream_skip(sstream->cur_input, size);
 
 	sstream->istream.iostream.close = i_stream_seekable_close;
@@ -392,11 +384,71 @@ i_stream_create_seekable(struct istream *input[],
 		i_stream_seekable_set_max_buffer_size;
 
 	sstream->istream.read = i_stream_seekable_read;
-	sstream->istream.seek = i_stream_seekable_seek;
 	sstream->istream.stat = i_stream_seekable_stat;
 
 	sstream->istream.istream.readable_fd = FALSE;
 	sstream->istream.istream.blocking = blocking;
 	sstream->istream.istream.seekable = TRUE;
 	return i_stream_create(&sstream->istream, NULL, -1);
+}
+
+struct istream *
+i_stream_create_seekable(struct istream *input[],
+			 size_t max_buffer_size,
+			 int (*fd_callback)(const char **path_r, void *context),
+			 void *context)
+{
+	unsigned int count;
+
+	/* If all input streams are seekable, use concat istream instead */
+	for (count = 0; input[count] != NULL; count++) {
+		if (!input[count]->seekable)
+			break;
+	}
+	if (input[count] == NULL)
+		return i_stream_create_concat(input);
+
+	return i_streams_merge(input, max_buffer_size, fd_callback, context);
+}
+
+static int seekable_fd_callback(const char **path_r, void *context)
+{
+	char *temp_path_prefix = context;
+	string_t *path;
+	int fd;
+
+	path = t_str_new(128);
+	str_append(path, temp_path_prefix);
+	fd = safe_mkstemp(path, 0600, (uid_t)-1, (gid_t)-1);
+	if (fd == -1) {
+		i_error("safe_mkstemp(%s) failed: %m", str_c(path));
+		return -1;
+	}
+
+	/* we just want the fd, unlink it */
+	if (unlink(str_c(path)) < 0) {
+		/* shouldn't happen.. */
+		i_error("unlink(%s) failed: %m", str_c(path));
+		i_close_fd(&fd);
+		return -1;
+	}
+
+	*path_r = str_c(path);
+	return fd;
+}
+
+struct istream *
+i_stream_create_seekable_path(struct istream *input[],
+			      size_t max_buffer_size,
+			      const char *temp_path_prefix)
+{
+	struct seekable_istream *sstream;
+	struct istream *stream;
+
+	stream = i_stream_create_seekable(input, max_buffer_size,
+					  seekable_fd_callback,
+					  i_strdup(temp_path_prefix));
+	sstream = (struct seekable_istream *)stream;
+	sstream->free_context = TRUE;
+	return stream;
 }

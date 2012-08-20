@@ -15,7 +15,7 @@ extern unsigned char rfc822_atext_chars[256];
 /* Parse given data using RFC 822 token parser. */
 void rfc822_parser_init(struct rfc822_parser_context *ctx,
 			const unsigned char *data, size_t size,
-			string_t *last_comment);
+			string_t *last_comment) ATTR_NULL(4);
 
 /* The functions below return 1 = more data available, 0 = no more data
    available (but a value might have been returned now), -1 = invalid input.
@@ -26,7 +26,8 @@ void rfc822_parser_init(struct rfc822_parser_context *ctx,
 /* Parse comment. Assumes parser's data points to '(' */
 int rfc822_skip_comment(struct rfc822_parser_context *ctx);
 /* Skip LWSP if there is any */
-int rfc822_skip_lwsp(struct rfc822_parser_context *ctx);
+int ATTR_NOWARN_UNUSED_RESULT
+rfc822_skip_lwsp(struct rfc822_parser_context *ctx);
 /* Stop at next non-atext char */
 int rfc822_parse_atom(struct rfc822_parser_context *ctx, string_t *str);
 /* Like parse_atom() but don't stop at '.' */

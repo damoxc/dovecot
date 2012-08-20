@@ -11,6 +11,7 @@
 #include "execv-const.h"
 #include "settings-parser.h"
 #include "master-service-private.h"
+#include "master-service-ssl-settings.h"
 #include "master-service-settings.h"
 
 #include <stddef.h>
@@ -33,6 +34,7 @@ static bool
 master_service_settings_check(void *_set, pool_t pool, const char **error_r);
 
 static const struct setting_define master_service_setting_defines[] = {
+	DEF(SET_STR, base_dir),
 	DEF(SET_STR, log_path),
 	DEF(SET_STR, info_log_path),
 	DEF(SET_STR, debug_log_path),
@@ -47,6 +49,7 @@ static const struct setting_define master_service_setting_defines[] = {
 };
 
 static const struct master_service_settings master_service_default_settings = {
+	.base_dir = PKG_RUNDIR,
 	.log_path = "syslog",
 	.info_log_path = "",
 	.debug_log_path = "",
@@ -316,7 +319,7 @@ config_read_reply_header(struct istream *istream, const char *path, pool_t pool,
 			 }
 		}
 		if (input->service == NULL) {
-			(void)array_append_space(&services);
+			array_append_zero(&services);
 			output_r->specific_services = array_idx(&services, 0);
 		}
 	} T_END;
@@ -328,7 +331,7 @@ int master_service_settings_read(struct master_service *service,
 				 struct master_service_settings_output *output_r,
 				 const char **error_r)
 {
-	ARRAY_DEFINE(all_roots, const struct setting_parser_info *);
+	ARRAY(const struct setting_parser_info *) all_roots;
 	const struct setting_parser_info *tmp_root;
 	struct setting_parser_context *parser;
 	struct istream *istream;
@@ -337,6 +340,7 @@ int master_service_settings_read(struct master_service *service,
 	unsigned int i;
 	int ret, fd = -1;
 	time_t now, timeout;
+	bool use_environment;
 
 	memset(output_r, 0, sizeof(*output_r));
 
@@ -347,7 +351,7 @@ int master_service_settings_read(struct master_service *service,
 			return -1;
 
 		if (config_send_request(input, fd, path, error_r) < 0) {
-			(void)close(fd);
+			i_close_fd(&fd);
 			config_exec_fallback(service, input);
 			return -1;
 		}
@@ -364,6 +368,8 @@ int master_service_settings_read(struct master_service *service,
 
 	p_array_init(&all_roots, service->set_pool, 8);
 	tmp_root = &master_service_setting_parser_info;
+	array_append(&all_roots, &tmp_root, 1);
+	tmp_root = &master_service_ssl_setting_parser_info;
 	array_append(&all_roots, &tmp_root, 1);
 	if (input->roots != NULL) {
 		for (i = 0; input->roots[i] != NULL; i++)
@@ -405,7 +411,7 @@ int master_service_settings_read(struct master_service *service,
 				*error_r = t_strdup_printf(
 					"Timeout reading config from %s", path);
 			}
-			(void)close(fd);
+			i_close_fd(&fd);
 			config_exec_fallback(service, input);
 			return -1;
 		}
@@ -414,10 +420,13 @@ int master_service_settings_read(struct master_service *service,
 		    service->config_fd == -1 && input->config_path == NULL)
 			service->config_fd = fd;
 		else
-			(void)close(fd);
+			i_close_fd(&fd);
+		use_environment = FALSE;
+	} else {
+		use_environment = TRUE;
 	}
 
-	if (fd == -1 || service->keep_environment) {
+	if (use_environment || service->keep_environment) {
 		if (settings_parse_environ(parser) < 0) {
 			*error_r = settings_parser_get_error(parser);
 			return -1;
@@ -487,7 +496,8 @@ master_service_settings_get(struct master_service *service)
 
 void **master_service_settings_get_others(struct master_service *service)
 {
-	return settings_parser_get_list(service->set_parser) + 1;
+	return settings_parser_get_list(service->set_parser) +
+		MASTER_SERVICE_INTERNAL_SET_PARSERS;
 }
 
 struct setting_parser_context *

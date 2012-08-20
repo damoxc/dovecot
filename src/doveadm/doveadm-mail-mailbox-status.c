@@ -79,9 +79,10 @@ static void status_parse_fields(struct status_cmd_context *ctx,
 	}
 }
 
-static void status_output(struct status_cmd_context *ctx, struct mailbox *box,
-			  const struct mailbox_status *status,
-			  const struct mailbox_metadata *metadata)
+static void ATTR_NULL(2)
+status_output(struct status_cmd_context *ctx, struct mailbox *box,
+	      const struct mailbox_status *status,
+	      const struct mailbox_metadata *metadata)
 {
 	if (box != NULL)
 		doveadm_print(mailbox_get_vname(box));
@@ -124,7 +125,7 @@ status_mailbox(struct status_cmd_context *ctx, const struct mailbox_info *info)
 	struct mailbox_status status;
 	struct mailbox_metadata metadata;
 
-	box = doveadm_mailbox_find(ctx->ctx.cur_mail_user, info->name);
+	box = doveadm_mailbox_find(ctx->ctx.cur_mail_user, info->vname);
 	if (mailbox_get_status(box, ctx->status_items, &status) < 0 ||
 	    mailbox_get_metadata(box, ctx->metadata_items, &metadata) < 0) {
 		doveadm_mail_failed_mailbox(&ctx->ctx, box);

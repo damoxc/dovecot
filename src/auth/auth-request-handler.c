@@ -21,7 +21,7 @@
 struct auth_request_handler {
 	int refcount;
 	pool_t pool;
-	struct hash_table *requests;
+	HASH_TABLE(void *, struct auth_request *) requests;
 
         unsigned int connect_uid, client_pid;
 
@@ -33,11 +33,11 @@ struct auth_request_handler {
 	unsigned int destroyed:1;
 };
 
-static ARRAY_DEFINE(auth_failures_arr, struct auth_request *);
+static ARRAY(struct auth_request *) auth_failures_arr;
 static struct aqueue *auth_failures;
 static struct timeout *to_auth_failures;
 
-static void auth_failure_timeout(void *context);
+static void auth_failure_timeout(void *context) ATTR_NULL(1);
 
 #undef auth_request_handler_create
 struct auth_request_handler *
@@ -52,7 +52,7 @@ auth_request_handler_create(auth_request_callback_t *callback, void *context,
 	handler = p_new(pool, struct auth_request_handler, 1);
 	handler->refcount = 1;
 	handler->pool = pool;
-	handler->requests = hash_table_create(default_pool, pool, 0, NULL, NULL);
+	hash_table_create_direct(&handler->requests, pool, 0);
 	handler->callback = callback;
 	handler->context = context;
 	handler->master_callback = master_callback;
@@ -68,12 +68,11 @@ auth_request_handler_get_request_count(struct auth_request_handler *handler)
 void auth_request_handler_abort_requests(struct auth_request_handler *handler)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct auth_request *auth_request;
 
 	iter = hash_table_iterate_init(handler->requests);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct auth_request *auth_request = value;
-
+	while (hash_table_iterate(iter, handler->requests, &key, &auth_request)) {
 		switch (auth_request->state) {
 		case AUTH_REQUEST_STATE_NEW:
 		case AUTH_REQUEST_STATE_MECH_CONTINUE:
@@ -231,8 +230,8 @@ auth_request_handle_failure(struct auth_request *request,
 	aqueue_append(auth_failures, &request);
 	if (to_auth_failures == NULL) {
 		to_auth_failures =
-			timeout_add(AUTH_FAILURE_DELAY_CHECK_MSECS,
-				    auth_failure_timeout, NULL);
+			timeout_add_short(AUTH_FAILURE_DELAY_CHECK_MSECS,
+					  auth_failure_timeout, NULL);
 	}
 }
 
@@ -762,7 +761,8 @@ void auth_request_handler_flush_failures(bool flush_all)
 
 		i_assert(auth_request->state == AUTH_REQUEST_STATE_FINISHED);
 		auth_request_handler_reply(auth_request,
-					   AUTH_CLIENT_RESULT_FAILURE, NULL, 0);
+					   AUTH_CLIENT_RESULT_FAILURE,
+					   &uchar_nul, 0);
 		auth_request_unref(&auth_request);
 	}
 }

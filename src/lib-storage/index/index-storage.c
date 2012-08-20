@@ -332,6 +332,10 @@ void index_storage_mailbox_close(struct mailbox *box)
 	if (box->input != NULL)
 		i_stream_unref(&box->input);
 
+	if (box->view_pvt != NULL)
+		mail_index_view_close(&box->view_pvt);
+	if (box->index_pvt != NULL)
+		mail_index_close(box->index_pvt);
 	mail_index_view_close(&box->view);
 	mail_index_close(box->index);
 	box->cache = NULL;
@@ -349,6 +353,8 @@ void index_storage_mailbox_close(struct mailbox *box)
 
 void index_storage_mailbox_free(struct mailbox *box)
 {
+	if (box->index_pvt != NULL)
+		mail_index_alloc_cache_unref(&box->index_pvt);
 	if (box->index != NULL)
 		mail_index_alloc_cache_unref(&box->index);
 }
@@ -357,7 +363,7 @@ void index_storage_mailbox_update_cache(struct mailbox *box,
 					const struct mailbox_update *update)
 {
 	const struct mailbox_cache_field *updates = update->cache_updates;
-	ARRAY_DEFINE(new_fields, struct mail_cache_field);
+	ARRAY(struct mail_cache_field) new_fields;
 	const struct mail_cache_field *old_fields;
 	struct mail_cache_field field;
 	unsigned int i, j, old_count;
@@ -412,7 +418,7 @@ int index_storage_mailbox_update(struct mailbox *box,
 		index_storage_mailbox_update_cache(box, update);
 
 	/* make sure we get the latest index info */
-	(void)mail_index_refresh(box->index);
+	mail_index_refresh(box->index);
 	view = mail_index_view_open(box->index);
 	hdr = mail_index_get_header(view);
 
@@ -467,7 +473,7 @@ int index_storage_mailbox_delete_dir(struct mailbox *box, bool mailbox_deleted)
 	if (mailbox_list_delete_dir(box->list, box->name) == 0)
 		return 0;
 
-	(void)mailbox_list_get_last_error(box->list, &error);
+	mailbox_list_get_last_error(box->list, &error);
 	if (error != MAIL_ERROR_NOTFOUND || !mailbox_deleted) {
 		mail_storage_copy_list_error(box->storage, box->list);
 		return -1;
@@ -511,7 +517,6 @@ int index_storage_mailbox_delete(struct mailbox *box)
 {
 	struct mailbox_metadata metadata;
 	struct mailbox_status status;
-	enum mail_error error;
 	int ret_guid;
 
 	if (!box->opened) {
@@ -571,8 +576,7 @@ int index_storage_mailbox_delete(struct mailbox *box)
 					metadata.guid);
 	}
 	if (index_storage_mailbox_delete_dir(box, TRUE) < 0) {
-		(void)mailbox_get_last_error(box, &error);
-		if (error != MAIL_ERROR_EXISTS)
+		if (mailbox_get_last_mail_error(box) != MAIL_ERROR_EXISTS)
 			return -1;
 		/* we deleted the mailbox, but couldn't delete the directory
 		   because it has children. that's not an error. */

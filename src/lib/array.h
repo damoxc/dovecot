@@ -9,7 +9,7 @@
    Example usage:
 
    struct foo {
-	ARRAY_DEFINE(bars, struct bar);
+	ARRAY(struct bar) bars;
 	...
    };
 
@@ -235,6 +235,8 @@ array_append_space_i(struct array *array)
 }
 #define array_append_space(array) \
 	ARRAY_TYPE_CAST_MODIFIABLE(array)array_append_space_i(&(array)->arr)
+#define array_append_zero(array) \
+	(void)array_append_space_i(&(array)->arr)
 
 void *array_insert_space_i(struct array *array, unsigned int idx);
 #define array_insert_space(array, idx) \
@@ -262,29 +264,18 @@ void array_reverse_i(struct array *array);
 	array_reverse_i(&(array)->arr)
 
 void array_sort_i(struct array *array, int (*cmp)(const void *, const void *));
-#ifdef CONTEXT_TYPE_SAFETY
 #define array_sort(array, cmp) \
-	({(void)(1 ? 0 : cmp(ARRAY_TYPE_CAST_CONST(array)NULL, \
-			     ARRAY_TYPE_CAST_CONST(array)NULL)); \
-	array_sort_i(&(array)->arr, \
-		(int (*)(const void *, const void *))cmp); })
-#else
-#define array_sort(array, cmp) \
-	array_sort_i(&(array)->arr, (int (*)(const void *, const void *))cmp)
-#endif
+	array_sort_i(&(array)->arr + \
+		CALLBACK_TYPECHECK(cmp, int (*)(typeof(*(array)->v), \
+						typeof(*(array)->v))), \
+		(int (*)(const void *, const void *))cmp)
 
 void *array_bsearch_i(struct array *array, const void *key,
 		      int (*cmp)(const void *, const void *));
-#ifdef CONTEXT_TYPE_SAFETY
 #define array_bsearch(array, key, cmp) \
-	ARRAY_TYPE_CAST_MODIFIABLE(array) \
-	({(void)(1 ? 0 : cmp(key, ARRAY_TYPE_CAST_CONST(array)NULL)); \
-	array_bsearch_i(&(array)->arr, (const void *)key, \
-		(int (*)(const void *, const void *))cmp); })
-#else
-#define array_bsearch(array, key, cmp) \
-	array_bsearch_i(&(array)->arr, (const void *)key, \
-		(int (*)(const void *, const void *))cmp)
-#endif
+	ARRAY_TYPE_CAST_MODIFIABLE(array)array_bsearch_i(&(array)->arr + \
+		CALLBACK_TYPECHECK(cmp, int (*)(typeof(const typeof(*key) *), \
+						typeof(*(array)->v))), \
+		(const void *)key, (int (*)(const void *, const void *))cmp)
 
 #endif

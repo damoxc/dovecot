@@ -95,10 +95,8 @@ static int imap_thread(struct client_command_context *cmd,
 		mail_thread_deinit(&ctx);
 	}
 
-	if (ret == 0) {
-		(void)o_stream_send(cmd->client->output,
-				    str_data(str), str_len(str));
-	}
+	if (ret == 0)
+		o_stream_nsend(cmd->client->output, str_data(str), str_len(str));
 	str_free(&str);
 	return ret;
 }
@@ -176,7 +174,7 @@ static int imap_thread_orderedsubject(struct client_command_context *cmd,
 	string_t *prev_subject, *reply;
 	const char *subject, *base_subject;
 	pool_t pool;
-	ARRAY_DEFINE(threads, struct orderedsubject_thread);
+	ARRAY(struct orderedsubject_thread) threads;
 	const struct orderedsubject_thread *thread;
 	struct orderedsubject_thread *cur_thread = NULL;
 	uint32_t num;

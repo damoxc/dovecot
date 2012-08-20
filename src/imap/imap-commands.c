@@ -53,9 +53,13 @@ static const struct command imap_ext_commands[] = {
 	{ "IDLE",		cmd_idle,        COMMAND_FLAG_BREAKS_SEQS |
 						 COMMAND_FLAG_REQUIRES_SYNC },
 	{ "NAMESPACE",		cmd_namespace,   0 },
+	{ "NOTIFY",		cmd_notify,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "SORT",		cmd_sort,        COMMAND_FLAG_USES_SEQS },
 	{ "THREAD",		cmd_thread,      COMMAND_FLAG_USES_SEQS },
 	{ "UID EXPUNGE",	cmd_uid_expunge, COMMAND_FLAG_BREAKS_SEQS },
+	{ "MOVE",		cmd_move,        COMMAND_FLAG_USES_SEQS |
+						 COMMAND_FLAG_BREAKS_SEQS },
+	{ "UID MOVE",		cmd_move,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID SORT",		cmd_sort,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID THREAD",		cmd_thread,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "UNSELECT",		cmd_unselect,    COMMAND_FLAG_BREAKS_MAILBOX },
@@ -66,7 +70,7 @@ static const struct command imap_ext_commands[] = {
 
 ARRAY_TYPE(command) imap_commands;
 static bool commands_unsorted;
-static ARRAY_DEFINE(command_hooks, struct command_hook);
+static ARRAY(struct command_hook) command_hooks;
 
 void command_register(const char *name, command_func_t *func,
 		      enum command_flags flags)

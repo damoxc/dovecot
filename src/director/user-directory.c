@@ -20,13 +20,13 @@ struct user_directory_iter {
 };
 
 struct user_directory {
-	/* const char *username => struct user* */
-	struct hash_table *hash;
+	/* unsigned int username_hash => user */
+	HASH_TABLE(void *, struct user *) hash;
 	/* sorted by time */
 	struct user *head, *tail;
 	struct user *prev_insert_pos;
 
-	ARRAY_DEFINE(iters, struct user_directory_iter *);
+	ARRAY(struct user_directory_iter *) iters;
 
 	char *username_hash_fmt;
 	unsigned int timeout_secs;
@@ -225,8 +225,7 @@ user_directory_init(unsigned int timeout_secs, const char *username_hash_fmt)
 		I_MAX(dir->user_near_expiring_secs, 1);
 
 	dir->username_hash_fmt = i_strdup(username_hash_fmt);
-	dir->hash = hash_table_create(default_pool, default_pool,
-				      0, NULL, NULL);
+	hash_table_create_direct(&dir->hash, default_pool, 0);
 	i_array_init(&dir->iters, 8);
 	return dir;
 }

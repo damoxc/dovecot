@@ -31,8 +31,8 @@ struct mail_index_sync_map_ctx {
 	uint32_t ext_intro_seq;
 	uoff_t ext_intro_offset, ext_intro_end_offset;
 
-	ARRAY_DEFINE(expunge_handlers, struct mail_index_expunge_handler);
-	ARRAY_DEFINE(extra_contexts, void *);
+	ARRAY(struct mail_index_expunge_handler) expunge_handlers;
+	ARRAY(void *) extra_contexts;
 	buffer_t *unknown_extensions;
 
         enum mail_index_sync_handler_type type;
@@ -60,8 +60,6 @@ int mail_index_sync_record(struct mail_index_sync_map_ctx *ctx,
 
 struct mail_index_map *
 mail_index_sync_get_atomic_map(struct mail_index_sync_map_ctx *ctx);
-void mail_index_sync_write_seq_update(struct mail_index_sync_map_ctx *ctx,
-				      uint32_t seq1, uint32_t seq2);
 
 void mail_index_sync_init_expunge_handlers(struct mail_index_sync_map_ctx *ctx);
 void

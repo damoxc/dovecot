@@ -88,7 +88,7 @@ fail_mail_get_keyword_indexes(struct mail *mail ATTR_UNUSED)
 
 	kw_indexes = t_new(ARRAY_TYPE(keyword_indexes), 1);
 	t_array_init(kw_indexes, 1);
-	(void)array_append_space(kw_indexes);
+	array_append_zero(kw_indexes);
 	return kw_indexes;
 }
 
@@ -177,6 +177,17 @@ fail_mail_get_stream(struct mail *mail ATTR_UNUSED, bool get_body ATTR_UNUSED,
 }
 
 static int
+fail_mail_get_binary_stream(struct mail *_mail ATTR_UNUSED,
+			    const struct message_part *part ATTR_UNUSED,
+			    bool include_hdr ATTR_UNUSED,
+			    uoff_t *size_r ATTR_UNUSED,
+			    bool *binary_r ATTR_UNUSED,
+			    struct istream **stream_r ATTR_UNUSED)
+{
+	return -1;
+}
+
+static int
 fail_mail_get_special(struct mail *mail ATTR_UNUSED,
 		      enum mail_fetch_field field ATTR_UNUSED,
 		      const char **value_r ATTR_UNUSED)
@@ -242,6 +253,7 @@ struct mail_vfuncs fail_mail_vfuncs = {
 	fail_mail_get_headers,
 	fail_mail_get_header_stream,
 	fail_mail_get_stream,
+	fail_mail_get_binary_stream,
 	fail_mail_get_special,
 	fail_mail_get_real_mail,
 	fail_mail_update_flags,

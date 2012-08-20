@@ -4,8 +4,9 @@
 #include "array.h"
 #include "seq-range-array.h"
 
-static bool seq_range_lookup(const ARRAY_TYPE(seq_range) *array,
-			     uint32_t seq, unsigned int *idx_r)
+static bool ATTR_NOWARN_UNUSED_RESULT
+seq_range_lookup(const ARRAY_TYPE(seq_range) *array,
+		 uint32_t seq, unsigned int *idx_r)
 {
 	const struct seq_range *data;
 	unsigned int idx, left_idx, right_idx, count;
@@ -33,16 +34,12 @@ static bool seq_range_lookup(const ARRAY_TYPE(seq_range) *array,
 	return FALSE;
 }
 
-bool seq_range_array_add(ARRAY_TYPE(seq_range) *array,
-			 unsigned int init_count, uint32_t seq)
+bool seq_range_array_add(ARRAY_TYPE(seq_range) *array, uint32_t seq)
 {
 	struct seq_range *data, value;
 	unsigned int idx, count;
 
 	value.seq1 = value.seq2 = seq;
-
-	if (!array_is_created(array))
-		i_array_init(array, init_count);
 
 	data = array_get_modifiable(array, &count);
 	if (count == 0) {
@@ -104,14 +101,22 @@ bool seq_range_array_add(ARRAY_TYPE(seq_range) *array,
 	return FALSE;
 }
 
+void seq_range_array_add_with_init(ARRAY_TYPE(seq_range) *array,
+				   unsigned int init_count, uint32_t seq)
+{
+	if (!array_is_created(array))
+		i_array_init(array, init_count);
+	seq_range_array_add(array, seq);
+}
+
 void seq_range_array_add_range(ARRAY_TYPE(seq_range) *array,
 			       uint32_t seq1, uint32_t seq2)
 {
 	struct seq_range *data, value;
 	unsigned int idx1, idx2, count;
 
-	(void)seq_range_lookup(array, seq1, &idx1);
-	(void)seq_range_lookup(array, seq2, &idx2);
+	seq_range_lookup(array, seq1, &idx1);
+	seq_range_lookup(array, seq2, &idx2);
 
 	data = array_get_modifiable(array, &count);
 	if (idx1 > 0 && data[idx1-1].seq2+1 == seq1)
@@ -253,7 +258,7 @@ unsigned int seq_range_array_remove_range(ARRAY_TYPE(seq_range) *array,
 
 	/* find the beginning */
 	data = array_get(array, &count);
-	(void)seq_range_lookup(array, seq1, &idx);
+	seq_range_lookup(array, seq1, &idx);
 
 	if (idx == count)
 		return remove_count;
@@ -281,9 +286,8 @@ unsigned int seq_range_array_remove_seq_range(ARRAY_TYPE(seq_range) *dest,
 	return ret;
 }
 
-unsigned int
-seq_range_array_intersect(ARRAY_TYPE(seq_range) *dest,
-			  const ARRAY_TYPE(seq_range) *src)
+unsigned int seq_range_array_intersect(ARRAY_TYPE(seq_range) *dest,
+				       const ARRAY_TYPE(seq_range) *src)
 {
 	const struct seq_range *src_range;
 	unsigned int i, count, ret = 0;
@@ -292,8 +296,8 @@ seq_range_array_intersect(ARRAY_TYPE(seq_range) *dest,
 	src_range = array_get(src, &count);
 	for (i = 0; i < count; i++) {
 		if (last_seq + 1 < src_range[i].seq1) {
-			ret += seq_range_array_remove_range(dest, last_seq + 1,
-							src_range[i].seq1 - 1);
+			ret += seq_range_array_remove_range(dest,
+					last_seq + 1, src_range[i].seq1 - 1);
 		}
 		last_seq = src_range[i].seq2;
 	}

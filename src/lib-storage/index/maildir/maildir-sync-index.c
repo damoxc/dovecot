@@ -132,8 +132,8 @@ static int maildir_sync_flags(struct maildir_mailbox *mbox, const char *path,
 	ctx->flags = flags8;
 
 	/* and try renaming with the new name */
-	newfname = maildir_filename_flags_set(ctx->keywords_sync_ctx, fname,
-					      ctx->flags, &ctx->keywords);
+	newfname = maildir_filename_flags_kw_set(ctx->keywords_sync_ctx, fname,
+						 ctx->flags, &ctx->keywords);
 	newpath = t_strconcat(dir, newfname, NULL);
 	if (strcmp(path, newpath) == 0) {
 		/* just make sure that the file still exists. avoid rename()
@@ -356,10 +356,8 @@ void maildir_sync_index_rollback(struct maildir_index_sync_context **_ctx)
 	(void)maildir_sync_index_finish(ctx, FALSE);
 }
 
-static int uint_cmp(const void *p1, const void *p2)
+static int uint_cmp(const unsigned int *i1, const unsigned int *i2)
 {
-	const unsigned int *i1 = p1, *i2 = p2;
-
 	if (*i1 < *i2)
 		return -1;
 	else if (*i1 > *i2)

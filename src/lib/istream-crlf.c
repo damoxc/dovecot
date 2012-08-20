@@ -14,10 +14,10 @@ struct crlf_istream {
 static int i_stream_crlf_read_common(struct crlf_istream *cstream)
 {
 	struct istream_private *stream = &cstream->istream;
-	size_t size;
+	size_t size, avail;
 	ssize_t ret;
 
-	(void)i_stream_get_data(stream->parent, &size);
+	size = i_stream_get_data_size(stream->parent);
 	if (size == 0) {
 		ret = i_stream_read(stream->parent);
 		if (ret <= 0 && (ret != -2 || stream->skip == 0)) {
@@ -26,11 +26,11 @@ static int i_stream_crlf_read_common(struct crlf_istream *cstream)
 			stream->istream.eof = stream->parent->eof;
 			return ret;
 		}
-		(void)i_stream_get_data(stream->parent, &size);
+		size = i_stream_get_data_size(stream->parent);
 		i_assert(size != 0);
 	}
 
-	if (!i_stream_get_buffer_space(stream, size, NULL))
+	if (!i_stream_try_alloc(stream, size, &avail))
 		return -2;
 	return 1;
 }
@@ -172,12 +172,6 @@ static ssize_t i_stream_crlf_read_lf(struct istream_private *stream)
 	return ret;
 }
 
-static const struct stat *
-i_stream_crlf_stat(struct istream_private *stream, bool exact)
-{
-	return i_stream_stat(stream->parent, exact);
-}
-
 static struct istream *
 i_stream_create_crlf_full(struct istream *input, bool crlf)
 {
@@ -185,10 +179,8 @@ i_stream_create_crlf_full(struct istream *input, bool crlf)
 
 	cstream = i_new(struct crlf_istream, 1);
 	cstream->istream.max_buffer_size = input->real_stream->max_buffer_size;
-
 	cstream->istream.read = crlf ? i_stream_crlf_read_crlf :
 		i_stream_crlf_read_lf;
-	cstream->istream.stat = i_stream_crlf_stat;
 
 	cstream->istream.istream.readable_fd = FALSE;
 	cstream->istream.istream.blocking = input->blocking;

@@ -115,7 +115,7 @@ static void idle_client_input(struct cmd_idle_context *ctx)
 
 static void keepalive_timeout(struct cmd_idle_context *ctx)
 {
-	if (ctx->client->output_lock != NULL) {
+	if (ctx->client->output_locked) {
 		/* it's busy sending output */
 		return;
 	}
@@ -143,7 +143,7 @@ static void idle_sync_now(struct mailbox *box, struct cmd_idle_context *ctx)
 
 	ctx->sync_pending = FALSE;
 	ctx->sync_ctx = imap_sync_init(ctx->client, box, 0, 0);
-	cmd_idle_continue(ctx->cmd);
+	(void)cmd_idle_continue(ctx->cmd);
 }
 
 static void idle_callback(struct mailbox *box, struct cmd_idle_context *ctx)
@@ -253,14 +253,8 @@ bool cmd_idle(struct client_command_context *cmd)
 	ctx->client = client;
 	idle_add_keepalive_timeout(ctx);
 
-	if (client->mailbox != NULL) {
-		const struct mail_storage_settings *set;
-
-		set = mailbox_get_settings(client->mailbox);
-		mailbox_notify_changes(client->mailbox,
-				       set->mailbox_idle_check_interval,
-				       idle_callback, ctx);
-	}
+	if (client->mailbox != NULL)
+		mailbox_notify_changes(client->mailbox, idle_callback, ctx);
 	client_send_line(client, "+ idling");
 
 	io_remove(&client->io);

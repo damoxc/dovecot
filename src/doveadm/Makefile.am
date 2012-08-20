@@ -27,7 +27,6 @@ AM_CPPFLAGS = \
 
 if !BUILD_SHARED_LIBS
 unused_objects = \
-	../lib/mountpoint.o \
 	../lib-imap/imap-util.o \
 	../lib-storage/mail-search-parser-imap.o
 endif
@@ -117,9 +116,8 @@ doveadm_server_SOURCES = \
 	doveadm-print-server.c \
 	main.c
 
-noinst_HEADERS = \
-	client-connection.h \
-	server-connection.h \
+pkginc_libdir = $(pkgincludedir)
+pkginc_lib_HEADERS = \
 	doveadm.h \
 	doveadm-dump.h \
 	doveadm-mail.h \
@@ -127,9 +125,13 @@ noinst_HEADERS = \
 	doveadm-mailbox-list-iter.h \
 	doveadm-print.h \
 	doveadm-print-private.h \
+	doveadm-util.h
+
+noinst_HEADERS = \
+	client-connection.h \
+	server-connection.h \
 	doveadm-server.h \
 	doveadm-settings.h \
-	doveadm-util.h \
 	doveadm-who.h
 
 install-exec-local:

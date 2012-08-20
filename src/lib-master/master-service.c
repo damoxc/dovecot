@@ -149,7 +149,7 @@ master_service_init(const char *name, enum master_service_flags flags,
 	service->argv = *argv;
 	service->name = i_strdup(name);
 	/* keep getopt_str first in case it contains "+" */
-	service->getopt_str = getopt_str == NULL ?
+	service->getopt_str = *getopt_str == '\0' ?
 		i_strdup(master_service_getopt_string()) :
 		i_strconcat(getopt_str, master_service_getopt_string(), NULL);
 	service->flags = flags;
@@ -289,8 +289,8 @@ void master_service_init_log(struct master_service *service,
 
 		if (strcmp(service->set->log_path, "syslog") != 0) {
 			/* set error handlers back to file */
-			i_set_fatal_handler(NULL);
-			i_set_error_handler(NULL);
+			i_set_fatal_handler(default_fatal_handler);
+			i_set_error_handler(default_error_handler);
 		}
 	}
 
@@ -397,10 +397,8 @@ static void master_service_error(struct master_service *service)
 	}
 }
 
-static void master_status_error(void *context)
+static void master_status_error(struct master_service *service)
 {
-	struct master_service *service = context;
-
 	/* status fd is a write-only pipe, so if we're here it means the
 	   master wants us to die (or died itself). don't die until all
 	   service connections are finished. */
@@ -864,6 +862,19 @@ void master_service_io_listeners_remove(struct master_service *service)
 	if (service->listeners != NULL) {
 		for (i = 0; i < service->socket_count; i++) {
 			if (service->listeners[i].io != NULL)
+				io_remove(&service->listeners[i].io);
+		}
+	}
+}
+
+void master_service_ssl_io_listeners_remove(struct master_service *service)
+{
+	unsigned int i;
+
+	if (service->listeners != NULL) {
+		for (i = 0; i < service->socket_count; i++) {
+			if (service->listeners[i].io != NULL &&
+			    service->listeners[i].ssl)
 				io_remove(&service->listeners[i].io);
 		}
 	}

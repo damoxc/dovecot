@@ -63,6 +63,17 @@ enum mail_storage_class_flags {
 	MAIL_STORAGE_CLASS_FLAG_FILE_PER_MSG	= 0x20
 };
 
+struct mail_binary_cache {
+	struct timeout *to;
+	struct mailbox *box;
+	uint32_t uid;
+
+	uoff_t orig_physical_pos;
+	bool include_hdr;
+	struct istream *input;
+	uoff_t size;
+};
+
 struct mail_storage {
 	const char *name;
 	enum mail_storage_class_flags class_flags;
@@ -95,8 +106,10 @@ struct mail_storage {
 	struct mail_storage_callbacks callbacks;
 	void *callback_context;
 
+	struct mail_binary_cache binary_cache;
+
 	/* Module-specific contexts. See mail_storage_module_id. */
-	ARRAY_DEFINE(module_contexts, union mail_storage_module_context *);
+	ARRAY(union mail_storage_module_context *) module_contexts;
 };
 
 struct mail_attachment_part {
@@ -203,6 +216,12 @@ union mailbox_module_context {
 	struct mail_storage_module_register *reg;
 };
 
+struct mail_msgpart_partial_cache {
+	uint32_t uid;
+	uoff_t physical_start;
+	uoff_t physical_pos, virtual_pos;
+};
+
 struct mailbox {
 	const char *name;
 	/* mailbox's virtual name (from mail_namespace_get_vname()) */
@@ -220,6 +239,11 @@ struct mailbox {
 	struct mail_index *index;
 	struct mail_index_view *view;
 	struct mail_cache *cache;
+	/* Private per-user index/view for shared mailboxes. These are synced
+	   against the primary index and used to store per-user flags.
+	   These are non-NULL only when mailbox has per-user flags. */
+	struct mail_index *index_pvt;
+	struct mail_index_view *view_pvt;
 	/* Filled lazily by mailbox_get_permissions() */
 	struct mailbox_permissions _perm;
 	/* Filled lazily by mailbox_get_path() */
@@ -239,11 +263,11 @@ struct mailbox {
 	enum mailbox_flags flags;
 	unsigned int transaction_count;
 	enum mailbox_feature enabled_features;
+	struct mail_msgpart_partial_cache partial_cache;
 
 	struct mail_index_view *tmp_sync_view;
 
 	/* Mailbox notification settings: */
-	unsigned int notify_min_interval;
 	mailbox_notify_callback_t *notify_callback;
 	void *notify_context;
 
@@ -251,10 +275,10 @@ struct mailbox {
 	unsigned int generation_sequence;
 
 	/* Saved search results */
-	ARRAY_DEFINE(search_results, struct mail_search_result *);
+	ARRAY(struct mail_search_result *) search_results;
 
 	/* Module-specific contexts. See mail_storage_module_id. */
-	ARRAY_DEFINE(module_contexts, union mailbox_module_context *);
+	ARRAY(union mailbox_module_context *) module_contexts;
 
 	/* When FAST open flag is used, the mailbox isn't actually opened until
 	   it's synced for the first time. */
@@ -320,6 +344,10 @@ struct mail_vfuncs {
 			  struct message_size *hdr_size,
 			  struct message_size *body_size,
 			  struct istream **stream_r);
+	int (*get_binary_stream)(struct mail *mail,
+				 const struct message_part *part,
+				 bool include_hdr, uoff_t *size_r,
+				 bool *binary_r, struct istream **stream_r);
 
 	int (*get_special)(struct mail *mail, enum mail_fetch_field field,
 			   const char **value_r);
@@ -346,12 +374,14 @@ struct mail_private {
 	struct mail mail;
 	struct mail_vfuncs v, *vlast;
 
+	uint32_t seq_pvt;
+
 	/* initial wanted fields/headers, set by mail_alloc(): */
 	enum mail_fetch_field wanted_fields;
 	struct mailbox_header_lookup_ctx *wanted_headers;
 
 	pool_t pool;
-	ARRAY_DEFINE(module_contexts, union mail_module_context *);
+	ARRAY(union mail_module_context *) module_contexts;
 };
 
 struct mailbox_list_context {
@@ -388,12 +418,15 @@ struct mailbox_transaction_context {
 	/* view contains all changes done within this transaction */
 	struct mail_index_view *view;
 
+	/* for private index updates: */
+	struct mail_index_transaction *itrans_pvt;
+	struct mail_index_view *view_pvt;
+
 	struct mail_cache_view *cache_view;
 	struct mail_cache_transaction_ctx *cache_trans;
 
 	struct mail_transaction_commit_changes *changes;
-	ARRAY_DEFINE(module_contexts,
-		     union mailbox_transaction_module_context *);
+	ARRAY(union mailbox_transaction_module_context *) module_contexts;
 
 	struct mail_save_context *save_ctx;
 
@@ -423,12 +456,12 @@ struct mail_search_context {
 	   static data matches. */
 	struct mail_search_result *update_result;
 	/* add matches to these search results */
-	ARRAY_DEFINE(results, struct mail_search_result *);
+	ARRAY(struct mail_search_result *) results;
 
 	uint32_t seq;
 	uint32_t progress_cur, progress_max;
 
-	ARRAY_DEFINE(module_contexts, union mail_search_module_context *);
+	ARRAY(union mail_search_module_context *) module_contexts;
 
 	unsigned int seen_lost_data:1;
 	unsigned int progress_hidden:1;
@@ -460,6 +493,8 @@ struct mail_save_context {
 	unsigned int copying_via_save:1;
 	/* mail is being saved, not copied */
 	unsigned int saving:1;
+	/* mail is being moved - ignore quota */
+	unsigned int moving:1;
 };
 
 struct mailbox_sync_context {
@@ -507,7 +542,7 @@ void mail_storage_copy_list_error(struct mail_storage *storage,
 
 /* Returns TRUE if everything should already be in memory after this call. */
 bool mail_prefetch(struct mail *mail);
-int mail_set_aborted(struct mail *mail);
+void mail_set_aborted(struct mail *mail);
 void mail_set_expunged(struct mail *mail);
 void mail_set_seq_saving(struct mail *mail, uint32_t seq);
 void mailbox_set_deleted(struct mailbox *box);
@@ -524,5 +559,6 @@ int mailbox_create_fd(struct mailbox *box, const char *path, int flags,
 		      int *fd_r);
 unsigned int mail_storage_get_lock_timeout(struct mail_storage *storage,
 					   unsigned int secs);
+void mail_storage_free_binary_cache(struct mail_storage *storage);
 
 #endif

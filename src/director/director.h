@@ -39,7 +39,7 @@ struct director {
 	   is long. */
 	struct director_connection *left, *right;
 	/* all director connections */
-	ARRAY_DEFINE(connections, struct director_connection *);
+	ARRAY(struct director_connection *) connections;
 	struct timeout *to_reconnect;
 	struct timeout *to_sync;
 
@@ -52,14 +52,14 @@ struct director {
 	struct user_directory *users;
 
 	/* these requests are waiting for directors to be in synced */
-	ARRAY_DEFINE(pending_requests, struct director_request *);
+	ARRAY(struct director_request *) pending_requests;
 	struct timeout *to_request;
 	struct timeout *to_handshake_warning;
 
 	director_state_change_callback_t *state_change_callback;
 
 	/* director hosts are sorted by IP (and port) */
-	ARRAY_DEFINE(dir_hosts, struct director_host *);
+	ARRAY(struct director_host *) dir_hosts;
 	struct timeout *to_remove_dirs;
 
 	struct ipc_client *ipc_proxy;
@@ -109,26 +109,27 @@ void director_ring_remove(struct director_host *removed_host,
 
 void director_update_host(struct director *dir, struct director_host *src,
 			  struct director_host *orig_src,
-			  struct mail_host *host);
+			  struct mail_host *host) ATTR_NULL(3);
 void director_remove_host(struct director *dir, struct director_host *src,
 			  struct director_host *orig_src,
-			  struct mail_host *host);
+			  struct mail_host *host) ATTR_NULL(2, 3);
 void director_flush_host(struct director *dir, struct director_host *src,
 			 struct director_host *orig_src,
-			 struct mail_host *host);
+			 struct mail_host *host) ATTR_NULL(3);
 void director_update_user(struct director *dir, struct director_host *src,
 			  struct user *user);
 void director_update_user_weak(struct director *dir, struct director_host *src,
 			       struct director_host *orig_src,
-			       struct user *user);
+			       struct user *user) ATTR_NULL(3);
 void director_move_user(struct director *dir, struct director_host *src,
 			struct director_host *orig_src,
-			unsigned int username_hash, struct mail_host *host);
+			unsigned int username_hash, struct mail_host *host)
+	ATTR_NULL(3);
 void director_user_killed(struct director *dir, unsigned int username_hash);
 void director_user_killed_everywhere(struct director *dir,
 				     struct director_host *src,
 				     struct director_host *orig_src,
-				     unsigned int username_hash);
+				     unsigned int username_hash) ATTR_NULL(3);
 void director_user_weak(struct director *dir, struct user *user);
 
 void director_sync_freeze(struct director *dir);

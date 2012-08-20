@@ -29,7 +29,16 @@ static bool verbose_proctitle = FALSE;
 static struct mail_storage_service_ctx *storage_service;
 static struct master_login *master_login = NULL;
 
-void (*hook_client_created)(struct client **client) = NULL;
+pop3_client_created_func_t *hook_client_created = NULL;
+
+pop3_client_created_func_t *
+pop3_client_created_hook_set(pop3_client_created_func_t *new_hook)
+{
+	pop3_client_created_func_t *old_hook = hook_client_created;
+
+	hook_client_created = new_hook;
+	return old_hook;
+}
 
 void pop3_refresh_proctitle(void)
 {
@@ -129,9 +138,9 @@ static void main_stdio_run(const char *username)
 	if (input.username == NULL)
 		i_fatal("USER environment missing");
 	if ((value = getenv("IP")) != NULL)
-		net_addr2ip(value, &input.remote_ip);
+		(void)net_addr2ip(value, &input.remote_ip);
 	if ((value = getenv("LOCAL_IP")) != NULL)
-		net_addr2ip(value, &input.local_ip);
+		(void)net_addr2ip(value, &input.local_ip);
 
 	input_base64 = getenv("CLIENT_INPUT");
 	input_buf = input_base64 == NULL ? NULL :
@@ -162,8 +171,10 @@ login_client_connected(const struct master_login_client *client,
 				 client->auth_req.data_size);
 	if (client_create_from_input(&input, client->fd, client->fd,
 				     &input_buf, &error) < 0) {
+		int fd = client->fd;
+
 		i_error("%s", error);
-		(void)close(client->fd);
+		i_close_fd(&fd);
 		master_service_client_connection_destroyed(master_service);
 	}
 }

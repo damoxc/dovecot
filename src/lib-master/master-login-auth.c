@@ -47,7 +47,7 @@ struct master_login_auth {
 	struct timeout *to;
 
 	unsigned int id_counter;
-	struct hash_table *requests;
+	HASH_TABLE(void *, struct master_login_auth_request *) requests;
 	/* linked list of requests, ordered by create_stamp */
 	struct master_login_auth_request *request_head, *request_tail;
 
@@ -71,7 +71,7 @@ struct master_login_auth *master_login_auth_init(const char *auth_socket_path)
 	auth->auth_socket_path = p_strdup(pool, auth_socket_path);
 	auth->refcount = 1;
 	auth->fd = -1;
-	auth->requests = hash_table_create(default_pool, pool, 0, NULL, NULL);
+	hash_table_create_direct(&auth->requests, pool, 0);
 	auth->id_counter = (rand() % 32767) * 131072U;
 	return auth;
 }
@@ -388,6 +388,7 @@ master_login_auth_connect(struct master_login_auth *auth)
 	auth->fd = fd;
 	auth->input = i_stream_create_fd(fd, AUTH_MAX_INBUF_SIZE, FALSE);
 	auth->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(auth->output, TRUE);
 	auth->io = io_add(fd, IO_READ, master_login_auth_input, auth);
 	return 0;
 }
@@ -436,7 +437,7 @@ master_login_auth_send_request(struct master_login_auth *auth,
 		    req->client_pid, req->auth_id);
 	binary_to_hex_append(str, req->cookie, sizeof(req->cookie));
 	str_append_c(str, '\n');
-	o_stream_send(auth->output, str_data(str), str_len(str));
+	o_stream_nsend(auth->output, str_data(str), str_len(str));
 }
 
 void master_login_auth_request(struct master_login_auth *auth,
@@ -456,7 +457,7 @@ void master_login_auth_request(struct master_login_auth *auth,
 				 context);
 			return;
 		}
-		o_stream_send_str(auth->output,
+		o_stream_nsend_str(auth->output,
 			t_strdup_printf("VERSION\t%u\t%u\n",
 					AUTH_MASTER_PROTOCOL_MAJOR_VERSION,
 					AUTH_MASTER_PROTOCOL_MINOR_VERSION));
