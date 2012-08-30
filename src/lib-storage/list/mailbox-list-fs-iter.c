@@ -30,7 +30,7 @@ struct list_dir_context {
 	enum mailbox_info_flags info_flags;
 
 	/* all files in this directory */
-	ARRAY_DEFINE(entries, struct list_dir_entry);
+	ARRAY(struct list_dir_entry) entries;
 	unsigned int entry_idx;
 };
 
@@ -39,7 +39,7 @@ struct fs_list_iterate_context {
 
 	const char *const *valid_patterns;
 	/* roots can be either /foo, ~user/bar or baz */
-	ARRAY_DEFINE(roots, const char *);
+	ARRAY(const char *) roots;
 	unsigned int root_idx;
 	char sep;
 
@@ -99,8 +99,8 @@ fs_list_rename_invalid(struct fs_list_iterate_context *ctx,
 	string_t *dest = t_str_new(128);
 	const char *root, *src;
 
-	root = mailbox_list_get_path(ctx->ctx.list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	root = mailbox_list_get_root_path(ctx->ctx.list,
+					  MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	src = t_strconcat(root, "/", storage_name, NULL);
 
 	(void)uni_utf8_get_valid_data((const void *)storage_name,
@@ -155,8 +155,8 @@ dir_entry_get(struct fs_list_iterate_context *ctx, const char *dir_path,
 	}
 	if (strcmp(d->d_name, ctx->ctx.list->set.subscription_fname) == 0) {
 		/* if this is the subscriptions file, skip it */
-		root_dir = mailbox_list_get_path(ctx->ctx.list, NULL,
-						 MAILBOX_LIST_PATH_TYPE_DIR);
+		root_dir = mailbox_list_get_root_path(ctx->ctx.list,
+						      MAILBOX_LIST_PATH_TYPE_DIR);
 		if (strcmp(root_dir, dir_path) == 0)
 			return 0;
 	}
@@ -231,8 +231,8 @@ fs_list_get_storage_path(struct fs_list_iterate_context *ctx,
 	}
 	if (*path != '/') {
 		/* non-absolute path. add the mailbox root dir as prefix. */
-		root = mailbox_list_get_path(ctx->ctx.list, NULL,
-					     MAILBOX_LIST_PATH_TYPE_MAILBOX);
+		root = mailbox_list_get_root_path(ctx->ctx.list,
+						  MAILBOX_LIST_PATH_TYPE_MAILBOX);
 		path = *path == '\0' ? root :
 			t_strconcat(root, "/", path, NULL);
 	}
@@ -246,8 +246,7 @@ fs_list_dir_read(struct fs_list_iterate_context *ctx,
 {
 	DIR *fsdir;
 	struct dirent *d;
-	struct list_dir_entry *entry;
-	const char *path, *vname;
+	const char *path;
 	int ret = 0;
 
 	if (!fs_list_get_storage_path(ctx, dir->storage_name, &path))
@@ -295,20 +294,6 @@ fs_list_dir_read(struct fs_list_iterate_context *ctx,
 			"closedir(%s) failed: %m", path);
 		ret = -1;
 	}
-	if ((ctx->ctx.flags & MAILBOX_LIST_ITER_SHOW_EXISTING_PARENT) != 0 &&
-	    ctx->dir == NULL && *dir->storage_name != '\0') {
-		/* LIST "" foo/% shows foo/ if it exists */
-		vname = mailbox_list_get_vname(ctx->ctx.list,
-					       dir->storage_name);
-		vname = t_strdup_printf("%s%c", vname, ctx->sep);
-		if (imap_match(ctx->ctx.glob, vname) == IMAP_MATCH_YES) {
-			entry = array_append_space(&dir->entries);
-			entry->fname = "";
-			entry->info_flags = MAILBOX_NOSELECT |
-				(dir->info_flags &
-				 (MAILBOX_CHILDREN | MAILBOX_NOCHILDREN));
-		}
-	}
 	return ret;
 }
 
@@ -342,7 +327,7 @@ fs_list_get_valid_patterns(struct fs_list_iterate_context *ctx,
 			   const char *const *patterns)
 {
 	struct mailbox_list *_list = ctx->ctx.list;
-	ARRAY_DEFINE(valid_patterns, const char *);
+	ARRAY(const char *) valid_patterns;
 	const char *pattern, *test_pattern, *real_pattern;
 	unsigned int prefix_len;
 
@@ -366,7 +351,7 @@ fs_list_get_valid_patterns(struct fs_list_iterate_context *ctx,
 			array_append(&valid_patterns, &pattern, 1);
 		}
 	}
-	(void)array_append_space(&valid_patterns); /* NULL-terminate */
+	array_append_zero(&valid_patterns); /* NULL-terminate */
 	ctx->valid_patterns = array_idx(&valid_patterns, 0);
 
 	return array_count(&valid_patterns) > 1;
@@ -576,7 +561,7 @@ static bool
 list_file_unfound_inbox(struct fs_list_iterate_context *ctx)
 {
 	ctx->info.flags = 0;
-	ctx->info.name = fs_list_get_inbox_vname(ctx);
+	ctx->info.vname = fs_list_get_inbox_vname(ctx);
 
 	if (mailbox_list_mailbox(ctx->ctx.list, "INBOX", &ctx->info.flags) < 0)
 		ctx->ctx.failed = TRUE;
@@ -623,12 +608,12 @@ fs_list_entry(struct fs_list_iterate_context *ctx,
 	storage_name = dir_get_storage_name(dir, entry->fname);
 
 	vname = mailbox_list_get_vname(ctx->ctx.list, storage_name);
-	ctx->info.name = p_strdup(ctx->info_pool, vname);
+	ctx->info.vname = p_strdup(ctx->info_pool, vname);
 	ctx->info.flags = entry->info_flags;
 
-	match = imap_match(ctx->ctx.glob, ctx->info.name);
+	match = imap_match(ctx->ctx.glob, ctx->info.vname);
 
-	child_dir_name = t_strdup_printf("%s%c", ctx->info.name, ctx->sep);
+	child_dir_name = t_strdup_printf("%s%c", ctx->info.vname, ctx->sep);
 	child_dir_match = imap_match(ctx->ctx.glob, child_dir_name);
 	if (child_dir_match == IMAP_MATCH_YES)
 		child_dir_match |= IMAP_MATCH_CHILDREN;
@@ -653,7 +638,7 @@ fs_list_entry(struct fs_list_iterate_context *ctx,
 	}
 
 	/* handle INBOXes correctly */
-	if (strcasecmp(ctx->info.name, "INBOX") == 0 &&
+	if (strcasecmp(ctx->info.vname, "INBOX") == 0 &&
 	    (ns->flags & NAMESPACE_FLAG_INBOX_USER) != 0) {
 		/* either this is user's INBOX, or it's a naming conflict */
 		if (!list_file_is_any_inbox(ctx, storage_name)) {
@@ -733,11 +718,11 @@ fs_list_next(struct fs_list_iterate_context *ctx)
 
 	if (ctx->list_inbox_inbox) {
 		ctx->info.flags = MAILBOX_CHILDREN | MAILBOX_NOSELECT;
-		ctx->info.name =
+		ctx->info.vname =
 			p_strconcat(ctx->info_pool,
 				    ctx->ctx.list->ns->prefix, "INBOX", NULL);
 		ctx->list_inbox_inbox = FALSE;
-		if (imap_match(ctx->ctx.glob, ctx->info.name) == IMAP_MATCH_YES)
+		if (imap_match(ctx->ctx.glob, ctx->info.vname) == IMAP_MATCH_YES)
 			return 1;
 	}
 	if (!ctx->inbox_found && ctx->ctx.glob != NULL &&
@@ -773,9 +758,9 @@ fs_list_iter_next(struct mailbox_list_iterate_context *_ctx)
 
 	if ((ctx->ctx.flags & MAILBOX_LIST_ITER_RETURN_SUBSCRIBED) != 0) {
 		mailbox_list_set_subscription_flags(ctx->ctx.list,
-						    ctx->info.name,
+						    ctx->info.vname,
 						    &ctx->info.flags);
 	}
-	i_assert(ctx->info.name != NULL);
+	i_assert(ctx->info.vname != NULL);
 	return &ctx->info;
 }

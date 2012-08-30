@@ -234,8 +234,7 @@ mail_storage_create_root(struct mailbox_list *list,
 	bool autocreate;
 	int ret;
 
-	root_dir = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	root_dir = mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_MAILBOX);
 	if (root_dir == NULL) {
 		/* storage doesn't use directories (e.g. shared root) */
 		return 0;
@@ -562,7 +561,7 @@ enum mail_error mailbox_get_last_mail_error(struct mailbox *box)
 {
 	enum mail_error error;
 
-	(void)mail_storage_get_last_error(box->storage, &error);
+	mail_storage_get_last_error(box->storage, &error);
 	return error;
 }
 
@@ -864,7 +863,8 @@ static int mailbox_autocreate_and_reopen(struct mailbox *box)
 	return ret;
 }
 
-static int mailbox_open_full(struct mailbox *box, struct istream *input)
+static int ATTR_NULL(2)
+mailbox_open_full(struct mailbox *box, struct istream *input)
 {
 	int ret;
 
@@ -970,6 +970,16 @@ enum mailbox_feature mailbox_get_enabled_features(struct mailbox *box)
 	return box->enabled_features;
 }
 
+void mail_storage_free_binary_cache(struct mail_storage *storage)
+{
+	if (storage->binary_cache.box == NULL)
+		return;
+
+	timeout_remove(&storage->binary_cache.to);
+	i_stream_destroy(&storage->binary_cache.input);
+	memset(&storage->binary_cache, 0, sizeof(storage->binary_cache));
+}
+
 void mailbox_close(struct mailbox *box)
 {
 	if (!box->opened)
@@ -981,6 +991,8 @@ void mailbox_close(struct mailbox *box)
 	}
 	box->v.close(box);
 
+	if (box->storage->binary_cache.box == box)
+		mail_storage_free_binary_cache(box->storage);
 	box->opened = FALSE;
 	box->mailbox_deleted = FALSE;
 	array_clear(&box->search_results);
@@ -1305,10 +1317,12 @@ int mailbox_get_metadata(struct mailbox *box, enum mailbox_metadata_items items,
 
 enum mail_flags mailbox_get_private_flags_mask(struct mailbox *box)
 {
-	if (box->v.get_private_flags_mask == NULL)
-		return 0;
-	else
+	if (box->v.get_private_flags_mask != NULL)
 		return box->v.get_private_flags_mask(box);
+	else if (box->list->set.index_pvt_dir != NULL)
+		return MAIL_SEEN; /* FIXME */
+	else
+		return 0;
 }
 
 struct mailbox_sync_context *
@@ -1374,10 +1388,9 @@ int mailbox_sync(struct mailbox *box, enum mailbox_sync_flags flags)
 }
 
 #undef mailbox_notify_changes
-void mailbox_notify_changes(struct mailbox *box, unsigned int min_interval,
+void mailbox_notify_changes(struct mailbox *box,
 			    mailbox_notify_callback_t *callback, void *context)
 {
-	box->notify_min_interval = min_interval;
 	box->notify_callback = callback;
 	box->notify_context = context;
 
@@ -1386,7 +1399,10 @@ void mailbox_notify_changes(struct mailbox *box, unsigned int min_interval,
 
 void mailbox_notify_changes_stop(struct mailbox *box)
 {
-	mailbox_notify_changes(box, 0, NULL, NULL);
+	box->notify_callback = NULL;
+	box->notify_context = NULL;
+
+	box->v.notify_changes(box);
 }
 
 struct mail_search_context *
@@ -1542,8 +1558,8 @@ mailbox_save_alloc(struct mailbox_transaction_context *t)
 	struct mail_save_context *ctx;
 
 	ctx = t->box->v.save_alloc(t);
-	ctx->received_date = (time_t)-1;
-	ctx->save_date = (time_t)-1;
+	ctx->data.received_date = (time_t)-1;
+	ctx->data.save_date = (time_t)-1;
 	return ctx;
 }
 
@@ -1551,8 +1567,8 @@ void mailbox_save_set_flags(struct mail_save_context *ctx,
 			    enum mail_flags flags,
 			    struct mail_keywords *keywords)
 {
-	ctx->flags = flags;
-	ctx->keywords = keywords;
+	ctx->data.flags = flags;
+	ctx->data.keywords = keywords;
 	if (keywords != NULL)
 		mailbox_keywords_ref(keywords);
 }
@@ -1562,49 +1578,49 @@ void mailbox_save_copy_flags(struct mail_save_context *ctx, struct mail *mail)
 	const char *const *keywords_list;
 
 	keywords_list = mail_get_keywords(mail);
-	ctx->keywords = str_array_length(keywords_list) == 0 ? NULL :
+	ctx->data.keywords = str_array_length(keywords_list) == 0 ? NULL :
 		mailbox_keywords_create_valid(ctx->transaction->box,
 					      keywords_list);
-	ctx->flags = mail_get_flags(mail);
+	ctx->data.flags = mail_get_flags(mail);
 }
 
 void mailbox_save_set_min_modseq(struct mail_save_context *ctx,
 				 uint64_t min_modseq)
 {
-	ctx->min_modseq = min_modseq;
+	ctx->data.min_modseq = min_modseq;
 }
 
 void mailbox_save_set_received_date(struct mail_save_context *ctx,
 				    time_t received_date, int timezone_offset)
 {
-	ctx->received_date = received_date;
-	ctx->received_tz_offset = timezone_offset;
+	ctx->data.received_date = received_date;
+	ctx->data.received_tz_offset = timezone_offset;
 }
 
 void mailbox_save_set_save_date(struct mail_save_context *ctx,
 				time_t save_date)
 {
-	ctx->save_date = save_date;
+	ctx->data.save_date = save_date;
 }
 
 void mailbox_save_set_from_envelope(struct mail_save_context *ctx,
 				    const char *envelope)
 {
-	i_free(ctx->from_envelope);
-	ctx->from_envelope = i_strdup(envelope);
+	i_free(ctx->data.from_envelope);
+	ctx->data.from_envelope = i_strdup(envelope);
 }
 
 void mailbox_save_set_uid(struct mail_save_context *ctx, uint32_t uid)
 {
-	ctx->uid = uid;
+	ctx->data.uid = uid;
 }
 
 void mailbox_save_set_guid(struct mail_save_context *ctx, const char *guid)
 {
 	i_assert(guid == NULL || *guid != '\0');
 
-	i_free(ctx->guid);
-	ctx->guid = i_strdup(guid);
+	i_free(ctx->data.guid);
+	ctx->data.guid = i_strdup(guid);
 }
 
 void mailbox_save_set_pop3_uidl(struct mail_save_context *ctx, const char *uidl)
@@ -1612,8 +1628,8 @@ void mailbox_save_set_pop3_uidl(struct mail_save_context *ctx, const char *uidl)
 	i_assert(*uidl != '\0');
 	i_assert(strchr(uidl, '\n') == NULL);
 
-	i_free(ctx->pop3_uidl);
-	ctx->pop3_uidl = i_strdup(uidl);
+	i_free(ctx->data.pop3_uidl);
+	ctx->data.pop3_uidl = i_strdup(uidl);
 }
 
 void mailbox_save_set_pop3_order(struct mail_save_context *ctx,
@@ -1621,7 +1637,7 @@ void mailbox_save_set_pop3_order(struct mail_save_context *ctx,
 {
 	i_assert(order > 0);
 
-	ctx->pop3_order = order;
+	ctx->data.pop3_order = order;
 }
 
 void mailbox_save_set_dest_mail(struct mail_save_context *ctx,
@@ -1666,7 +1682,7 @@ int mailbox_save_finish(struct mail_save_context **_ctx)
 {
 	struct mail_save_context *ctx = *_ctx;
 	struct mailbox *box = ctx->transaction->box;
-	struct mail_keywords *keywords = ctx->keywords;
+	struct mail_keywords *keywords = ctx->data.keywords;
 	int ret;
 
 	*_ctx = NULL;
@@ -1679,7 +1695,7 @@ int mailbox_save_finish(struct mail_save_context **_ctx)
 void mailbox_save_cancel(struct mail_save_context **_ctx)
 {
 	struct mail_save_context *ctx = *_ctx;
-	struct mail_keywords *keywords = ctx->keywords;
+	struct mail_keywords *keywords = ctx->data.keywords;
 
 	*_ctx = NULL;
 	ctx->transaction->box->v.save_cancel(ctx);
@@ -1697,7 +1713,7 @@ int mailbox_copy(struct mail_save_context **_ctx, struct mail *mail)
 {
 	struct mail_save_context *ctx = *_ctx;
 	struct mailbox *box = ctx->transaction->box;
-	struct mail_keywords *keywords = ctx->keywords;
+	struct mail_keywords *keywords = ctx->data.keywords;
 	int ret;
 
 	*_ctx = NULL;
@@ -1712,6 +1728,18 @@ int mailbox_copy(struct mail_save_context **_ctx, struct mail *mail)
 	if (keywords != NULL)
 		mailbox_keywords_unref(&keywords);
 	return ret;
+}
+
+int mailbox_move(struct mail_save_context **_ctx, struct mail *mail)
+{
+	struct mail_save_context *ctx = *_ctx;
+
+	ctx->moving = TRUE;
+	if (mailbox_copy(_ctx, mail) < 0)
+		return -1;
+
+	mail_expunge(mail);
+	return 0;
 }
 
 int mailbox_save_using_mail(struct mail_save_context **ctx, struct mail *mail)

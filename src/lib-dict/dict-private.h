@@ -31,6 +31,8 @@ struct dict_vfuncs {
 		    const char *key, const char *value);
 	void (*unset)(struct dict_transaction_context *ctx,
 		      const char *key);
+	void (*append)(struct dict_transaction_context *ctx,
+		       const char *key, const char *value);
 	void (*atomic_inc)(struct dict_transaction_context *ctx,
 			   const char *key, long long diff);
 };
@@ -54,6 +56,7 @@ struct dict_transaction_context {
 extern struct dict dict_driver_client;
 extern struct dict dict_driver_file;
 extern struct dict dict_driver_memcached;
+extern struct dict dict_driver_memcached_ascii;
 extern struct dict dict_driver_redis;
 
 #endif

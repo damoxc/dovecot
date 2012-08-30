@@ -15,7 +15,9 @@ base_sources = \
 	dict-client.c \
 	dict-file.c \
 	dict-memcached.c \
-	dict-redis.c
+	dict-memcached-ascii.c \
+	dict-redis.c \
+	dict-transaction-memory.c
 
 libdict_la_SOURCES = \
 	$(base_sources)
@@ -33,7 +35,8 @@ headers = \
 	dict-client.h \
 	dict-private.h \
 	dict-sql.h \
-	dict-sql-settings.h
+	dict-sql-settings.h \
+	dict-transaction-memory.h
 
 pkginc_libdir=$(pkgincludedir)
 pkginc_lib_HEADERS = $(headers)

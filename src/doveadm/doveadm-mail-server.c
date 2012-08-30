@@ -22,7 +22,7 @@
 #define DOVEADM_MAIL_SERVER_FAILED() \
 	(internal_failure || master_service_is_killed(master_service))
 
-static struct hash_table *servers;
+static HASH_TABLE(char *, struct doveadm_server *) servers;
 static pool_t server_pool;
 static struct doveadm_mail_cmd_context *cmd_ctx;
 static bool internal_failure = FALSE;
@@ -36,11 +36,9 @@ doveadm_server_get(struct doveadm_mail_cmd_context *ctx, const char *name)
 	struct doveadm_server *server;
 	char *dup_name;
 
-	if (servers == NULL) {
+	if (!hash_table_is_created(servers)) {
 		server_pool = pool_alloconly_create("doveadm servers", 1024*16);
-		servers = hash_table_create(default_pool, server_pool, 0,
-					    str_hash,
-					    (hash_cmp_callback_t *)strcmp);
+		hash_table_create(&servers, server_pool, 0, str_hash, strcmp);
 	}
 	server = hash_table_lookup(servers, name);
 	if (server == NULL) {
@@ -244,8 +242,10 @@ int doveadm_mail_server_user(struct doveadm_mail_cmd_context *ctx,
 		doveadm_mail_server_handle(conn, input->username);
 	else if (array_count(&server->connections) <
 		 	I_MAX(ctx->set->doveadm_worker_count, 1)) {
-		conn = server_connection_create(server);
-		doveadm_mail_server_handle(conn, input->username);
+		if (server_connection_create(server, &conn) < 0)
+			internal_failure = TRUE;
+		else
+			doveadm_mail_server_handle(conn, input->username);
 	} else {
 		if (array_count(&server->queue) >= DOVEADM_SERVER_QUEUE_MAX)
 			doveadm_server_flush_one(server);
@@ -261,12 +261,11 @@ static struct doveadm_server *doveadm_server_find_used(void)
 {
 	struct hash_iterate_context *iter;
 	struct doveadm_server *ret = NULL;
-	void *key, *value;
+	char *key;
+	struct doveadm_server *server;
 
 	iter = hash_table_iterate_init(servers);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct doveadm_server *server = value;
-
+	while (hash_table_iterate(iter, servers, &key, &server)) {
 		if (doveadm_server_have_used_connections(server)) {
 			ret = server;
 			break;
@@ -279,12 +278,11 @@ static struct doveadm_server *doveadm_server_find_used(void)
 static void doveadm_servers_destroy_all_connections(void)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	char *key;
+	struct doveadm_server *server;
 
 	iter = hash_table_iterate_init(servers);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct doveadm_server *server = value;
-
+	while (hash_table_iterate(iter, servers, &key, &server)) {
 		while (array_count(&server->connections) > 0) {
 			struct server_connection *const *connp, *conn;
 
@@ -300,7 +298,7 @@ void doveadm_mail_server_flush(void)
 {
 	struct doveadm_server *server;
 
-	if (servers == NULL) {
+	if (!hash_table_is_created(servers)) {
 		cmd_ctx = NULL;
 		return;
 	}

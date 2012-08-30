@@ -58,8 +58,8 @@ static void search_parse_msgset_args(unsigned int messages_count,
 				     struct mail_search_arg *args,
 				     uint32_t *seq1_r, uint32_t *seq2_r);
 
-static void search_none(struct mail_search_arg *arg ATTR_UNUSED,
-			struct search_body_context *ctx ATTR_UNUSED)
+static void ATTR_NULL(2)
+search_none(struct mail_search_arg *arg ATTR_UNUSED, void *ctx ATTR_UNUSED)
 {
 }
 
@@ -147,12 +147,24 @@ static int search_arg_match_keywords(struct index_search_context *ctx,
 	return 1;
 }
 
+static bool
+index_search_get_pvt(struct index_search_context *ctx, uint32_t uid)
+{
+	index_transaction_init_pvt(ctx->mail_ctx.transaction);
+
+	if (ctx->pvt_uid == uid)
+		return ctx->pvt_seq != 0;
+	ctx->pvt_uid = uid;
+	return mail_index_lookup_seq(ctx->mail_ctx.transaction->view_pvt,
+				     uid, &ctx->pvt_seq);
+}
+
 /* Returns >0 = matched, 0 = not matched, -1 = unknown */
 static int search_arg_match_index(struct index_search_context *ctx,
 				  struct mail_search_arg *arg,
 				  const struct mail_index_record *rec)
 {
-	enum mail_flags flags;
+	enum mail_flags flags, pvt_flags_mask;
 	uint64_t modseq;
 	int ret;
 
@@ -167,6 +179,18 @@ static int search_arg_match_index(struct index_search_context *ctx,
 		if ((arg->value.flags & MAIL_RECENT) != 0 &&
 		    index_mailbox_is_recent(ctx->box, rec->uid))
 			flags |= MAIL_RECENT;
+		if (ctx->box->view_pvt == NULL) {
+			/* no private view (set by view syncing) ->
+			   no private flags */
+		} else {
+			pvt_flags_mask = mailbox_get_private_flags_mask(ctx->box);
+			flags &= ~pvt_flags_mask;
+			if (index_search_get_pvt(ctx, rec->uid)) {
+				rec = mail_index_lookup(ctx->mail_ctx.transaction->view_pvt,
+							ctx->pvt_seq);
+				flags |= rec->flags & pvt_flags_mask;
+			}
+		}
 		return (flags & arg->value.flags) == arg->value.flags;
 	case SEARCH_KEYWORDS:
 		T_BEGIN {
@@ -517,7 +541,7 @@ static void search_header_arg(struct mail_search_arg *arg,
 }
 
 static void search_header_unmatch(struct mail_search_arg *arg,
-				  void *context ATTR_UNUSED)
+				  struct search_header_context *ctx ATTR_UNUSED)
 {
 	switch (arg->type) {
 	case SEARCH_BEFORE:
@@ -547,7 +571,8 @@ static void search_header(struct message_header_line *hdr,
 {
 	if (hdr == NULL) {
 		/* end of headers, mark all unknown SEARCH_HEADERs unmatched */
-		mail_search_args_foreach(ctx->args, search_header_unmatch, ctx);
+		(void)mail_search_args_foreach(ctx->args, search_header_unmatch,
+					       ctx);
 		return;
 	}
 
@@ -561,7 +586,7 @@ static void search_header(struct message_header_line *hdr,
 		ctx->hdr = hdr;
 
 		ctx->custom_header = FALSE;
-		mail_search_args_foreach(ctx->args, search_header_arg, ctx);
+		(void)mail_search_args_foreach(ctx->args, search_header_arg, ctx);
 	}
 }
 
@@ -672,7 +697,7 @@ static int search_arg_match_text(struct mail_search_arg *args,
 
 	if (have_headers) {
 		/* see if the header search succeeded in finishing the search */
-		ret = mail_search_args_foreach(args, search_none, NULL);
+		ret = mail_search_args_foreach(args, search_none, (void *)NULL);
 		if (ret >= 0 || !have_body)
 			return ret;
 	}
@@ -716,7 +741,7 @@ search_msgset_fix_limits(unsigned int messages_count,
 		if (range[count-1].seq2 == (uint32_t)-1) {
 			/* "*" used, make sure the last message is in the range
 			   (e.g. with count+1:* we still want to include it) */
-			seq_range_array_add(seqset, 0, messages_count);
+			seq_range_array_add(seqset, messages_count);
 		}
 		/* remove all nonexistent messages */
 		seq_range_array_remove_range(seqset, messages_count + 1,
@@ -858,8 +883,8 @@ static void search_limit_lowwater(struct index_search_context *ctx,
 	if (uid_lowwater == 0)
 		return;
 
-	mail_index_lookup_seq_range(ctx->view, uid_lowwater, (uint32_t)-1,
-				    &seq1, &seq2);
+	(void)mail_index_lookup_seq_range(ctx->view, uid_lowwater, (uint32_t)-1,
+					  &seq1, &seq2);
 	if (*first_seq < seq1)
 		*first_seq = seq1;
 }
@@ -869,8 +894,14 @@ static bool search_limit_by_flags(struct index_search_context *ctx,
 				  uint32_t *seq1, uint32_t *seq2)
 {
 	const struct mail_index_header *hdr;
+	enum mail_flags pvt_flags_mask;
 
 	hdr = mail_index_get_header(ctx->view);
+	/* we can't trust that private view's header is fully up to date,
+	   so do this optimization only for non-private flags */
+	pvt_flags_mask = ctx->box->view_pvt == NULL ? 0 :
+		mailbox_get_private_flags_mask(ctx->box);
+
 	for (; args != NULL; args = args->next) {
 		if (args->type != SEARCH_FLAGS) {
 			if (args->type == SEARCH_ALL) {
@@ -879,7 +910,8 @@ static bool search_limit_by_flags(struct index_search_context *ctx,
 			}
 			continue;
 		}
-		if ((args->value.flags & MAIL_SEEN) != 0) {
+		if ((args->value.flags & MAIL_SEEN) != 0 &&
+		    (pvt_flags_mask & MAIL_SEEN) == 0) {
 			/* SEEN with 0 seen? */
 			if (!args->match_not && hdr->seen_messages_count == 0)
 				return FALSE;
@@ -897,14 +929,14 @@ static bool search_limit_by_flags(struct index_search_context *ctx,
                                 	hdr->first_unseen_uid_lowwater, seq1);
 			}
 		}
-		if ((args->value.flags & MAIL_DELETED) != 0) {
+		if ((args->value.flags & MAIL_DELETED) != 0 &&
+		    (pvt_flags_mask & MAIL_DELETED) == 0) {
 			/* DELETED with 0 deleted? */
 			if (!args->match_not &&
 			    hdr->deleted_messages_count == 0)
 				return FALSE;
 
-			if (hdr->deleted_messages_count ==
-			    hdr->messages_count) {
+			if (hdr->deleted_messages_count == hdr->messages_count) {
 				/* UNDELETED with all deleted? */
 				if (args->match_not)
 					return FALSE;
@@ -968,7 +1000,7 @@ static int search_build_subthread(struct mail_thread_iterate_context *iter,
 			if (search_build_subthread(child_iter, uids) < 0)
 				ret = -1;
 		}
-		seq_range_array_add(uids, 0, node->uid);
+		seq_range_array_add(uids, node->uid);
 	}
 	if (mail_thread_iterate_deinit(&iter) < 0)
 		ret = -1;
@@ -1009,7 +1041,7 @@ static int search_build_inthread_result(struct index_search_context *ctx,
 	iter = mail_thread_iterate_init(ctx->thread_ctx,
 					arg->value.thread_type, FALSE);
 	while ((node = mail_thread_iterate_next(iter, &child_iter)) != NULL) {
-		seq_range_array_add(&thread_uids, 0, node->uid);
+		seq_range_array_add(&thread_uids, node->uid);
 		if (child_iter != NULL) {
 			if (search_build_subthread(child_iter,
 						   &thread_uids) < 0)
@@ -1100,7 +1132,7 @@ wanted_sort_fields_get(struct mailbox *box,
 	}
 
 	if (array_count(&headers) > 0) {
-		(void)array_append_space(&headers);
+		array_append_zero(&headers);
 		*headers_ctx_r = mailbox_header_lookup_init(box,
 							array_idx(&headers, 0));
 	}
@@ -1164,8 +1196,9 @@ index_storage_search_init(struct mailbox_transaction_context *t,
 	return &ctx->mail_ctx;
 }
 
-static void search_arg_deinit(struct mail_search_arg *arg,
-			      void *context ATTR_UNUSED)
+static void ATTR_NULL(2)
+search_arg_deinit(struct mail_search_arg *arg,
+		  void *context ATTR_UNUSED)
 {
 	struct message_search_context *search_ctx = arg->context;
 

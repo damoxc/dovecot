@@ -178,9 +178,10 @@ static void sdbox_update_header(struct sdbox_mailbox *mbox,
 	       sizeof(mbox->mailbox_guid));
 }
 
-static int sdbox_mailbox_create_indexes(struct mailbox *box,
-					const struct mailbox_update *update,
-					struct mail_index_transaction *trans)
+static int ATTR_NULL(2, 3)
+sdbox_mailbox_create_indexes(struct mailbox *box,
+			     const struct mailbox_update *update,
+			     struct mail_index_transaction *trans)
 {
 	struct sdbox_mailbox *mbox = (struct sdbox_mailbox *)box;
 	struct mail_index_transaction *new_trans = NULL;
@@ -203,10 +204,6 @@ static int sdbox_mailbox_create_indexes(struct mailbox *box,
 	}
 
 	if (hdr->uid_validity != uid_validity) {
-		if (hdr->uid_validity != 0) {
-			/* UIDVALIDITY change requires index to be reset */
-			mail_index_reset(trans);
-		}
 		mail_index_update_header(trans,
 			offsetof(struct mail_index_header, uid_validity),
 			&uid_validity, sizeof(uid_validity), TRUE);

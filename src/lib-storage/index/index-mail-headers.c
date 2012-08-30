@@ -64,7 +64,7 @@ static void index_mail_parse_header_finish(struct index_mail *mail)
 				i_assert((match[match_idx] &
 					  HEADER_MATCH_FLAG_FOUND) == 0);
 				index_mail_cache_add_idx(mail, match_idx,
-							 NULL, 0);
+							 "", 0);
 			}
 			match_idx++;
 		}
@@ -125,7 +125,7 @@ static void index_mail_parse_header_finish(struct index_mail *mail)
 			/* this header doesn't exist. remember that. */
 			i_assert((match[match_idx] &
 				  HEADER_MATCH_FLAG_FOUND) == 0);
-			index_mail_cache_add_idx(mail, match_idx, NULL, 0);
+			index_mail_cache_add_idx(mail, match_idx, "", 0);
 		}
 	}
 
@@ -544,7 +544,7 @@ static bool skip_header(const unsigned char **data, size_t len)
 static const char *const *
 index_mail_get_parsed_header(struct index_mail *mail, unsigned int field_idx)
 {
-	ARRAY_DEFINE(header_values, const char *);
+	ARRAY(const char *) header_values;
         const struct index_mail_line *lines;
 	const unsigned char *header, *value_start, *value_end;
 	const unsigned int *line_idx;
@@ -575,7 +575,7 @@ index_mail_get_parsed_header(struct index_mail *mail, unsigned int field_idx)
 		}
 	}
 
-	(void)array_append_space(&header_values);
+	array_append_zero(&header_values);
 	return array_idx(&header_values, 0);
 }
 
@@ -591,7 +591,7 @@ index_mail_get_raw_headers(struct index_mail *mail, const char *field,
 	string_t *dest;
 	size_t i, len;
 	int ret;
-	ARRAY_DEFINE(header_values, const char *);
+	ARRAY(const char *) header_values;
 
 	i_assert(field != NULL);
 
@@ -651,7 +651,7 @@ index_mail_get_raw_headers(struct index_mail *mail, const char *field,
 		}
 	}
 
-	(void)array_append_space(&header_values);
+	array_append_zero(&header_values);
 	*value_r = array_idx(&header_values, 0);
 	return 0;
 }
@@ -715,8 +715,9 @@ index_mail_headers_decode(struct index_mail *mail, const char *const **_list,
 			return -1;
 
 		/* decode MIME encoded-words. decoding may also add new LFs. */
-		if (message_header_decode_utf8((const unsigned char *)input,
-					       strlen(input), str, FALSE))
+		message_header_decode_utf8((const unsigned char *)input,
+					   strlen(input), str, FALSE);
+		if (strcmp(str_c(str), input) != 0)
 			input = p_strdup(mail->data_pool, str_c(str));
 		decoded_list[i] = input;
 	}
@@ -778,12 +779,11 @@ int index_mail_get_first_header(struct mail *_mail, const char *field,
 	return ret < 0 ? -1 : (list[0] != NULL ? 1 : 0);
 }
 
-static void header_cache_callback(struct message_header_line *hdr,
-				  bool *matched, struct index_mail *mail)
+static void
+header_cache_callback(struct header_filter_istream *input ATTR_UNUSED,
+		      struct message_header_line *hdr,
+		      bool *matched ATTR_UNUSED, struct index_mail *mail)
 {
-	if (hdr != NULL && hdr->eoh)
-		*matched = FALSE;
-
 	index_mail_parse_header(NULL, hdr, mail);
 }
 
@@ -807,6 +807,7 @@ int index_mail_get_header_stream(struct mail *_mail,
 	if (mail_cache_lookup_headers(_mail->transaction->cache_view, dest,
 				      _mail->seq, headers->idx,
 				      headers->count) > 0) {
+		str_append(dest, "\n");
 		_mail->transaction->stats.cache_hit_count++;
 		if (mail->data.filter_stream != NULL)
 			i_stream_destroy(&mail->data.filter_stream);
@@ -829,6 +830,7 @@ int index_mail_get_header_stream(struct mail *_mail,
 	mail->data.filter_stream =
 		i_stream_create_header_filter(mail->data.stream,
 					      HEADER_FILTER_INCLUDE |
+					      HEADER_FILTER_ADD_MISSING_EOH |
 					      HEADER_FILTER_HIDE_BODY,
 					      headers->name, headers->count,
 					      header_cache_callback, mail);

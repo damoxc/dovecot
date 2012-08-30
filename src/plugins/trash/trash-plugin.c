@@ -37,7 +37,7 @@ struct trash_user {
 	union mail_user_module_context module_ctx;
 
 	/* ordered by priority, highest first */
-	ARRAY_DEFINE(trash_boxes, struct trash_mailbox);
+	ARRAY(struct trash_mailbox) trash_boxes;
 };
 
 const char *trash_plugin_version = DOVECOT_VERSION;
@@ -311,7 +311,7 @@ static int read_configuration(struct mail_user *user, const char *path)
 		}
 	}
 	i_stream_destroy(&input);
-	(void)close(fd);
+	i_close_fd(&fd);
 
 	array_sort(&tuser->trash_boxes, trash_mailbox_priority_cmp);
 	return ret;

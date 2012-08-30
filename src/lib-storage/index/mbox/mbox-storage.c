@@ -68,7 +68,7 @@ extern struct mailbox mbox_mailbox;
 static MODULE_CONTEXT_DEFINE_INIT(mbox_mailbox_list_module,
 				  &mailbox_list_module_register);
 
-int mbox_set_syscall_error(struct mbox_mailbox *mbox, const char *function)
+void mbox_set_syscall_error(struct mbox_mailbox *mbox, const char *function)
 {
 	i_assert(function != NULL);
 
@@ -82,7 +82,6 @@ int mbox_set_syscall_error(struct mbox_mailbox *mbox, const char *function)
 			"%s failed with mbox file %s: %m%s", function,
 			mailbox_get_path(&mbox->box), toobig_error);
 	}
-	return -1;
 }
 
 static const char *
@@ -136,8 +135,7 @@ mbox_storage_create(struct mail_storage *_storage, struct mail_namespace *ns,
 
 	storage->set = mail_storage_get_driver_settings(_storage);
 
-	dir = mailbox_list_get_path(ns->list, NULL,
-				    MAILBOX_LIST_PATH_TYPE_INDEX);
+	dir = mailbox_list_get_root_path(ns->list, MAILBOX_LIST_PATH_TYPE_INDEX);
 	if (*dir != '\0') {
 		_storage->temp_path_prefix = p_strconcat(_storage->pool, dir,
 			"/", mailbox_list_get_temp_prefix(ns->list), NULL);
@@ -411,8 +409,8 @@ static int mbox_mailbox_open_existing(struct mbox_mailbox *mbox)
 	if (box->inbox_any || strcmp(box->name, "INBOX") == 0) {
 		/* if INBOX isn't under the root directory, it's probably in
 		   /var/mail and we want to allow privileged dotlocking */
-		rootdir = mailbox_list_get_path(box->list, NULL,
-						MAILBOX_LIST_PATH_TYPE_DIR);
+		rootdir = mailbox_list_get_root_path(box->list,
+						     MAILBOX_LIST_PATH_TYPE_DIR);
 		if (strncmp(box_path, rootdir, strlen(rootdir)) != 0)
 			mbox->mbox_privileged_locking = TRUE;
 	}
@@ -514,7 +512,7 @@ static int create_inbox(struct mailbox *box)
 		restrict_access_drop_priv_gid();
 	}
 	if (fd != -1) {
-		(void)close(fd);
+		i_close_fd(&fd);
 		return 0;
 	} else if (errno == EACCES) {
 		mail_storage_set_critical(box->storage, "%s",
@@ -555,7 +553,7 @@ mbox_mailbox_create(struct mailbox *box, const struct mailbox_update *update,
 					       "Mailbox already exists");
 			return -1;
 		}
-		(void)close(fd);
+		i_close_fd(&fd);
 	}
 	return update == NULL ? 0 : mbox_mailbox_update(box, update);
 }
@@ -585,7 +583,7 @@ static void mbox_mailbox_close(struct mailbox *box)
 		(void)mbox_sync(mbox, sync_flags);
 
 	if (mbox->mbox_global_lock_id != 0)
-		(void)mbox_unlock(mbox, mbox->mbox_global_lock_id);
+		mbox_unlock(mbox, mbox->mbox_global_lock_id);
 	if (mbox->keep_lock_to != NULL)
 		timeout_remove(&mbox->keep_lock_to);
 
@@ -705,7 +703,7 @@ static void mbox_transaction_unlock(struct mailbox *box, unsigned int lock_id)
 	struct mbox_mailbox *mbox = (struct mbox_mailbox *)box;
 
 	if (lock_id != 0)
-		(void)mbox_unlock(mbox, lock_id);
+		mbox_unlock(mbox, lock_id);
 	if (mbox->mbox_global_lock_id == 0) {
 		i_assert(mbox->box.transaction_count > 0 ||
 			 mbox->mbox_lock_type == F_UNLCK);

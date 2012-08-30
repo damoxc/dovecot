@@ -25,9 +25,9 @@ struct replicator_sync_lookup {
 struct replicator_queue {
 	struct priorityq *user_queue;
 	/* username => struct replicator_user* */
-	struct hash_table *user_hash;
+	HASH_TABLE(char *, struct replicator_user *) user_hash;
 
-	ARRAY_DEFINE(sync_lookups, struct replicator_sync_lookup);
+	ARRAY(struct replicator_sync_lookup) sync_lookups;
 
 	unsigned int full_sync_interval;
 
@@ -67,9 +67,8 @@ struct replicator_queue *replicator_queue_init(unsigned int full_sync_interval)
 	queue = i_new(struct replicator_queue, 1);
 	queue->full_sync_interval = full_sync_interval;
 	queue->user_queue = priorityq_init(user_priority_cmp, 1024);
-	queue->user_hash =
-		hash_table_create(default_pool, default_pool, 1024,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&queue->user_hash, default_pool, 1024,
+			  str_hash, strcmp);
 	i_array_init(&queue->sync_lookups, 32);
 	return queue;
 }
@@ -215,7 +214,7 @@ replicator_queue_handle_sync_lookups(struct replicator_queue *queue,
 				     struct replicator_user *user)
 {
 	struct replicator_sync_lookup *lookups;
-	ARRAY_DEFINE(callbacks, struct replicator_sync_lookup);
+	ARRAY(struct replicator_sync_lookup) callbacks;
 	unsigned int i, count;
 	bool success = !user->last_sync_failed;
 
@@ -342,7 +341,7 @@ int replicator_queue_export(struct replicator_queue *queue, const char *path)
 	struct priorityq_item *const *items;
 	unsigned int i, count;
 	string_t *str;
-	int fd, ret;
+	int fd, ret = 0;
 
 	fd = creat(path, 0600);
 	if (fd == -1) {
@@ -364,8 +363,10 @@ int replicator_queue_export(struct replicator_queue *queue, const char *path)
 		if (o_stream_send(output, str_data(str), str_len(str)) < 0)
 			break;
 	}
-
-	ret = output->last_failed_errno != 0 ? -1 : 0;
+	if (o_stream_nfinish(output) < 0) {
+		i_error("write(%s) failed: %m", path);
+		ret = -1;
+	}
 	o_stream_destroy(&output);
 	return ret;
 }

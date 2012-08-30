@@ -42,9 +42,11 @@ enum mail_index_header_flag {
 
 enum mail_index_mail_flags {
 	/* For private use by backend. Replacing flags doesn't change this. */
-	MAIL_INDEX_MAIL_FLAG_BACKEND	= 0x40,
+	MAIL_INDEX_MAIL_FLAG_BACKEND		= 0x40,
 	/* Message flags haven't been written to backend */
-	MAIL_INDEX_MAIL_FLAG_DIRTY	= 0x80
+	MAIL_INDEX_MAIL_FLAG_DIRTY		= 0x80,
+	/* Force updating this message's modseq via a flag update record */
+	MAIL_INDEX_MAIL_FLAG_UPDATE_MODSEQ	= 0x100
 };
 
 #define MAIL_INDEX_FLAGS_MASK \
@@ -120,7 +122,10 @@ enum mail_index_transaction_flags {
 	   have already committed a transaction that had changed the flags. */
 	MAIL_INDEX_TRANSACTION_FLAG_AVOID_FLAG_UPDATES	= 0x04,
 	/* fsync() this transaction (unless fsyncs are disabled) */
-	MAIL_INDEX_TRANSACTION_FLAG_FSYNC		= 0x08
+	MAIL_INDEX_TRANSACTION_FLAG_FSYNC		= 0x08,
+	/* Sync transaction describes changes to mailbox that already happened
+	   to another mailbox with whom we're syncing with (dsync) */
+	MAIL_INDEX_TRANSACTION_FLAG_SYNC		= 0x10
 };
 
 enum mail_index_sync_type {
@@ -128,8 +133,7 @@ enum mail_index_sync_type {
 	MAIL_INDEX_SYNC_TYPE_EXPUNGE		= 0x02,
 	MAIL_INDEX_SYNC_TYPE_FLAGS		= 0x04,
 	MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD	= 0x08,
-	MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE	= 0x10,
-	MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET	= 0x20
+	MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE	= 0x10
 };
 
 enum mail_index_sync_flags {
@@ -242,7 +246,8 @@ struct mail_cache *mail_index_get_cache(struct mail_index *index);
 /* Refresh index so mail_index_lookup*() will return latest values. Note that
    immediately after this call there may already be changes, so if you need to
    rely on validity of the returned values, use some external locking for it. */
-int mail_index_refresh(struct mail_index *index);
+int ATTR_NOWARN_UNUSED_RESULT
+mail_index_refresh(struct mail_index *index);
 
 /* View can be used to look into index. Sequence numbers inside view change
    only when you synchronize it. The view acquires required locks
@@ -481,7 +486,7 @@ const ARRAY_TYPE(keywords) *mail_index_get_keywords(struct mail_index *index);
 /* Create a keyword list structure. */
 struct mail_keywords *
 mail_index_keywords_create(struct mail_index *index,
-			   const char *const keywords[]);
+			   const char *const keywords[]) ATTR_NULL(2);
 struct mail_keywords *
 mail_index_keywords_create_from_indexes(struct mail_index *index,
 					const ARRAY_TYPE(keyword_indexes)
@@ -569,8 +574,7 @@ void mail_index_lookup_ext_full(struct mail_index_view *view, uint32_t seq,
 				const void **data_r, bool *expunged_r);
 /* Get current extension sizes. Returns 1 if ok, 0 if extension doesn't exist
    in view. Any of the _r parameters may be NULL. */
-void mail_index_ext_get_size(struct mail_index_view *view,
-			     uint32_t ext_id, struct mail_index_map *map,
+void mail_index_ext_get_size(struct mail_index_map *map, uint32_t ext_id,
 			     uint32_t *hdr_size_r, uint16_t *record_size_r,
 			     uint16_t *record_align_r);
 /* Update extension header field. */
@@ -581,7 +585,8 @@ void mail_index_update_header_ext(struct mail_index_transaction *t,
    was already updated in this transaction, it's set to contain the data it's
    now overwriting. */
 void mail_index_update_ext(struct mail_index_transaction *t, uint32_t seq,
-			   uint32_t ext_id, const void *data, void *old_data);
+			   uint32_t ext_id, const void *data, void *old_data)
+	ATTR_NULL(5);
 /* Increase/decrease number in extension atomically. Returns the sum of the
    diffs for this seq. */
 int mail_index_atomic_inc_ext(struct mail_index_transaction *t,

@@ -12,10 +12,13 @@
 #define MAILBOX_LOG_FILE_NAME "dovecot.mailbox.log"
 
 enum mailbox_log_record_type;
+enum mailbox_list_notify_event;
 struct stat;
 struct dirent;
 struct imap_match_glob;
 struct mailbox_tree_context;
+struct mailbox_list_notify;
+struct mailbox_list_notify_rec;
 
 #define MAILBOX_INFO_FLAGS_FINISHED(flags) \
 	(((flags) & (MAILBOX_SELECT | MAILBOX_NOSELECT | \
@@ -85,6 +88,15 @@ struct mailbox_list_vfuncs {
 	int (*rename_mailbox)(struct mailbox_list *oldlist, const char *oldname,
 			      struct mailbox_list *newlist, const char *newname,
 			      bool rename_children);
+
+	int (*notify_init)(struct mailbox_list *list,
+			   enum mailbox_list_notify_event mask,
+			   struct mailbox_list_notify **notify_r);
+	int (*notify_next)(struct mailbox_list_notify *notify,
+			   const struct mailbox_list_notify_rec **rec_r);
+	void (*notify_deinit)(struct mailbox_list_notify *notify);
+	void (*notify_wait)(struct mailbox_list_notify *notify,
+			    void (*callback)(void *context), void *context);
 };
 
 struct mailbox_list_module_register {
@@ -123,14 +135,14 @@ struct mailbox_list {
 	time_t changelog_timestamp;
 
 	pool_t guid_cache_pool;
-	struct hash_table *guid_cache;
+	HASH_TABLE(uint8_t *, struct mailbox_guid_cache_rec *) guid_cache;
 	bool guid_cache_errors;
 
 	char *error_string;
 	enum mail_error error;
 	bool temporary_error;
 
-	ARRAY_DEFINE(module_contexts, union mailbox_list_module_context *);
+	ARRAY(union mailbox_list_module_context *) module_contexts;
 
 	unsigned int index_root_dir_created:1;
 };
@@ -149,8 +161,7 @@ struct mailbox_list_iterate_context {
 	struct mailbox_list_autocreate_iterate_context *autocreate_ctx;
 	struct mailbox_info specialuse_info;
 
-	ARRAY_DEFINE(module_contexts,
-		     union mailbox_list_iterate_module_context *);
+	ARRAY(union mailbox_list_iterate_module_context *) module_contexts;
 };
 
 struct mailbox_list_iter_update_context {
@@ -181,8 +192,8 @@ const char *mailbox_list_default_get_vname(struct mailbox_list *list,
 const char *mailbox_list_get_unexpanded_path(struct mailbox_list *list,
 					     enum mailbox_list_path_type type);
 const char *
-mailbox_list_get_root_path(const struct mailbox_list_settings *set,
-			   enum mailbox_list_path_type type);
+mailbox_list_set_get_root_path(const struct mailbox_list_settings *set,
+			       enum mailbox_list_path_type type);
 
 int mailbox_list_delete_index_control(struct mailbox_list *list,
 				      const char *name);
@@ -195,7 +206,9 @@ enum mailbox_list_file_type mailbox_list_get_file_type(const struct dirent *d);
 bool mailbox_list_try_get_absolute_path(struct mailbox_list *list,
 					const char **name);
 int mailbox_list_create_missing_index_dir(struct mailbox_list *list,
-					  const char *name);
+					  const char *name) ATTR_NULL(2);
+int mailbox_list_create_missing_index_pvt_dir(struct mailbox_list *list,
+					      const char *name);
 
 void mailbox_list_add_change(struct mailbox_list *list,
 			     enum mailbox_log_record_type type,

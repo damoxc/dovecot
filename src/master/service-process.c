@@ -208,6 +208,7 @@ static void service_process_setup_config_environment(struct service *service)
 		env_put(t_strconcat("DEBUG_LOG_PATH=", set->debug_log_path, NULL));
 		env_put(t_strconcat("LOG_TIMESTAMP=", set->log_timestamp, NULL));
 		env_put(t_strconcat("SYSLOG_FACILITY=", set->syslog_facility, NULL));
+		env_put("SSL=no");
 		break;
 	default:
 		env_put(t_strconcat(MASTER_CONFIG_FILE_ENV"=",
@@ -321,7 +322,7 @@ struct service_process *service_process_create(struct service *service)
 	DLLIST_PREPEND(&service->processes, process);
 
 	service_list_ref(service->list);
-	hash_table_insert(service_pids, &process->pid, process);
+	hash_table_insert(service_pids, POINTER_CAST(process->pid), process);
 
 	if (service->type == SERVICE_TYPE_ANVIL && process_forked)
 		service_anvil_process_created(process);
@@ -334,7 +335,7 @@ void service_process_destroy(struct service_process *process)
 	struct service_list *service_list = service->list;
 
 	DLLIST_REMOVE(&service->processes, process);
-	hash_table_remove(service_pids, &process->pid);
+	hash_table_remove(service_pids, POINTER_CAST(process->pid));
 
 	if (process->available_count > 0)
 		service->process_avail--;
@@ -365,17 +366,15 @@ void service_process_ref(struct service_process *process)
 	process->refcount++;
 }
 
-int service_process_unref(struct service_process *process)
+void service_process_unref(struct service_process *process)
 {
 	i_assert(process->refcount > 0);
 
 	if (--process->refcount > 0)
-		return TRUE;
+		return;
 
 	i_assert(process->destroyed);
-
 	i_free(process);
-	return FALSE;
 }
 
 static const char *

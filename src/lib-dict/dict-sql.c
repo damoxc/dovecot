@@ -559,7 +559,7 @@ struct dict_sql_build_query_field {
 struct dict_sql_build_query {
 	struct sql_dict *dict;
 
-	ARRAY_DEFINE(fields, struct dict_sql_build_query_field);
+	ARRAY(struct dict_sql_build_query_field) fields;
 	const ARRAY_TYPE(const_string) *extra_values;
 	char key1;
 	bool inc;
@@ -730,6 +730,17 @@ static void sql_dict_unset(struct dict_transaction_context *_ctx,
 	} T_END;
 }
 
+static void
+sql_dict_append(struct dict_transaction_context *_ctx,
+		const char *key ATTR_UNUSED, const char *value ATTR_UNUSED)
+{
+	struct sql_dict_transaction_context *ctx =
+		(struct sql_dict_transaction_context *)_ctx;
+
+	i_error("sql dict: Append command not implemented currently");
+	ctx->failed = TRUE;
+}
+
 static unsigned int *
 sql_dict_next_inc_row(struct sql_dict_transaction_context *ctx)
 {
@@ -890,6 +901,7 @@ static struct dict sql_dict = {
 		sql_dict_transaction_rollback,
 		sql_dict_set,
 		sql_dict_unset,
+		sql_dict_append,
 		sql_dict_atomic_inc
 	}
 };

@@ -43,6 +43,7 @@ libstorage_la_SOURCES = \
 	mailbox-keywords.c \
 	mailbox-list.c \
 	mailbox-list-iter.c \
+	mailbox-list-notify.c \
 	mailbox-search-result.c \
 	mailbox-tree.c \
 	mailbox-uidvalidity.c
@@ -70,6 +71,7 @@ headers = \
 	mailbox-guid-cache.h \
 	mailbox-list.h \
 	mailbox-list-private.h \
+	mailbox-list-notify.h \
 	mailbox-search-result-private.h \
 	mailbox-tree.h \
 	mailbox-uidvalidity.h
@@ -82,6 +84,7 @@ shlibs = \
 	index/libstorage_index.la \
 	register/libstorage_register.la \
 	../lib-index/libindex.la \
+	../lib-imap-storage/libimap-storage.la \
 	../lib-dovecot/libdovecot.la
 
 pkglib_LTLIBRARIES = libdovecot-storage.la

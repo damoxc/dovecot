@@ -44,7 +44,7 @@ struct pop3_migration_mail_storage {
 
 	const char *pop3_box_vname;
 	struct mailbox *pop3_box;
-	ARRAY_DEFINE(pop3_uidl_map, struct pop3_uidl_map);
+	ARRAY(struct pop3_uidl_map) pop3_uidl_map;
 
 	unsigned int all_mailboxes:1;
 	unsigned int pop3_all_hdr_sha1_set:1;
@@ -53,7 +53,7 @@ struct pop3_migration_mail_storage {
 struct pop3_migration_mailbox {
 	union mailbox_module_context module_ctx;
 
-	ARRAY_DEFINE(imap_msg_map, struct imap_msg_map);
+	ARRAY(struct imap_msg_map) imap_msg_map;
 	unsigned int first_unfound_idx;
 
 	unsigned int uidl_synced:1;
@@ -130,7 +130,7 @@ static int get_hdr_sha1(struct mail *mail, unsigned char sha1[SHA1_RESULTLEN])
 				HEADER_FILTER_EXCLUDE | HEADER_FILTER_NO_CR,
 				hdr_hash_skip_headers,
 				N_ELEMENTS(hdr_hash_skip_headers),
-				null_header_filter_callback, NULL);
+				*null_header_filter_callback, (void *)NULL);
 	i_stream_unref(&input2);
 
 	sha1_init(&sha1_ctx);

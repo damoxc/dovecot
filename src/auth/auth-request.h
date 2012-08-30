@@ -56,6 +56,7 @@ struct auth_request {
 	struct auth_stream_reply *extra_cache_fields;
 	/* the whole userdb result reply */
 	struct auth_stream_reply *userdb_reply;
+	struct auth_request_proxy_dns_lookup_ctx *dns_lookup_ctx;
 	/* Result of passdb lookup */
 	enum passdb_result passdb_result;
 
@@ -178,13 +179,13 @@ bool auth_request_set_login_username(struct auth_request *request,
 
 void auth_request_set_field(struct auth_request *request,
 			    const char *name, const char *value,
-			    const char *default_scheme);
+			    const char *default_scheme) ATTR_NULL(4);
 void auth_request_set_field_keyvalue(struct auth_request *request,
 				     const char *field,
-				     const char *default_scheme);
+				     const char *default_scheme) ATTR_NULL(3);
 void auth_request_set_fields(struct auth_request *request,
 			     const char *const *fields,
-			     const char *default_scheme);
+			     const char *default_scheme) ATTR_NULL(3);
 
 void auth_request_init_userdb_reply(struct auth_request *request);
 void auth_request_set_userdb_field(struct auth_request *request,
@@ -206,7 +207,8 @@ int auth_request_password_verify(struct auth_request *request,
 
 const struct var_expand_table *
 auth_request_get_var_expand_table(const struct auth_request *auth_request,
-				  auth_request_escape_func_t *escape_func);
+				  auth_request_escape_func_t *escape_func)
+	ATTR_NULL(2);
 const char *auth_request_str_escape(const char *string,
 				    const struct auth_request *request);
 

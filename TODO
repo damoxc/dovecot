@@ -1,5 +1,25 @@
+ - crashes: rm -rf ~/abox;printf "1 select inbox\n2 fetch 1 body[]\n"|./imap -o plugin/archive_customer_id=1
+ - connection api: connected(conn, bool success) + errno
+ - mailbox list indexes + imaptest test=tests fails
+ - NOTIFY: implement SubscriptionChange
+ - libssl-iostream read all of file input stream, no buffer limits in ssl
+ - finish dsync rewrite
+ - catenate: {1234} and {1234+} error handling is wrong for both
+
+ - doveadm: if running via doveadm-server and it fails, say something about
+   error being in the log
+ - indexer-worker and maybe others (doveadm?) could support dropping privileges
+   permanently when service_count=1. Note that LMTP can't with multiple RCPT
+   TOs.
+ - after reading whole message text, update has_nul-state to cache
+ - if indexpvt is enabled, mailbox_list_indexes should go there? at least
+   private flags are otherwise problematic.. possibly only for shared/public
+   mailboxes?..
+ - index_mail_parse_headers() etc. message_parsers don't check for stream errors
+ - FIFOs maybe should be counted as connections, but unlisten should
+   unlink+reopen it in master?
+ - change proxy TTL so it stops at 1? (instead of 0)
  - lmtp client/proxy: Handle multiline replies better
- - lib-ssl-iostream: Support ssl_protocols setting
  - recreate mailbox -> existing sessions log "indexid changed" error
  - add message/mime limits
  - imapc:
@@ -22,7 +42,6 @@
    where we started, and stuff would break
  - imap: append/copy could trigger indexing (optionally)
  - fuzzy: be fuzzy about date/size
- - fix proxy_maybe=fqdn
  - mailbox list index:
     - with in-memory indexes be sure to refresh it more often
     - refreshing could refresh only the parts that are actually requested,

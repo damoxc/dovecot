@@ -56,7 +56,7 @@ struct auth_penalty *auth_penalty;
 static pool_t auth_set_pool;
 static struct module *modules = NULL;
 static struct mechanisms_register *mech_reg;
-static ARRAY_DEFINE(listeners, struct auth_socket_listener);
+static ARRAY(struct auth_socket_listener) listeners;
 
 void auth_refresh_proctitle(void)
 {
@@ -229,7 +229,7 @@ static void main_init(void)
 
 	/* set proctitles before init()s, since they may set them to error */
 	auth_refresh_proctitle();
-	auth_worker_refresh_proctitle(NULL);
+	auth_worker_refresh_proctitle("");
 
 	child_wait_init();
 	auth_worker_server_init();
@@ -300,7 +300,7 @@ static void worker_connected(struct master_service_connection *conn)
 	}
 
 	master_service_client_connection_accept(conn);
-	(void)auth_worker_client_create(auth_find_service(NULL), conn->fd);
+	(void)auth_worker_client_create(auth_default_service(), conn->fd);
 }
 
 static void client_connected(struct master_service_connection *conn)
@@ -315,7 +315,7 @@ static void client_connected(struct master_service_connection *conn)
 		l->type = auth_socket_type_get(conn->name);
 		l->path = i_strdup(conn->name);
 	}
-	auth = auth_find_service(NULL);
+	auth = auth_default_service();
 	switch (l->type) {
 	case AUTH_SOCKET_MASTER:
 		(void)auth_master_connection_create(auth, conn->fd,
@@ -329,10 +329,10 @@ static void client_connected(struct master_service_connection *conn)
 		(void)auth_postfix_connection_create(auth, conn->fd);
 		break;
 	case AUTH_SOCKET_LOGIN_CLIENT:
-		(void)auth_client_connection_create(auth, conn->fd, TRUE);
+		auth_client_connection_create(auth, conn->fd, TRUE);
 		break;
 	case AUTH_SOCKET_CLIENT:
-		(void)auth_client_connection_create(auth, conn->fd, FALSE);
+		auth_client_connection_create(auth, conn->fd, FALSE);
 		break;
 	default:
 		i_unreached();

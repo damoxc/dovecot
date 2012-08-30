@@ -1,4 +1,5 @@
 LIBDOVECOT_SUBDIRS = \
+	lib-test \
 	lib \
 	lib-auth \
 	lib-charset \
@@ -6,15 +7,16 @@ LIBDOVECOT_SUBDIRS = \
 	lib-fs \
 	lib-mail \
 	lib-imap \
+	lib-imap-storage \
 	lib-master \
 	lib-dict \
-	lib-settings
+	lib-settings \
+	lib-ssl-iostream
 
 SUBDIRS = \
-	lib-test \
 	$(LIBDOVECOT_SUBDIRS) \
-	lib-ssl-iostream \
 	lib-imap-client \
+	lib-compression \
 	lib-dovecot \
 	lib-index \
 	lib-storage \

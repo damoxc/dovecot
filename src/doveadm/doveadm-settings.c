@@ -102,6 +102,7 @@ const struct setting_parser_info doveadm_setting_parser_info = {
 };
 
 struct doveadm_settings *doveadm_settings;
+const struct master_service_settings *service_set;
 
 static void
 fix_base_path(struct doveadm_settings *set, pool_t pool, const char **str)
@@ -111,15 +112,18 @@ fix_base_path(struct doveadm_settings *set, pool_t pool, const char **str)
 }
 
 /* <settings checks> */
-static bool doveadm_settings_check(void *_set ATTR_UNUSED,
-				   pool_t pool ATTR_UNUSED,
-				   const char **error_r ATTR_UNUSED)
+static bool doveadm_settings_check(void *_set, pool_t pool ATTR_UNUSED,
+				   const char **error_r)
 {
-#ifndef CONFIG_BINARY
 	struct doveadm_settings *set = _set;
 
+#ifndef CONFIG_BINARY
 	fix_base_path(set, pool, &set->doveadm_socket_path);
 #endif
+	if (*set->dsync_alt_char == '\0') {
+		*error_r = "dsync_alt_char must not be empty";
+		return FALSE;
+	}
 	return TRUE;
 }
 /* </settings checks> */

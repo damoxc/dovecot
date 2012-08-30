@@ -14,7 +14,7 @@ static void o_stream_rawlog_close(struct iostream_private *stream)
 {
 	struct rawlog_ostream *rstream = (struct rawlog_ostream *)stream;
 
-	o_stream_flush(rstream->ostream.parent);
+	(void)o_stream_flush(rstream->ostream.parent);
 	iostream_rawlog_close(&rstream->riostream);
 }
 
@@ -42,7 +42,7 @@ o_stream_rawlog_sendv(struct ostream_private *stream,
 
 struct ostream *
 o_stream_create_rawlog(struct ostream *output, const char *rawlog_path,
-		       int rawlog_fd, bool autoclose_fd)
+		       int rawlog_fd, enum iostream_rawlog_flags flags)
 {
 	struct rawlog_ostream *rstream;
 
@@ -55,8 +55,7 @@ o_stream_create_rawlog(struct ostream *output, const char *rawlog_path,
 
 	rstream->riostream.rawlog_path = i_strdup(rawlog_path);
 	rstream->riostream.rawlog_fd = rawlog_fd;
-	rstream->riostream.autoclose_fd = autoclose_fd;
-	rstream->riostream.write_timestamp = TRUE;
+	iostream_rawlog_init(&rstream->riostream, flags, FALSE);
 
-	return o_stream_create(&rstream->ostream, output);
+	return o_stream_create(&rstream->ostream, output, -1);
 }

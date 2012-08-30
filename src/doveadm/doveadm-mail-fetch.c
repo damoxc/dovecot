@@ -28,7 +28,7 @@ struct fetch_cmd_context {
 	struct ostream *output;
 	struct mail *mail;
 
-	ARRAY_DEFINE(fields, const struct fetch_field);
+	ARRAY(const struct fetch_field) fields;
 	ARRAY_TYPE(const_string) header_fields;
 	enum mail_fetch_field wanted_fields;
 
@@ -126,7 +126,7 @@ static int fetch_hdr(struct fetch_cmd_context *ctx)
 		ret = -1;
 	}
 	i_stream_unref(&input);
-	doveadm_print_stream(NULL, 0);
+	doveadm_print_stream("", 0);
 	return ret;
 }
 
@@ -220,7 +220,7 @@ static int fetch_body(struct fetch_cmd_context *ctx)
 		i_error("read() failed: %m");
 		ret = -1;
 	}
-	doveadm_print_stream(NULL, 0);
+	doveadm_print_stream("", 0);
 	return ret;
 }
 
@@ -246,7 +246,7 @@ static int fetch_text(struct fetch_cmd_context *ctx)
 		i_error("read() failed: %m");
 		ret = -1;
 	}
-	doveadm_print_stream(NULL, 0);
+	doveadm_print_stream("", 0);
 	return ret;
 }
 
@@ -293,7 +293,7 @@ static int fetch_text_utf8(struct fetch_cmd_context *ctx)
 	message_decoder_deinit(&decoder);
 	(void)message_parser_deinit(&parser, &parts);
 
-	doveadm_print_stream(NULL, 0);
+	doveadm_print_stream("", 0);
 	if (input->stream_errno != 0) {
 		i_error("read() failed: %m");
 		return -1;
@@ -474,7 +474,7 @@ static void parse_fetch_fields(struct fetch_cmd_context *ctx, const char *str)
 			array_append(&ctx->fields, field, 1);
 		}
 	}
-	(void)array_append_space(&ctx->header_fields);
+	array_append_zero(&ctx->header_fields);
 }
 
 static int cmd_fetch_mail(struct fetch_cmd_context *ctx)
@@ -562,6 +562,7 @@ static void cmd_fetch_init(struct doveadm_mail_cmd_context *_ctx,
 	_ctx->search_args = doveadm_mail_build_search_args(args + 1);
 
 	ctx->output = o_stream_create_fd(STDOUT_FILENO, 0, FALSE);
+	o_stream_set_no_error_handling(ctx->output, TRUE);
 }
 
 static struct doveadm_mail_cmd_context *cmd_fetch_alloc(void)

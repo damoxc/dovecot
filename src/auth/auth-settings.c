@@ -278,7 +278,7 @@ auth_settings_set_self_ips(struct auth_settings *set, pool_t pool,
 			   const char **error_r)
 {
 	const char *const *tmp;
-	ARRAY_DEFINE(ips_array, struct ip_addr);
+	ARRAY(struct ip_addr) ips_array;
 	struct ip_addr *ips;
 	unsigned int ips_count;
 	int ret;
@@ -299,7 +299,7 @@ auth_settings_set_self_ips(struct auth_settings *set, pool_t pool,
 		}
 		array_append(&ips_array, ips, ips_count);
 	}
-	(void)array_append_space(&ips_array);
+	array_append_zero(&ips_array);
 	set->proxy_self_ips = array_idx(&ips_array, 0);
 	return TRUE;
 }
@@ -406,7 +406,7 @@ auth_settings_read(const char *service, pool_t pool,
 	if (!settings_parser_check(set_parser, pool, &error))
 		i_unreached();
 
-	set = settings_parser_get_list(set_parser)[1];
+	set = settings_parser_get_list(set_parser)[MASTER_SERVICE_INTERNAL_SET_PARSERS];
 	settings_parser_deinit(&set_parser);
 	return set;
 }

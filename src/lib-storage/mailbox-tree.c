@@ -9,6 +9,7 @@ struct mailbox_tree_context {
 	pool_t pool;
 	char separator;
 	bool parents_nonexistent;
+	unsigned int node_size;
 
 	struct mailbox_node *nodes;
 };
@@ -19,7 +20,7 @@ struct mailbox_tree_iterate_context {
 
 	char separator;
 
-	ARRAY_DEFINE(node_path, struct mailbox_node *);
+	ARRAY(struct mailbox_node *) node_path;
 	string_t *path_str;
 	size_t parent_pos;
 
@@ -28,11 +29,20 @@ struct mailbox_tree_iterate_context {
 
 struct mailbox_tree_context *mailbox_tree_init(char separator)
 {
+	return mailbox_tree_init_size(separator, sizeof(struct mailbox_node));
+}
+
+struct mailbox_tree_context *
+mailbox_tree_init_size(char separator, unsigned int mailbox_node_size)
+{
 	struct mailbox_tree_context *tree;
+
+	i_assert(mailbox_node_size >= sizeof(struct mailbox_node));
 
 	tree = i_new(struct mailbox_tree_context, 1);
 	tree->pool = pool_alloconly_create(MEMPOOL_GROWING"mailbox_tree", 10240);
 	tree->separator = separator;
+	tree->node_size = mailbox_node_size;
 	return tree;
 }
 
@@ -62,7 +72,7 @@ void mailbox_tree_clear(struct mailbox_tree_context *tree)
 	tree->nodes = NULL;
 }
 
-static struct mailbox_node *
+static struct mailbox_node * ATTR_NULL(2)
 mailbox_tree_traverse(struct mailbox_tree_context *tree, const char *path,
 		      bool create, bool *created_r)
 {
@@ -104,7 +114,7 @@ mailbox_tree_traverse(struct mailbox_tree_context *tree, const char *path,
 			if (!create)
 				break;
 
-			*node = p_new(tree->pool, struct mailbox_node, 1);
+			*node = p_malloc(tree->pool, tree->node_size);
 			(*node)->parent = parent;
 			(*node)->name = p_strdup(tree->pool, name);
 			if (tree->parents_nonexistent)
@@ -138,8 +148,7 @@ mailbox_tree_get(struct mailbox_tree_context *tree, const char *path,
 	if (created && tree->parents_nonexistent)
 		node->flags = 0;
 
-	if (created_r != NULL)
-		*created_r = created;
+	*created_r = created;
 	return node;
 }
 
@@ -163,7 +172,7 @@ mailbox_tree_iterate_init(struct mailbox_tree_context *tree,
 
 	ctx = i_new(struct mailbox_tree_iterate_context, 1);
 	ctx->separator = tree->separator;
-	ctx->root = root != NULL ? root : mailbox_tree_get(tree, NULL, NULL);
+	ctx->root = root != NULL ? root : tree->nodes;
 	ctx->flags_mask = flags_mask;
 	ctx->path_str = str_new(default_pool, 256);
 	i_array_init(&ctx->node_path, 16);

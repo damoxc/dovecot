@@ -77,6 +77,8 @@ struct mail_storage_service_user {
 	const struct mail_user_settings *user_set;
 	const struct setting_parser_info *user_info;
 	struct setting_parser_context *set_parser;
+
+	unsigned int anonymous:1;
 };
 
 struct module *mail_storage_service_modules = NULL;
@@ -251,6 +253,8 @@ user_reply_handle(struct mail_storage_service_ctx *ctx,
 		}
 		set_keyval(ctx, user, "mail_chroot", chroot);
 	}
+
+	user->anonymous = reply->anonymous;
 
 	str = array_get(&reply->extra_fields, &count);
 	for (i = 0; i < count; i++) {
@@ -600,7 +604,8 @@ mail_storage_service_init_post(struct mail_storage_service_ctx *ctx,
 			   &user->input.local_ip, &user->input.remote_ip);
 	mail_user->uid = priv->uid == (uid_t)-1 ? geteuid() : priv->uid;
 	mail_user->gid = priv->gid == (gid_t)-1 ? getegid() : priv->gid;
-
+	mail_user->anonymous = user->anonymous;
+	
 	mail_set = mail_user_set_get_storage_set(mail_user);
 
 	if (mail_set->mail_debug) {
@@ -965,7 +970,7 @@ int mail_storage_service_lookup(struct mail_storage_service_ctx *ctx,
 		master_service_init_log(ctx->service,
 			t_strconcat(ctx->service->name, ": ", NULL));
 	}
-	user_set = settings_parser_get_list(set_parser)[1];
+	user_set = settings_parser_get_list(set_parser)[MASTER_SERVICE_INTERNAL_SET_PARSERS];
 
 	if (ctx->conn == NULL)
 		mail_storage_service_first_init(ctx, user_info, user_set);
@@ -999,7 +1004,7 @@ int mail_storage_service_lookup(struct mail_storage_service_ctx *ctx,
 	if (!settings_parser_check(user->set_parser, user_pool, &error))
 		i_panic("settings_parser_check() failed: %s", error);
 
-	user->user_set = settings_parser_get_list(user->set_parser)[1];
+	user->user_set = settings_parser_get_list(user->set_parser)[MASTER_SERVICE_INTERNAL_SET_PARSERS];
 	user->gid_source = "mail_gid setting";
 	user->uid_source = "mail_uid setting";
 
@@ -1190,7 +1195,7 @@ void mail_storage_service_init_settings(struct mail_storage_service_ctx *ctx,
 					       &user_info, &set_parser,
 					       &error) < 0)
 		i_fatal("%s", error);
-	user_set = settings_parser_get_list(set_parser)[1];
+	user_set = settings_parser_get_list(set_parser)[MASTER_SERVICE_INTERNAL_SET_PARSERS];
 
 	mail_storage_service_first_init(ctx, user_info, user_set);
 	pool_unref(&temp_pool);
@@ -1203,7 +1208,7 @@ mail_storage_service_all_init(struct mail_storage_service_ctx *ctx)
 		(void)auth_master_user_list_deinit(&ctx->auth_list);
 	mail_storage_service_init_settings(ctx, NULL);
 
-	ctx->auth_list = auth_master_user_list_init(ctx->conn, NULL, NULL);
+	ctx->auth_list = auth_master_user_list_init(ctx->conn, "", NULL);
 	return auth_master_user_list_count(ctx->auth_list);
 }
 
@@ -1241,7 +1246,8 @@ void mail_storage_service_deinit(struct mail_storage_service_ctx **_ctx)
 
 void **mail_storage_service_user_get_set(struct mail_storage_service_user *user)
 {
-	return settings_parser_get_list(user->set_parser) + 1;
+	return settings_parser_get_list(user->set_parser) +
+		MASTER_SERVICE_INTERNAL_SET_PARSERS;
 }
 
 const struct mail_storage_service_input *

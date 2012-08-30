@@ -103,6 +103,7 @@ shared_list_get_path(struct mailbox_list *list, const char *name,
 		case MAILBOX_LIST_PATH_TYPE_MAILBOX:
 		case MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX:
 		case MAILBOX_LIST_PATH_TYPE_CONTROL:
+		case MAILBOX_LIST_PATH_TYPE_INDEX_PRIVATE:
 			break;
 		case MAILBOX_LIST_PATH_TYPE_INDEX:
 			/* we can safely say we don't use indexes */
@@ -358,6 +359,7 @@ struct mailbox_list shared_mailbox_list = {
 		shared_list_delete_mailbox,
 		shared_list_delete_dir,
 		shared_list_delete_symlink,
-		shared_list_rename_mailbox
+		shared_list_rename_mailbox,
+		NULL, NULL, NULL, NULL
 	}
 };

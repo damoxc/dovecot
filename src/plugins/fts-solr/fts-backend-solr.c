@@ -39,7 +39,7 @@ struct solr_fts_backend_update_context {
 	uint32_t prev_uid;
 	string_t *cmd, *cur_value, *cur_value2;
 	string_t *cmd_expunge;
-	ARRAY_DEFINE(fields, struct solr_fts_field);
+	ARRAY(struct solr_fts_field) fields;
 
 	uint32_t last_indexed_uid;
 	uint32_t size_warned_uid;
@@ -230,7 +230,7 @@ fts_backend_solr_get_last_uid(struct fts_backend *_backend,
 	if (get_last_uid_fallback(_backend, box, last_uid_r) < 0)
 		return -1;
 
-	(void)fts_index_set_last_uid(box, *last_uid_r);
+	fts_index_set_last_uid(box, *last_uid_r);
 	return 0;
 }
 
@@ -381,7 +381,7 @@ fts_backend_solr_update_set_mailbox(struct fts_backend_update_context *_ctx,
 	const char *box_guid;
 
 	if (ctx->prev_uid != 0) {
-		(void)fts_index_set_last_uid(ctx->cur_box, ctx->prev_uid);
+		fts_index_set_last_uid(ctx->cur_box, ctx->prev_uid);
 		ctx->prev_uid = 0;
 	}
 
@@ -576,7 +576,7 @@ static int fts_backend_solr_rescan(struct fts_backend *backend)
 		     (MAILBOX_NONEXISTENT | MAILBOX_NOSELECT)) != 0)
 			continue;
 
-		box = mailbox_alloc(info->ns->list, info->name, 0);
+		box = mailbox_alloc(info->ns->list, info->vname, 0);
 		if (mailbox_open(box) == 0) {
 			if (fts_index_set_last_uid(box, 0) < 0)
 				ret = -1;
@@ -800,8 +800,8 @@ solr_search_multi(struct fts_backend *_backend, string_t *str,
 {
 	struct solr_result **solr_results;
 	struct fts_result *fts_result;
-	ARRAY_DEFINE(fts_results, struct fts_result);
-	struct hash_table *mailboxes;
+	ARRAY(struct fts_result) fts_results;
+	HASH_TABLE(char *, struct mailbox *) mailboxes;
 	struct mailbox *box;
 	const char *box_guid;
 	unsigned int i, len;
@@ -814,8 +814,7 @@ solr_search_multi(struct fts_backend *_backend, string_t *str,
 	else
 		str_append(str, "%22%22");
 
-	mailboxes = hash_table_create(default_pool, default_pool, 0,
-				      str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&mailboxes, default_pool, 0, str_hash, strcmp);
 	str_append(str, "%2B(");
 	len = str_len(str);
 	for (i = 0; boxes[i] != NULL; i++) {
@@ -850,7 +849,7 @@ solr_search_multi(struct fts_backend *_backend, string_t *str,
 		fts_result->scores = solr_results[i]->scores;
 		fts_result->scores_sorted = TRUE;
 	}
-	(void)array_append_space(&fts_results);
+	array_append_zero(&fts_results);
 	result->box_results = array_idx_modifiable(&fts_results, 0);
 	hash_table_destroy(&mailboxes);
 	return 0;

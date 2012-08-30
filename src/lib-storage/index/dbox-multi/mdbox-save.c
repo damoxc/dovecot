@@ -39,7 +39,7 @@ struct mdbox_save_context {
 	struct mdbox_map_atomic_context *atomic;
 	struct mdbox_map_transaction_context *map_trans;
 
-	ARRAY_DEFINE(mails, struct dbox_save_mail);
+	ARRAY(struct dbox_save_mail) mails;
 };
 
 static struct dbox_file *
@@ -132,14 +132,12 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 
 	/* get the size of the mail to be saved, if possible */
 	if (i_stream_get_size(input, TRUE, &mail_size) <= 0) {
-		const struct stat *st;
-
 		/* we couldn't find out the exact size. fallback to non-exact,
 		   maybe it'll give something useful. the mail size is used
 		   only to figure out if it's causing mdbox file to grow
 		   too large. */
-		st = i_stream_stat(input, FALSE);
-		mail_size = st->st_size > 0 ? st->st_size : 0;
+		if (i_stream_get_size(input, FALSE, &mail_size) <= 0)
+			mail_size = 0;
 	}
 	if (mdbox_map_append_next(ctx->append_ctx, mail_size, 0,
 				  &ctx->cur_file_append,
@@ -199,8 +197,8 @@ static int mdbox_save_finish_write(struct mail_save_context *_ctx)
 		return -1;
 
 	dbox_save_end(&ctx->ctx);
-	index_mail_cache_parse_deinit(_ctx->dest_mail,
-				      _ctx->received_date, !ctx->ctx.failed);
+	index_mail_cache_parse_deinit(_ctx->dest_mail, _ctx->data.received_date,
+				      !ctx->ctx.failed);
 
 	mail = array_idx_modifiable(&ctx->mails, array_count(&ctx->mails) - 1);
 	if (!ctx->ctx.failed) T_BEGIN {
@@ -421,7 +419,7 @@ int mdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 
 	if (mail->box->storage != _ctx->transaction->box->storage ||
 	    _ctx->transaction->box->disable_reflink_copy_to ||
-	    _ctx->guid != NULL)
+	    _ctx->data.guid != NULL)
 		return mail_storage_copy(_ctx, mail);
 	src_mbox = (struct mdbox_mailbox *)mail->box;
 
