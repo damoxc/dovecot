@@ -1,7 +1,7 @@
 #ifndef AUTH_REQUEST_H
 #define AUTH_REQUEST_H
 
-#include "network.h"
+#include "net.h"
 #include "var-expand.h"
 #include "mech.h"
 #include "userdb.h"
@@ -56,6 +56,7 @@ struct auth_request {
 	struct auth_stream_reply *extra_cache_fields;
 	/* the whole userdb result reply */
 	struct auth_stream_reply *userdb_reply;
+	struct auth_request_proxy_dns_lookup_ctx *dns_lookup_ctx;
 	/* Result of passdb lookup */
 	enum passdb_result passdb_result;
 
@@ -72,6 +73,7 @@ struct auth_request {
 	unsigned int client_pid;
 	unsigned int id;
 	time_t last_access;
+	pid_t session_pid;
 
 	const char *service, *mech_name, *session_id;
 	struct ip_addr local_ip, remote_ip;
@@ -99,6 +101,7 @@ struct auth_request {
 	unsigned int passdb_internal_failure:1;
 	unsigned int userdb_internal_failure:1;
 	unsigned int delayed_failure:1;
+	unsigned int auth_only:1;
 	unsigned int domain_is_realm:1;
 	unsigned int accept_input:1;
 	unsigned int no_failure_delay:1;
@@ -156,6 +159,8 @@ bool auth_request_import_info(struct auth_request *request,
 			      const char *key, const char *value);
 bool auth_request_import_auth(struct auth_request *request,
 			      const char *key, const char *value);
+bool auth_request_import_master(struct auth_request *request,
+				const char *key, const char *value);
 
 void auth_request_initial(struct auth_request *request);
 void auth_request_continue(struct auth_request *request,
@@ -178,13 +183,13 @@ bool auth_request_set_login_username(struct auth_request *request,
 
 void auth_request_set_field(struct auth_request *request,
 			    const char *name, const char *value,
-			    const char *default_scheme);
+			    const char *default_scheme) ATTR_NULL(4);
 void auth_request_set_field_keyvalue(struct auth_request *request,
 				     const char *field,
-				     const char *default_scheme);
+				     const char *default_scheme) ATTR_NULL(3);
 void auth_request_set_fields(struct auth_request *request,
 			     const char *const *fields,
-			     const char *default_scheme);
+			     const char *default_scheme) ATTR_NULL(3);
 
 void auth_request_init_userdb_reply(struct auth_request *request);
 void auth_request_set_userdb_field(struct auth_request *request,
@@ -206,11 +211,12 @@ int auth_request_password_verify(struct auth_request *request,
 
 const struct var_expand_table *
 auth_request_get_var_expand_table(const struct auth_request *auth_request,
-				  auth_request_escape_func_t *escape_func);
+				  auth_request_escape_func_t *escape_func)
+	ATTR_NULL(2);
 struct var_expand_table *
 auth_request_get_var_expand_table_full(const struct auth_request *auth_request,
 				       auth_request_escape_func_t *escape_func,
-				       unsigned int *count);
+				       unsigned int *count) ATTR_NULL(2);
 const char *auth_request_str_escape(const char *string,
 				    const struct auth_request *request);
 

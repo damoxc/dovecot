@@ -24,6 +24,8 @@ struct mail_user {
 	gid_t gid;
 	const char *service;
 	struct ip_addr *local_ip, *remote_ip;
+	const char *auth_token;
+
 	const struct var_expand_table *var_expand_table;
 	/* If non-NULL, fail the user initialization with this error.
 	   This could be set by plugins that need to fail the initialization. */
@@ -34,19 +36,26 @@ struct mail_user {
 	struct mail_user_settings *set;
 	struct mail_namespace *namespaces;
 	struct mail_storage *storages;
-	ARRAY_DEFINE(hooks, const struct mail_storage_hooks *);
+	ARRAY(const struct mail_storage_hooks *) hooks;
 
 	struct mountpoint_list *mountpoints;
 	normalizer_func_t *default_normalizer;
+	/* Filled lazily by mailbox_attribute_*() when accessing attributes. */
+	struct dict *_attr_dict;
 
 	/* Module-specific contexts. See mail_storage_module_id. */
-	ARRAY_DEFINE(module_contexts, union mail_user_module_context *);
+	ARRAY(union mail_user_module_context *) module_contexts;
 
+	/* User doesn't exist (as reported by userdb lookup when looking
+	   up home) */
+	unsigned int nonexistent:1;
 	/* Either home is set or there is no home for the user. */
 	unsigned int home_looked_up:1;
 	/* User is an administrator. Allow operations not normally allowed
 	   for other people. */
 	unsigned int admin:1;
+	/* User is anonymous */
+	unsigned int anonymous:1;
 	/* This is an autocreated user (e.g. for shared namespace or
 	   lda raw storage) */
 	unsigned int autocreated:1;
@@ -60,6 +69,8 @@ struct mail_user {
 	unsigned int fuzzy_search:1;
 	/* We're running dsync */
 	unsigned int dsyncing:1;
+	/* Failed to create attribute dict, don't try again */
+	unsigned int attr_dict_failed:1;
 };
 
 struct mail_user_module_register {
@@ -132,5 +143,10 @@ const char *mail_user_get_anvil_userip_ident(struct mail_user *user);
    mountpoint should be mounted. */
 bool mail_user_is_path_mounted(struct mail_user *user, const char *path,
 			       const char **error_r);
+
+/* Basically the same as mail_storage_find_class(), except automatically load
+   storage plugins when needed. */
+struct mail_storage *
+mail_user_get_storage_class(struct mail_user *user, const char *name);
 
 #endif

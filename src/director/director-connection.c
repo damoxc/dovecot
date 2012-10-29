@@ -31,7 +31,7 @@
 #include "lib.h"
 #include "ioloop.h"
 #include "array.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "str.h"
@@ -191,7 +191,6 @@ static void director_connection_send_connect(struct director_connection *conn,
 	connect_str = t_strdup_printf("CONNECT\t%s\t%u\n",
 				      net_ip2addr(&host->ip), host->port);
 	director_connection_send(conn, connect_str);
-	(void)o_stream_flush(conn->output);
 	o_stream_uncork(conn->output);
 
 	/* wait for a while for the remote to disconnect, so it will hopefully
@@ -559,7 +558,8 @@ director_handshake_cmd_user(struct director_connection *conn,
 		return FALSE;
 	}
 
-	director_user_refresh(conn, username_hash, host, timestamp, weak, &user);
+	(void)director_user_refresh(conn, username_hash, host,
+				    timestamp, weak, &user);
 	return TRUE;
 }
 
@@ -768,7 +768,7 @@ director_cmd_user_weak(struct director_connection *conn,
 	return TRUE;
 }
 
-static bool
+static bool ATTR_NULL(3)
 director_cmd_host_int(struct director_connection *conn, const char *const *args,
 		      struct director_host *dir_host)
 {
@@ -1107,7 +1107,7 @@ static bool director_connection_sync(struct director_connection *conn,
 	}
 
 	if (host == NULL || !host->self)
-		director_resend_sync(dir);
+		(void)director_resend_sync(dir);
 	return TRUE;
 }
 
@@ -1327,10 +1327,7 @@ static void director_connection_input(struct director_connection *conn)
 		/* just read everything the remote sends, and wait for it
 		   to disconnect. we mainly just want the remote to read the
 		   CONNECT we sent it. */
-		size_t size;
-
-		(void)i_stream_get_data(conn->input, &size);
-		i_stream_skip(conn->input, size);
+		i_stream_skip(conn->input, i_stream_get_data_size(conn->input));
 		return;
 	}
 
@@ -1441,6 +1438,7 @@ director_connection_init_common(struct director *dir, int fd)
 	conn->dir = dir;
 	conn->input = i_stream_create_fd(conn->fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(conn->fd, MAX_OUTBUF_SIZE, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	conn->to_ping = timeout_add(DIRECTOR_CONNECTION_ME_TIMEOUT_MSECS,
 				    director_connection_init_timeout, conn);
 	array_append(&dir->connections, &conn, 1);

@@ -21,6 +21,7 @@ enum index_cache_field {
 	MAIL_CACHE_POP3_UIDL,
 	MAIL_CACHE_GUID,
 	MAIL_CACHE_MESSAGE_PARTS,
+	MAIL_CACHE_BINARY_PARTS,
 
 	MAIL_INDEX_CACHE_FIELD_COUNT
 };
@@ -77,6 +78,7 @@ struct index_mail_data {
 	uint32_t parse_line_num;
 
 	struct message_part *parts;
+	struct message_binary_part *bin_parts;
 	const char *envelope, *body, *bodystructure, *guid, *filename;
 	const char *from_envelope;
 	struct message_part_envelope_data *envelope_data;
@@ -127,20 +129,18 @@ struct index_mail {
 	struct index_mail_data data;
 	struct index_mailbox_context *ibox;
 
-	pool_t data_pool;
-
 	int pop3_state;
 
 	/* per-mail variables, here for performance reasons: */
 	uint32_t header_seq;
 	string_t *header_data;
-	ARRAY_DEFINE(header_lines, struct index_mail_line);
+	ARRAY(struct index_mail_line) header_lines;
 #define HEADER_MATCH_FLAG_FOUND 1
 #define HEADER_MATCH_SKIP_COUNT 2
 #define HEADER_MATCH_USABLE(mail, num) \
 	((num & ~1) == (mail)->header_match_value)
-	ARRAY_DEFINE(header_match, uint8_t);
-	ARRAY_DEFINE(header_match_lines, unsigned int);
+	ARRAY(uint8_t) header_match;
+	ARRAY(unsigned int) header_match_lines;
 	uint8_t header_match_value;
 
 	unsigned int pop3_state_set:1;
@@ -172,12 +172,14 @@ void index_mail_free(struct mail *mail);
 
 bool index_mail_want_parse_headers(struct index_mail *mail);
 void index_mail_parse_header_init(struct index_mail *mail,
-				  struct mailbox_header_lookup_ctx *headers);
+				  struct mailbox_header_lookup_ctx *headers)
+	ATTR_NULL(2);
 void index_mail_parse_header(struct message_part *part,
 			     struct message_header_line *hdr,
-			     struct index_mail *mail);
+			     struct index_mail *mail) ATTR_NULL(1);
 int index_mail_parse_headers(struct index_mail *mail,
-			     struct mailbox_header_lookup_ctx *headers);
+			     struct mailbox_header_lookup_ctx *headers)
+	ATTR_NULL(2);
 int index_mail_headers_get_envelope(struct index_mail *mail);
 
 int index_mail_get_first_header(struct mail *_mail, const char *field,
@@ -203,7 +205,12 @@ int index_mail_get_physical_size(struct mail *mail, uoff_t *size_r);
 int index_mail_init_stream(struct index_mail *mail,
 			   struct message_size *hdr_size,
 			   struct message_size *body_size,
-			   struct istream **stream_r);
+			   struct istream **stream_r) ATTR_NULL(2, 3);
+int index_mail_get_binary_stream(struct mail *_mail,
+				 const struct message_part *part,
+				 bool include_hdr, uoff_t *size_r,
+				 unsigned int *body_lines_r, bool *binary_r,
+				 struct istream **stream_r);
 int index_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 			   const char **value_r);
 struct mail *index_mail_get_real_mail(struct mail *mail);
@@ -218,6 +225,7 @@ void index_mail_precache(struct mail *mail);
 void index_mail_set_cache_corrupted(struct mail *mail,
 				    enum mail_fetch_field field);
 int index_mail_opened(struct mail *mail, struct istream **stream);
+int index_mail_stream_check_failure(struct index_mail *mail);
 struct index_mail *index_mail_get_index_mail(struct mail *mail);
 
 bool index_mail_get_cached_uoff_t(struct index_mail *mail,

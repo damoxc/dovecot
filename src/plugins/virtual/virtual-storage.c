@@ -391,10 +391,8 @@ static void virtual_notify_changes(struct mailbox *box)
 
 		if (box->notify_callback == NULL)
 			mailbox_notify_changes_stop(bbox);
-		else {
-			mailbox_notify_changes(bbox, box->notify_min_interval,
-					       virtual_notify_callback, box);
-		}
+		else
+			mailbox_notify_changes(bbox, virtual_notify_callback, box);
 	}
 }
 
@@ -426,7 +424,7 @@ virtual_get_virtual_uids(struct mailbox *box,
 	while (seq_range_array_iter_nth(&iter, n++, &uid)) {
 		while (i < count && uids[i].real_uid < uid) i++;
 		if (i < count && uids[i].real_uid == uid) {
-			seq_range_array_add(virtual_uids_r, 0,
+			seq_range_array_add(virtual_uids_r, 
 					    uids[i].virtual_uid);
 			i++;
 		}
@@ -505,7 +503,7 @@ struct mail_storage virtual_storage = {
 		NULL,
 		virtual_storage_alloc,
 		NULL,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		virtual_storage_get_list_settings,
 		NULL,
@@ -529,6 +527,11 @@ struct mailbox virtual_mailbox = {
 		virtual_storage_get_status,
 		virtual_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		NULL,
 		NULL,
 		virtual_storage_sync_init,

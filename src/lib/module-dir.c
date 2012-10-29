@@ -168,6 +168,17 @@ static void *quiet_dlopen(const char *path, int flags)
 #endif
 }
 
+static bool versions_equal(const char *str1, const char *str2)
+{
+	while (*str1 == *str2) {
+		if (*str1 == '\0' || *str1 == '(')
+			return TRUE;
+		str1++;
+		str2++;
+	}
+	return FALSE;
+}
+
 static struct module *
 module_load(const char *path, const char *name,
 	    const struct module_dir_load_settings *set,
@@ -212,12 +223,12 @@ module_load(const char *path, const char *name,
 	module->name = i_strdup(name);
 	module->handle = handle;
 
-	module_version = set->version == NULL ? NULL :
+	module_version = set->abi_version == NULL ? NULL :
 		get_symbol(module, t_strconcat(name, "_version", NULL), TRUE);
 	if (module_version != NULL &&
-	    strcmp(*module_version, set->version) != 0) {
-		i_error("Module is for different version %s: %s",
-			*module_version, path);
+	    !versions_equal(*module_version, set->abi_version)) {
+		i_error("Module is for different ABI version %s (we have %s): %s",
+			*module_version, set->abi_version, path);
 		module_free(module);
 		return NULL;
 	}
@@ -327,7 +338,7 @@ static void module_names_fix(const char **module_names)
 		module_names[i] = module_file_get_name(module_names[i]);
 
 	/* @UNSAFE: drop duplicates */
-	qsort(module_names, i, sizeof(*module_names), i_strcmp_p);
+	i_qsort(module_names, i, sizeof(*module_names), i_strcmp_p);
 	for (i = j = 1; module_names[i] != NULL; i++) {
 		if (strcmp(module_names[i-1], module_names[i]) != 0)
 			module_names[j++] = module_names[i];

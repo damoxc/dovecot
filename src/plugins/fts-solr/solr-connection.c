@@ -40,8 +40,8 @@ struct solr_lookup_xml_context {
 
 	pool_t result_pool;
 	/* box_id -> solr_result */
-	struct hash_table *mailboxes;
-	ARRAY_DEFINE(results, struct solr_result *);
+	HASH_TABLE(char *, struct solr_result *) mailboxes;
+	ARRAY(struct solr_result *) results;
 };
 
 struct solr_connection_post {
@@ -319,7 +319,7 @@ static void solr_lookup_add_doc(struct solr_lookup_xml_context *ctx)
 	}
 	result = solr_result_get(ctx, box_id);
 
-	seq_range_array_add(&result->uids, 0, ctx->uid);
+	seq_range_array_add(&result->uids, ctx->uid);
 	if (ctx->score != 0) {
 		score = array_append_space(&result->scores);
 		score->uid = ctx->uid;
@@ -419,9 +419,8 @@ int solr_connection_select(struct solr_connection *conn, const char *query,
 
 	memset(&solr_lookup_context, 0, sizeof(solr_lookup_context));
 	solr_lookup_context.result_pool = pool;
-	solr_lookup_context.mailboxes =
-		hash_table_create(default_pool, default_pool, 0,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&solr_lookup_context.mailboxes, default_pool, 0,
+			  str_hash, strcmp);
 	p_array_init(&solr_lookup_context.results, pool, 32);
 
 	i_free_and_null(conn->http_failure);
@@ -448,10 +447,10 @@ int solr_connection_select(struct solr_connection *conn, const char *query,
 		i_error("fts_solr: Lookup failed: %s", conn->http_failure);
 		return -1;
 	}
-	parse_ret = solr_xml_parse(conn, NULL, 0, TRUE);
+	parse_ret = solr_xml_parse(conn, "", 0, TRUE);
 	hash_table_destroy(&solr_lookup_context.mailboxes);
 
-	(void)array_append_space(&solr_lookup_context.results);
+	array_append_zero(&solr_lookup_context.results);
 	*box_results_r = array_idx_modifiable(&solr_lookup_context.results, 0);
 	return parse_ret;
 }
@@ -577,7 +576,7 @@ int solr_connection_post_end(struct solr_connection_post *post)
 
 	i_assert(conn->posting);
 
-	solr_connection_post_more(post, NULL, 0);
+	solr_connection_post_more(post, &uchar_nul, 0);
 
 	curl_easy_getinfo(conn->curl, CURLINFO_RESPONSE_CODE, &httpret);
 	if (httpret != 200 && ret == 0) {

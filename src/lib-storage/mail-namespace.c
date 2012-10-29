@@ -44,6 +44,21 @@ static void mail_namespace_free(struct mail_namespace *ns)
 	i_free(ns);
 }
 
+static bool
+namespace_has_special_use_mailboxes(struct mail_namespace_settings *ns_set)
+{
+	struct mailbox_settings *const *box_set;
+
+	if (!array_is_created(&ns_set->mailboxes))
+		return FALSE;
+
+	array_foreach(&ns_set->mailboxes, box_set) {
+		if ((*box_set)->special_use[0] != '\0')
+			return TRUE;
+	}
+	return FALSE;
+}
+
 static int
 namespace_add(struct mail_user *user,
 	      struct mail_namespace_settings *ns_set,
@@ -59,11 +74,11 @@ namespace_add(struct mail_user *user,
 	ns->user = user;
 	if (strncmp(ns_set->type, "private", 7) == 0) {
 		ns->owner = user;
-		ns->type = NAMESPACE_PRIVATE;
+		ns->type = MAIL_NAMESPACE_TYPE_PRIVATE;
 	} else if (strncmp(ns_set->type, "shared", 6) == 0)
-		ns->type = NAMESPACE_SHARED;
+		ns->type = MAIL_NAMESPACE_TYPE_SHARED;
 	else if (strncmp(ns_set->type, "public", 6) == 0)
-		ns->type = NAMESPACE_PUBLIC;
+		ns->type = MAIL_NAMESPACE_TYPE_PUBLIC;
 	else {
 		*error_r = t_strdup_printf("Unknown namespace type: %s",
 					   ns_set->type);
@@ -110,8 +125,9 @@ namespace_add(struct mail_user *user,
 	ns->unexpanded_set = unexpanded_ns_set;
 	ns->mail_set = mail_set;
 	ns->prefix = i_strdup(ns_set->prefix);
+	ns->special_use_mailboxes = namespace_has_special_use_mailboxes(ns_set);
 
-	if (ns->type == NAMESPACE_SHARED &&
+	if (ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
 	    (strchr(ns->prefix, '%') != NULL ||
 	     strchr(ns->set->location, '%') != NULL)) {
 		/* dynamic shared namespace. the above check catches wrong
@@ -345,7 +361,7 @@ int mail_namespaces_init_location(struct mail_user *user, const char *location,
 
 	ns = i_new(struct mail_namespace, 1);
 	ns->refcount = 1;
-	ns->type = NAMESPACE_PRIVATE;
+	ns->type = MAIL_NAMESPACE_TYPE_PRIVATE;
 	ns->flags = NAMESPACE_FLAG_INBOX_USER | NAMESPACE_FLAG_INBOX_ANY |
 		NAMESPACE_FLAG_LIST_PREFIX | NAMESPACE_FLAG_SUBSCRIPTIONS;
 	ns->owner = user;
@@ -596,7 +612,7 @@ mail_namespace_find(struct mail_namespace *namespaces, const char *mailbox)
 	struct mail_namespace *ns;
 
 	ns = mail_namespace_find_mask(namespaces, mailbox, 0, 0);
-	if (ns != NULL && ns->type == NAMESPACE_SHARED &&
+	if (ns != NULL && ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
 	    (ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0) {
 		/* see if we need to autocreate a namespace for shared user */
 		if (strchr(mailbox, mail_namespace_get_sep(ns)) != NULL)

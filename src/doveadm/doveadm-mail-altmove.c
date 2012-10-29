@@ -32,7 +32,7 @@ cmd_altmove_box(struct doveadm_mail_cmd_context *ctx,
 	while (doveadm_mail_iter_next(iter, &mail)) {
 		if (doveadm_debug) {
 			i_debug("altmove: box=%s uid=%u",
-				info->name, mail->uid);
+				info->vname, mail->uid);
 		}
 		mail_update_flags(mail, modify_type,
 			(enum mail_flags)MAIL_INDEX_MAIL_FLAG_BACKEND);
@@ -63,7 +63,7 @@ cmd_altmove_run(struct doveadm_mail_cmd_context *_ctx, struct mail_user *user)
 	struct doveadm_mailbox_list_iter *iter;
 	const struct mailbox_info *info;
 	struct mail_namespace *ns, *prev_ns = NULL;
-	ARRAY_DEFINE(purged_storages, struct mail_storage *);
+	ARRAY(struct mail_storage *) purged_storages;
 	struct mail_storage *const *storages;
 	unsigned int i, count;
 	int ret = 0;
@@ -96,7 +96,7 @@ cmd_altmove_run(struct doveadm_mail_cmd_context *_ctx, struct mail_user *user)
 	/* make sure all private storages have been purged */
 	storages = array_get(&purged_storages, &count);
 	for (ns = user->namespaces; ns != NULL; ns = ns->next) {
-		if (ns->type != NAMESPACE_PRIVATE)
+		if (ns->type != MAIL_NAMESPACE_TYPE_PRIVATE)
 			continue;
 
 		for (i = 0; i < count; i++) {

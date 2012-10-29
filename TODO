@@ -1,5 +1,26 @@
+ - LAYOUT=index:
+    - force-resync should fix the index, finding any missing mailboxes, same
+      for when internally detecting the error
+    - see if there are any race conditions? and check other error handling
+    - after doing a lot of changes the list's memory pool keeps growing.
+      do an occasional re-parsing to clear the pool
+    - mailbox_update() needs to update also uidvalidity/guid
+    - quota recalc + dict-file [+acl?] assert-crashes in !indexing->syncing
+ - URLAUTH: if client tries to access nonexistent user, do a delay in
+   imap-urlauth-client.c (AFTER destroying the worker)
+     - special response in the control connection to make the imap-urlauth
+       master wait before starting a new worker
+
+ - settings parsing is horribly bloaty
+ - doveadm: if running via doveadm-server and it fails, say something about
+   error being in the log
+ - indexer-worker and maybe others (doveadm?) could support dropping privileges
+   permanently when service_count=1. Note that LMTP can't with multiple RCPT
+   TOs.
+ - after reading whole message text, update has_nul-state to cache
+ - FIFOs maybe should be counted as connections, but unlisten should
+   unlink+reopen it in master?
  - lmtp client/proxy: Handle multiline replies better
- - lib-ssl-iostream: Support ssl_protocols setting
  - recreate mailbox -> existing sessions log "indexid changed" error
  - add message/mime limits
  - imapc:
@@ -9,7 +30,6 @@
    so mail_storage_settings are copied to mail_namespace_settings. use the
    change tracking to figure out what settings are namespace-specific.
 
- - imap: list (special-use recursivematch) "" % doesn't work
  - passdb, userdb { username_format } that doesn't permanently change
    the username
  - mdbox/sdbox index rebuild -> quota rebuild?
@@ -22,7 +42,6 @@
    where we started, and stuff would break
  - imap: append/copy could trigger indexing (optionally)
  - fuzzy: be fuzzy about date/size
- - fix proxy_maybe=fqdn
  - mailbox list index:
     - with in-memory indexes be sure to refresh it more often
     - refreshing could refresh only the parts that are actually requested,
@@ -112,7 +131,6 @@
  - ldap: fix multiple-gid support somehow
  - search: use mail_get_parts() only when it's already cached. if it's not,
    add it to cache afterwards.
- - move ssl proxying code to lib-master
  - dict pooling
 
 	/* currently non-external transactions can be applied multiple times,

@@ -14,9 +14,6 @@
 
 #define DNS_CLIENT_SOCKET_NAME "dns-client"
 
-extern struct mail_storage pop3c_storage;
-extern struct mailbox pop3c_mailbox;
-
 static struct mail_storage *pop3c_storage_alloc(void)
 {
 	struct pop3c_storage *storage;
@@ -229,7 +226,7 @@ struct mail_storage pop3c_storage = {
 		pop3c_get_setting_parser_info,
 		pop3c_storage_alloc,
 		pop3c_storage_create,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		pop3c_storage_get_list_settings,
 		NULL,
@@ -253,6 +250,11 @@ struct mailbox pop3c_mailbox = {
 		index_storage_get_status,
 		index_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		pop3c_storage_sync_init,

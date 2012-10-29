@@ -2,7 +2,7 @@
 
 #include "lib.h"
 #include "array.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "hash.h"
 #include "doveadm.h"
@@ -35,7 +35,7 @@ static void penalty_parse_line(const char *line, struct penalty_line *line_r)
 
 	memset(line_r, 0, sizeof(*line_r));
 
-	net_addr2ip(ident, &line_r->ip);
+	(void)net_addr2ip(ident, &line_r->ip);
 	line_r->penalty = strtoul(penalty_str, NULL, 10);
 	line_r->last_penalty = strtoul(last_penalty_str, NULL, 10);
 	line_r->last_update = strtoul(last_update_str, NULL, 10);

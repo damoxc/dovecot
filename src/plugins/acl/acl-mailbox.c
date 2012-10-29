@@ -129,7 +129,7 @@ acl_mailbox_create(struct mailbox *box, const struct mailbox_update *update,
 	   super.create() may call e.g. mailbox_open() which will fail since
 	   we haven't yet copied ACLs to this mailbox. */
 	abox->skip_acl_checks = TRUE;
-	ret = abox->module_ctx.super.create(box, update, directory);
+	ret = abox->module_ctx.super.create_box(box, update, directory);
 	abox->skip_acl_checks = FALSE;
 	if (ret == 0)
 		acl_mailbox_copy_acls_from_parent(box);
@@ -145,7 +145,7 @@ acl_mailbox_update(struct mailbox *box, const struct mailbox_update *update)
 	ret = acl_mailbox_right_lookup(box, ACL_STORAGE_RIGHT_ADMIN);
 	if (ret <= 0)
 		return -1;
-	return abox->module_ctx.super.update(box, update);
+	return abox->module_ctx.super.update_box(box, update);
 }
 
 static void acl_mailbox_fail_not_found(struct mailbox *box)
@@ -178,14 +178,13 @@ acl_mailbox_delete(struct mailbox *box)
 	/* deletion might internally open the mailbox. let it succeed even if
 	   we don't have READ permission. */
 	abox->skip_acl_checks = TRUE;
-	ret = abox->module_ctx.super.delete(box);
+	ret = abox->module_ctx.super.delete_box(box);
 	abox->skip_acl_checks = FALSE;
 	return ret;
 }
 
 static int
-acl_mailbox_rename(struct mailbox *src, struct mailbox *dest,
-		   bool rename_children)
+acl_mailbox_rename(struct mailbox *src, struct mailbox *dest)
 {
 	struct acl_mailbox *abox = ACL_CONTEXT(src);
 	int ret;
@@ -217,7 +216,7 @@ acl_mailbox_rename(struct mailbox *src, struct mailbox *dest,
 		return -1;
 	}
 
-	return abox->module_ctx.super.rename(src, dest, rename_children);
+	return abox->module_ctx.super.rename_box(src, dest);
 }
 
 static int
@@ -320,8 +319,7 @@ static void acl_mail_expunge(struct mail *_mail)
 		/* if we don't have permission, silently return success so
 		   users won't see annoying error messages in case their
 		   clients try automatic expunging. */
-		if (ret < 0)
-			acl_transaction_set_failure(_mail->transaction);
+		acl_transaction_set_failure(_mail->transaction);
 		return;
 	}
 
@@ -379,7 +377,7 @@ acl_save_begin(struct mail_save_context *ctx, struct istream *input)
 		ACL_STORAGE_RIGHT_POST : ACL_STORAGE_RIGHT_INSERT;
 	if (acl_mailbox_right_lookup(box, save_right) <= 0)
 		return -1;
-	if (acl_save_get_flags(box, &ctx->flags, &ctx->keywords) < 0)
+	if (acl_save_get_flags(box, &ctx->data.flags, &ctx->data.keywords) < 0)
 		return -1;
 
 	return abox->module_ctx.super.save_begin(ctx, input);
@@ -392,11 +390,17 @@ acl_copy(struct mail_save_context *ctx, struct mail *mail)
 	struct acl_mailbox *abox = ACL_CONTEXT(t->box);
 	enum acl_storage_rights save_right;
 
+	if (ctx->moving) {
+		if (acl_mailbox_right_lookup(mail->box,
+					     ACL_STORAGE_RIGHT_EXPUNGE) <= 0)
+			return -1;
+	}
+
 	save_right = (t->box->flags & MAILBOX_FLAG_POST_SESSION) != 0 ?
 		ACL_STORAGE_RIGHT_POST : ACL_STORAGE_RIGHT_INSERT;
 	if (acl_mailbox_right_lookup(t->box, save_right) <= 0)
 		return -1;
-	if (acl_save_get_flags(t->box, &ctx->flags, &ctx->keywords) < 0)
+	if (acl_save_get_flags(t->box, &ctx->data.flags, &ctx->data.keywords) < 0)
 		return -1;
 
 	return abox->module_ctx.super.copy(ctx, mail);
@@ -520,6 +524,13 @@ void acl_mailbox_allocated(struct mailbox *box)
 		return;
 	}
 
+	if (box->list->ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
+	    (box->list->ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0) {
+		/* this is the root shared namespace, which itself doesn't
+		   have any existing mailboxes. */
+		return;
+	}
+
 	abox = p_new(box->pool, struct acl_mailbox, 1);
 	abox->module_ctx.super = *v;
 	box->vlast = &abox->module_ctx.super;
@@ -535,10 +546,10 @@ void acl_mailbox_allocated(struct mailbox *box)
 		v->exists = acl_mailbox_exists;
 		v->open = acl_mailbox_open;
 		v->get_status = acl_mailbox_get_status;
-		v->create = acl_mailbox_create;
-		v->update = acl_mailbox_update;
-		v->delete = acl_mailbox_delete;
-		v->rename = acl_mailbox_rename;
+		v->create_box = acl_mailbox_create;
+		v->update_box = acl_mailbox_update;
+		v->delete_box = acl_mailbox_delete;
+		v->rename_box = acl_mailbox_rename;
 		v->save_begin = acl_save_begin;
 		v->copy = acl_copy;
 		v->transaction_commit = acl_transaction_commit;

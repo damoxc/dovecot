@@ -28,8 +28,8 @@ struct quota_mailbox {
 
 	struct mailbox_transaction_context *expunge_trans;
 	struct quota_transaction_context *expunge_qt;
-	ARRAY_DEFINE(expunge_uids, uint32_t);
-	ARRAY_DEFINE(expunge_sizes, uoff_t);
+	ARRAY(uint32_t) expunge_uids;
+	ARRAY(uoff_t) expunge_sizes;
 
 	unsigned int recalculate:1;
 };
@@ -177,7 +177,8 @@ static int quota_check(struct mailbox_transaction_context *t, struct mail *mail)
 	} else {
 		mail_storage_set_critical(t->box->storage,
 					  "Internal quota calculation error");
-		return qt->quota->set->ignore_save_errors ? 0 : -1;
+		/* allow saving anyway */
+		return 0;
 	}
 }
 
@@ -200,8 +201,17 @@ quota_copy(struct mail_save_context *ctx, struct mail *mail)
 	if (qbox->module_ctx.super.copy(ctx, mail) < 0)
 		return -1;
 
-	/* if copying used saving internally, we already checked the quota */
-	return ctx->copying_via_save ? 0 : quota_check(t, ctx->dest_mail);
+	if (ctx->copying_via_save) {
+		/* copying used saving internally, we already checked the
+		   quota */
+		return 0;
+	}
+	if (ctx->moving) {
+		/* the mail is being moved. the quota won't increase, so allow
+		   this even if user is currently over quota */
+		return 0;
+	}
+	return quota_check(t, ctx->dest_mail);
 }
 
 static int
@@ -213,7 +223,7 @@ quota_save_begin(struct mail_save_context *ctx, struct istream *input)
 	uoff_t size;
 	int ret;
 
-	if (i_stream_get_size(input, TRUE, &size) > 0) {
+	if (i_stream_get_size(input, TRUE, &size) > 0 && !ctx->moving) {
 		/* Input size is known, check for quota immediately. This
 		   check isn't perfect, especially because input stream's
 		   linefeeds may contain CR+LFs while physical message would
@@ -234,8 +244,7 @@ quota_save_begin(struct mail_save_context *ctx, struct istream *input)
 		} else if (ret < 0) {
 			mail_storage_set_critical(t->box->storage,
 				"Internal quota calculation error");
-			if (!qt->quota->set->ignore_save_errors)
-				return -1;
+			/* allow saving anyway */
 		}
 	}
 
@@ -258,6 +267,11 @@ static int quota_save_finish(struct mail_save_context *ctx)
 	if (qbox->module_ctx.super.save_finish(ctx) < 0)
 		return -1;
 
+	if (ctx->moving) {
+		/* the mail is being moved. the quota won't increase, so allow
+		   this even if user is currently over quota */
+		return 0;
+	}
 	return quota_check(ctx->transaction, ctx->dest_mail);
 }
 

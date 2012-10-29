@@ -3,9 +3,10 @@
 #include "lib.h"
 #include "array.h"
 #include "hostpid.h"
-#include "network.h"
+#include "net.h"
 #include "module-dir.h"
 #include "home-expand.h"
+#include "safe-mkstemp.h"
 #include "str.h"
 #include "strescape.h"
 #include "var-expand.h"
@@ -13,8 +14,10 @@
 #include "auth-master.h"
 #include "master-service.h"
 #include "mountpoint-list.h"
+#include "dict.h"
 #include "mail-storage-settings.h"
 #include "mail-storage-private.h"
+#include "mail-storage-service.h"
 #include "mail-namespace.h"
 #include "mail-storage.h"
 #include "mail-user.h"
@@ -26,6 +29,10 @@ struct auth_master_connection *mail_user_auth_master_conn;
 
 static void mail_user_deinit_base(struct mail_user *user)
 {
+	if (user->_attr_dict != NULL) {
+		(void)dict_wait(user->_attr_dict);
+		dict_deinit(&user->_attr_dict);
+	}
 	mail_namespaces_deinit(&user->namespaces);
 	if (user->mountpoints != NULL)
 		mountpoint_list_deinit(&user->mountpoints);
@@ -289,9 +296,6 @@ static int mail_user_userdb_lookup_home(struct mail_user *user)
 	if (user->remote_ip != NULL)
 		info.remote_ip = *user->remote_ip;
 
-	if (mail_user_auth_master_conn == NULL)
-		return 0;
-
 	userdb_pool = pool_alloconly_create("userdb lookup", 2048);
 	ret = auth_master_user_lookup(mail_user_auth_master_conn,
 				      user->username, &info, userdb_pool,
@@ -313,12 +317,18 @@ int mail_user_get_home(struct mail_user *user, const char **home_r)
 		return user->_home != NULL ? 1 : 0;
 	}
 
-	ret = mail_user_userdb_lookup_home(user);
-	if (ret < 0)
+	if (mail_user_auth_master_conn == NULL) {
+		/* no userdb connection. we can only use mail_home setting. */
+		user->_home = user->set->mail_home;
+	} else if ((ret = mail_user_userdb_lookup_home(user)) < 0) {
+		/* userdb lookup failed */
 		return -1;
-
-	if (ret > 0 && user->_home == NULL && *user->set->mail_home != '\0') {
-		/* no home in userdb, fallback to mail_home setting */
+	} else if (ret == 0) {
+		/* user doesn't exist */
+		user->nonexistent = TRUE;
+	} else if (user->_home == NULL && *user->set->mail_home != '\0') {
+		/* no home returned by userdb lookup, fallback to mail_home
+		   setting. */
 		user->_home = user->set->mail_home;
 	}
 	user->home_looked_up = TRUE;
@@ -428,4 +438,57 @@ bool mail_user_is_path_mounted(struct mail_user *user, const char *path,
 		return FALSE;
 	}
 	return TRUE;
+}
+
+static void
+mail_user_try_load_class_plugin(struct mail_user *user, const char *name)
+{
+	struct module_dir_load_settings mod_set;
+	struct module *module;
+	unsigned int name_len = strlen(name);
+
+	memset(&mod_set, 0, sizeof(mod_set));
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
+	mod_set.binary_name = master_service_get_name(master_service);
+	mod_set.setting_name = "<built-in storage lookup>";
+	mod_set.require_init_funcs = TRUE;
+	mod_set.debug = user->mail_debug;
+
+	mail_storage_service_modules =
+		module_dir_load_missing(mail_storage_service_modules,
+					user->set->mail_plugin_dir,
+					name, &mod_set);
+	/* initialize the module (and only this module!) immediately so that
+	   the class gets registered */
+	for (module = mail_storage_service_modules; module != NULL; module = module->next) {
+		if (strncmp(module->name, name, name_len) == 0 &&
+		    strcmp(module->name + name_len, "_plugin") == 0) {
+			if (!module->initialized) {
+				module->initialized = TRUE;
+				module->init(module);
+			}
+			break;
+		}
+	}
+}
+
+struct mail_storage *
+mail_user_get_storage_class(struct mail_user *user, const char *name)
+{
+	struct mail_storage *storage;
+
+	storage = mail_storage_find_class(name);
+	if (storage == NULL || storage->v.alloc != NULL)
+		return storage;
+
+	/* it's implemented by a plugin. load it and check again. */
+	mail_user_try_load_class_plugin(user, name);
+
+	storage = mail_storage_find_class(name);
+	if (storage != NULL && storage->v.alloc == NULL) {
+		i_error("Storage driver '%s' exists as a stub, "
+			"but its plugin couldn't be loaded", name);
+		return NULL;
+	}
+	return storage;
 }

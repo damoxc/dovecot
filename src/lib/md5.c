@@ -66,7 +66,8 @@
  * This processes one or more 64-byte data blocks, but does NOT update
  * the bit counters.  There're no alignment requirements.
  */
-static const void *body(struct md5_context *ctx, const void *data, size_t size)
+static const void * ATTR_NOWARN_UNUSED_RESULT
+body(struct md5_context *ctx, const void *data, size_t size)
 {
 	const unsigned char *ptr;
 	uint_fast32_t a, b, c, d;

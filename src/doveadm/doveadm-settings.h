@@ -14,10 +14,11 @@ struct doveadm_settings {
 	const char *dsync_alt_char;
 	const char *dsync_remote_cmd;
 
-	ARRAY_DEFINE(plugin_envs, const char *);
+	ARRAY(const char *) plugin_envs;
 };
 
 extern const struct setting_parser_info doveadm_setting_parser_info;
 extern struct doveadm_settings *doveadm_settings;
+extern const struct master_service_settings *service_set;
 
 #endif

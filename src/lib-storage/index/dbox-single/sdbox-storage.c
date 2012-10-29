@@ -124,6 +124,8 @@ int sdbox_read_header(struct sdbox_mailbox *mbox,
 	size_t data_size;
 	int ret = 0;
 
+	i_assert(mbox->box.opened);
+
 	view = mail_index_view_open(mbox->box.index);
 	mail_index_get_header_ext(view, mbox->hdr_ext_id,
 				  &data, &data_size);
@@ -179,9 +181,10 @@ static void sdbox_update_header(struct sdbox_mailbox *mbox,
 	       sizeof(mbox->mailbox_guid));
 }
 
-static int sdbox_mailbox_create_indexes(struct mailbox *box,
-					const struct mailbox_update *update,
-					struct mail_index_transaction *trans)
+static int ATTR_NULL(2, 3)
+sdbox_mailbox_create_indexes(struct mailbox *box,
+			     const struct mailbox_update *update,
+			     struct mail_index_transaction *trans)
 {
 	struct sdbox_mailbox *mbox = (struct sdbox_mailbox *)box;
 	struct mail_index_transaction *new_trans = NULL;
@@ -204,10 +207,6 @@ static int sdbox_mailbox_create_indexes(struct mailbox *box,
 	}
 
 	if (hdr->uid_validity != uid_validity) {
-		if (hdr->uid_validity != 0) {
-			/* UIDVALIDITY change requires index to be reset */
-			mail_index_reset(trans);
-		}
 		mail_index_update_header(trans,
 			offsetof(struct mail_index_header, uid_validity),
 			&uid_validity, sizeof(uid_validity), TRUE);
@@ -416,6 +415,11 @@ struct mailbox sdbox_mailbox = {
 		index_storage_get_status,
 		sdbox_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		sdbox_storage_sync_init,

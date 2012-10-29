@@ -17,6 +17,7 @@ static bool auth_userdb_settings_check(void *_set, pool_t pool, const char **err
 /* <settings checks> */
 static struct file_listener_settings auth_unix_listeners_array[] = {
 	{ "login/login", 0666, "", "" },
+	{ "token-login/tokenlogin", 0666, "", "" },
 	{ "auth-login", 0600, "$default_internal_user", "" },
 	{ "auth-client", 0600, "", "" },
 	{ "auth-userdb", 0666, "$default_internal_user", "" },
@@ -27,7 +28,8 @@ static struct file_listener_settings *auth_unix_listeners[] = {
 	&auth_unix_listeners_array[1],
 	&auth_unix_listeners_array[2],
 	&auth_unix_listeners_array[3],
-	&auth_unix_listeners_array[4]
+	&auth_unix_listeners_array[4],
+	&auth_unix_listeners_array[5]
 };
 static buffer_t auth_unix_listeners_buf = {
 	auth_unix_listeners, sizeof(auth_unix_listeners), { 0, }
@@ -278,7 +280,7 @@ auth_settings_set_self_ips(struct auth_settings *set, pool_t pool,
 			   const char **error_r)
 {
 	const char *const *tmp;
-	ARRAY_DEFINE(ips_array, struct ip_addr);
+	ARRAY(struct ip_addr) ips_array;
 	struct ip_addr *ips;
 	unsigned int ips_count;
 	int ret;
@@ -299,7 +301,7 @@ auth_settings_set_self_ips(struct auth_settings *set, pool_t pool,
 		}
 		array_append(&ips_array, ips, ips_count);
 	}
-	(void)array_append_space(&ips_array);
+	array_append_zero(&ips_array);
 	set->proxy_self_ips = array_idx(&ips_array, 0);
 	return TRUE;
 }
@@ -390,8 +392,8 @@ auth_settings_read(const char *service, pool_t pool,
 	};
  	struct master_service_settings_input input;
 	struct setting_parser_context *set_parser;
-	struct auth_settings *set;
 	const char *error;
+	void **sets;
 
 	memset(&input, 0, sizeof(input));
 	input.roots = set_roots;
@@ -406,7 +408,8 @@ auth_settings_read(const char *service, pool_t pool,
 	if (!settings_parser_check(set_parser, pool, &error))
 		i_unreached();
 
-	set = settings_parser_get_list(set_parser)[1];
+	sets = master_service_settings_parser_get_others(master_service,
+							 set_parser);
 	settings_parser_deinit(&set_parser);
-	return set;
+	return sets[0];
 }

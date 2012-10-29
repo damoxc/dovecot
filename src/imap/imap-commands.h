@@ -107,11 +107,18 @@ bool cmd_enable(struct client_command_context *cmd);
 bool cmd_id(struct client_command_context *cmd);
 bool cmd_idle(struct client_command_context *cmd);
 bool cmd_namespace(struct client_command_context *cmd);
+bool cmd_notify(struct client_command_context *cmd);
 bool cmd_sort(struct client_command_context *cmd);
 bool cmd_thread(struct client_command_context *cmd);
 bool cmd_uid_expunge(struct client_command_context *cmd);
+bool cmd_move(struct client_command_context *cmd);
 bool cmd_unselect(struct client_command_context *cmd);
 bool cmd_x_cancel(struct client_command_context *cmd);
+
+/* IMAP URLAUTH (RFC4467): */
+bool cmd_genurlauth(struct client_command_context *cmd);
+bool cmd_resetkey(struct client_command_context *cmd);
+bool cmd_urlfetch(struct client_command_context *cmd);
 
 /* private: */
 bool cmd_list_full(struct client_command_context *cmd, bool lsub);

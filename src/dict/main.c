@@ -23,7 +23,7 @@ static void dict_die(void)
 static void client_connected(struct master_service_connection *conn)
 {
 	master_service_client_connection_accept(conn);
-	dict_connection_create(conn->fd);
+	(void)dict_connection_create(conn->fd);
 }
 
 static void main_preinit(void)
@@ -55,7 +55,7 @@ static void main_init(void)
 	}
 
 	memset(&mod_set, 0, sizeof(mod_set));
-	mod_set.version = master_service_get_version_string(master_service);
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
 	mod_set.require_init_funcs = TRUE;
 
 	modules = module_dir_load(DICT_MODULE_DIR, NULL, &mod_set);
@@ -85,7 +85,7 @@ int main(int argc, char *argv[])
 	};
 	const char *error;
 
-	master_service = master_service_init("dict", 0, &argc, &argv, NULL);
+	master_service = master_service_init("dict", 0, &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 

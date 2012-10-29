@@ -54,64 +54,24 @@ shared_get_storage(struct mailbox_list **list, const char *vname,
 	return 0;
 }
 
-static bool
-shared_is_valid_pattern(struct mailbox_list *list, const char *pattern)
-{
-	struct mail_namespace *ns = list->ns;
-
-	if (shared_storage_get_namespace(&ns, &pattern) < 0)
-		return FALSE;
-	return mailbox_list_is_valid_pattern(ns->list, pattern);
-}
-
-static bool
-shared_is_valid_existing_name(struct mailbox_list *list, const char *name)
-{
-	struct mail_namespace *ns = list->ns;
-
-	if (shared_storage_get_namespace(&ns, &name) < 0)
-		return FALSE;
-	return mailbox_list_is_valid_existing_name(ns->list, name);
-}
-
-static bool
-shared_is_valid_create_name(struct mailbox_list *list, const char *name)
-{
-	struct mail_namespace *ns = list->ns;
-
-	if (shared_storage_get_namespace(&ns, &name) < 0)
-		return FALSE;
-	return mailbox_list_is_valid_create_name(ns->list, name);
-}
-
 static char shared_list_get_hierarchy_sep(struct mailbox_list *list ATTR_UNUSED)
 {
 	return '/';
 }
 
-static const char *
+static int
 shared_list_get_path(struct mailbox_list *list, const char *name,
-		     enum mailbox_list_path_type type)
+		     enum mailbox_list_path_type type, const char **path_r)
 {
 	struct mail_namespace *ns = list->ns;
 
 	if (list->ns->storage == NULL || name == NULL ||
 	    shared_storage_get_namespace(&ns, &name) < 0) {
-		switch (type) {
-		case MAILBOX_LIST_PATH_TYPE_DIR:
-		case MAILBOX_LIST_PATH_TYPE_ALT_DIR:
-		case MAILBOX_LIST_PATH_TYPE_MAILBOX:
-		case MAILBOX_LIST_PATH_TYPE_ALT_MAILBOX:
-		case MAILBOX_LIST_PATH_TYPE_CONTROL:
-			break;
-		case MAILBOX_LIST_PATH_TYPE_INDEX:
-			/* we can safely say we don't use indexes */
-			return "";
-		}
 		/* we don't have a directory we can use. */
-		return NULL;
+		*path_r = NULL;
+		return 0;
 	}
-	return mailbox_list_get_path(ns->list, name, type);
+	return mailbox_list_get_path(ns->list, name, type, path_r);
 }
 
 static const char *
@@ -149,6 +109,7 @@ static void
 shared_list_create_missing_namespaces(struct mailbox_list *list,
 				      const char *const *patterns)
 {
+	struct mail_namespace *ns;
 	char sep = mail_namespace_get_sep(list->ns);
 	const char *list_pat, *name;
 	unsigned int i;
@@ -171,8 +132,9 @@ shared_list_create_missing_namespaces(struct mailbox_list *list,
 				last = p;
 		}
 		if (last != NULL) {
+			ns = list->ns;
 			name = t_strdup_until(list_pat, last);
-			(void)mailbox_list_is_valid_existing_name(list, name);
+			(void)shared_storage_get_namespace(&ns, &name);
 		}
 	}
 }
@@ -228,21 +190,6 @@ static int shared_list_set_subscribed(struct mailbox_list *list,
 	if (shared_storage_get_namespace(&ns, &name) < 0)
 		return -1;
 	ret = mailbox_list_set_subscribed(ns->list, name, set);
-	if (ret < 0)
-		shared_list_copy_error(list, ns);
-	return ret;
-}
-
-static int
-shared_list_create_mailbox_dir(struct mailbox_list *list, const char *name,
-			       enum mailbox_dir_create_type type)
-{
-	struct mail_namespace *ns = list->ns;
-	int ret;
-
-	if (shared_storage_get_namespace(&ns, &name) < 0)
-		return -1;
-	ret = ns->list->v.create_mailbox_dir(ns->list, name, type);
 	if (ret < 0)
 		shared_list_copy_error(list, ns);
 	return ret;
@@ -312,8 +259,7 @@ static int shared_list_rename_get_ns(struct mailbox_list *oldlist,
 
 static int
 shared_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
-			   struct mailbox_list *newlist, const char *newname,
-			   bool rename_children)
+			   struct mailbox_list *newlist, const char *newname)
 {
 	struct mail_namespace *ns;
 	int ret;
@@ -322,8 +268,7 @@ shared_list_rename_mailbox(struct mailbox_list *oldlist, const char *oldname,
 				      newlist, &newname, &ns) < 0)
 		return -1;
 
-	ret = ns->list->v.rename_mailbox(ns->list, oldname, ns->list, newname,
-					 rename_children);
+	ret = ns->list->v.rename_mailbox(ns->list, oldname, ns->list, newname);
 	if (ret < 0)
 		shared_list_copy_error(oldlist, ns);
 	return ret;
@@ -336,11 +281,9 @@ struct mailbox_list shared_mailbox_list = {
 
 	{
 		shared_list_alloc,
+		NULL,
 		shared_list_deinit,
 		shared_get_storage,
-		shared_is_valid_pattern,
-		shared_is_valid_existing_name,
-		shared_is_valid_create_name,
 		shared_list_get_hierarchy_sep,
 		mailbox_list_default_get_vname,
 		mailbox_list_default_get_storage_name,
@@ -354,10 +297,10 @@ struct mailbox_list shared_mailbox_list = {
 		NULL,
 		shared_list_subscriptions_refresh,
 		shared_list_set_subscribed,
-		shared_list_create_mailbox_dir,
 		shared_list_delete_mailbox,
 		shared_list_delete_dir,
 		shared_list_delete_symlink,
-		shared_list_rename_mailbox
+		shared_list_rename_mailbox,
+		NULL, NULL, NULL, NULL
 	}
 };

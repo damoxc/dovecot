@@ -185,7 +185,8 @@ static void passwd_iterate_next(struct userdb_iterate_context *_ctx)
 	_ctx->callback(NULL, _ctx->context);
 }
 
-static void passwd_iterate_next_timeout(void *context ATTR_UNUSED)
+static void ATTR_NULL(1)
+passwd_iterate_next_timeout(void *context ATTR_UNUSED)
 {
 	timeout_remove(&cur_userdb_iter_to);
 	passwd_iterate_next(&cur_userdb_iter->ctx);
@@ -201,8 +202,8 @@ static int passwd_iterate_deinit(struct userdb_iterate_context *_ctx)
 	i_free(ctx);
 
 	if (cur_userdb_iter != NULL) {
-		cur_userdb_iter_to =
-			timeout_add(0, passwd_iterate_next_timeout, NULL);
+		cur_userdb_iter_to = timeout_add(0, passwd_iterate_next_timeout,
+						 (void *)NULL);
 	}
 	return ret;
 }

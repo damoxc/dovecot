@@ -13,8 +13,7 @@ static const char *cydir_mail_get_path(struct mail *mail)
 {
 	const char *dir;
 
-	dir = mailbox_list_get_path(mail->box->list, mail->box->name,
-				    MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	dir = mailbox_get_path(mail->box);
 	return t_strdup_printf("%s/%u.", dir, mail->uid);
 }
 
@@ -151,6 +150,7 @@ struct mail_vfuncs cydir_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	cydir_mail_get_stream,
+	index_mail_get_binary_stream,
 	index_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,

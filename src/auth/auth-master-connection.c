@@ -10,7 +10,7 @@
 #include "hostpid.h"
 #include "hex-binary.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "ipwd.h"
@@ -88,19 +88,19 @@ void auth_master_request_callback(struct auth_stream_reply *reply,
 	iov[1].iov_base = "\n";
 	iov[1].iov_len = 1;
 
-	(void)o_stream_sendv(conn->output, iov, 2);
+	o_stream_nsendv(conn->output, iov, 2);
 }
 
 static bool
 master_input_request(struct auth_master_connection *conn, const char *args)
 {
 	struct auth_client_connection *client_conn;
-	const char *const *list;
+	const char *const *list, *const *params;
 	unsigned int id, client_pid, client_id;
 	uint8_t cookie[MASTER_AUTH_COOKIE_SIZE];
 	buffer_t buf;
 
-	/* <id> <client-pid> <client-id> <cookie> */
+	/* <id> <client-pid> <client-id> <cookie> [<parameters>] */
 	list = t_strsplit_tab(args);
 	if (str_array_length(list) < 4 ||
 	    str_to_uint(list[0], &id) < 0 ||
@@ -110,29 +110,30 @@ master_input_request(struct auth_master_connection *conn, const char *args)
 		return FALSE;
 	}
 
-	buffer_create_data(&buf, cookie, sizeof(cookie));
+	buffer_create_from_data(&buf, cookie, sizeof(cookie));
 	if (hex_to_binary(list[3], &buf) < 0) {
 		i_error("BUG: Master sent broken REQUEST cookie");
 		return FALSE;
 	}
+	params = list + 4;
 
 	client_conn = auth_client_connection_lookup(client_pid);
 	if (client_conn == NULL) {
 		i_error("Master requested auth for nonexistent client %u",
 			client_pid);
-		(void)o_stream_send_str(conn->output,
-					t_strdup_printf("FAIL\t%u\n", id));
+		o_stream_nsend_str(conn->output,
+				   t_strdup_printf("FAIL\t%u\n", id));
 	} else if (memcmp(client_conn->cookie, cookie, sizeof(cookie)) != 0) {
 		i_error("Master requested auth for client %u with invalid cookie",
 			client_pid);
-		(void)o_stream_send_str(conn->output,
-					t_strdup_printf("FAIL\t%u\n", id));
+		o_stream_nsend_str(conn->output,
+				   t_strdup_printf("FAIL\t%u\n", id));
 	} else if (!auth_request_handler_master_request(
-			client_conn->request_handler, conn, id, client_id)) {
+			client_conn->request_handler, conn, id, client_id, params)) {
 		i_error("Master requested auth for non-login client %u",
 			client_pid);
-		(void)o_stream_send_str(conn->output,
-					t_strdup_printf("FAIL\t%u\n", id));
+		o_stream_nsend_str(conn->output,
+				   t_strdup_printf("FAIL\t%u\n", id));
 	}
 	return TRUE;
 }
@@ -285,7 +286,7 @@ user_callback(enum userdb_result result,
 	}
 
 	str_append_c(str, '\n');
-	(void)o_stream_send(conn->output, str_data(str), str_len(str));
+	o_stream_nsend(conn->output, str_data(str), str_len(str));
 
 	auth_request_unref(&auth_request);
 	auth_master_connection_unref(&conn);
@@ -323,7 +324,7 @@ static void pass_callback_finish(struct auth_request *auth_request,
 	switch (result) {
 	case PASSDB_RESULT_OK:
 		str_printfa(str, "PASS\t%u\tuser=", auth_request->id);
-		str_tabescape_write(str, auth_request->user);
+		str_append_tabescaped(str, auth_request->user);
 		if (reply != NULL) {
 			str_append_c(str, '\t');
 			str_append(str, auth_stream_reply_export(reply));
@@ -345,7 +346,7 @@ static void pass_callback_finish(struct auth_request *auth_request,
 		i_debug("passdb out: %s", str_c(str));
 
 	str_append_c(str, '\n');
-	(void)o_stream_send(conn->output, str_data(str), str_len(str));
+	o_stream_nsend(conn->output, str_data(str), str_len(str));
 
 	auth_request_unref(&auth_request);
 	auth_master_connection_unref(&conn);
@@ -408,14 +409,14 @@ master_input_pass(struct auth_master_connection *conn, const char *args)
 			return FALSE;
 		auth_request_log_info(auth_request, "passdb", "%s", error);
 		pass_callback(PASSDB_RESULT_USER_UNKNOWN,
-			      NULL, 0, auth_request);
+			      &uchar_nul, 0, auth_request);
 	} else if (conn->userdb_restricted_uid != 0) {
 		/* no permissions to do this lookup */
 		auth_request_log_error(auth_request, "passdb",
 			"Auth client doesn't have permissions to do "
 			"a PASS lookup: %s", auth_restricted_reason(conn));
 		pass_callback(PASSDB_RESULT_INTERNAL_FAILURE,
-			      NULL, 0, auth_request);
+			      &uchar_nul, 0, auth_request);
 	} else {
 		auth_request_set_state(auth_request,
 				       AUTH_REQUEST_STATE_MECH_CONTINUE);
@@ -471,7 +472,7 @@ static void master_input_list_callback(const char *user, void *context)
 			str = t_strdup_printf("DONE\t%u\t%s\n",
 					      ctx->auth_request->id,
 					      ctx->failed ? "fail" : "");
-			(void)o_stream_send_str(ctx->conn->output, str);
+			o_stream_nsend_str(ctx->conn->output, str);
 			master_input_list_finish(ctx);
 			return;
 		}
@@ -521,7 +522,7 @@ master_input_list(struct auth_master_connection *conn, const char *args)
 		i_error("Auth client doesn't have permissions to list users: %s",
 			auth_restricted_reason(conn));
 		str = t_strdup_printf("DONE\t%u\tfail\n", id);
-		(void)o_stream_send_str(conn->output, str);
+		o_stream_nsend_str(conn->output, str);
 		return TRUE;
 	}
 
@@ -530,7 +531,7 @@ master_input_list(struct auth_master_connection *conn, const char *args)
 	if (userdb == NULL) {
 		i_error("Trying to iterate users, but userdbs don't support it");
 		str = t_strdup_printf("DONE\t%u\tfail\n", id);
-		(void)o_stream_send_str(conn->output, str);
+		o_stream_nsend_str(conn->output, str);
 		return TRUE;
 	}
 
@@ -720,6 +721,7 @@ auth_master_connection_create(struct auth *auth, int fd,
 	conn->auth = auth;
 	conn->input = i_stream_create_fd(fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	o_stream_set_flush_callback(conn->output, master_output, conn);
 	conn->io = io_add(fd, IO_READ, master_input, conn);
 	conn->userdb_only = userdb_only;
@@ -728,7 +730,7 @@ auth_master_connection_create(struct auth *auth, int fd,
 			       AUTH_MASTER_PROTOCOL_MAJOR_VERSION,
 			       AUTH_MASTER_PROTOCOL_MINOR_VERSION,
 			       my_pid);
-	(void)o_stream_send_str(conn->output, line);
+	o_stream_nsend_str(conn->output, line);
 	DLLIST_PREPEND(&auth_master_connections, conn);
 
 	if (auth_master_connection_set_permissions(conn, socket_st) < 0) {

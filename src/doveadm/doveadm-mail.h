@@ -5,9 +5,9 @@
 #include "doveadm.h"
 #include "doveadm-util.h"
 #include "module-context.h"
+#include "mail-error.h"
 #include "mail-storage-service.h"
 
-enum mail_error;
 struct mailbox;
 struct mail_storage;
 struct mail_user;
@@ -57,7 +57,7 @@ struct doveadm_mail_cmd_context {
 	struct mail_user *cur_mail_user;
 	struct doveadm_mail_cmd_vfuncs v;
 
-	ARRAY_DEFINE(module_contexts, union doveadm_mail_cmd_module_context *);
+	ARRAY(union doveadm_mail_cmd_module_context *) module_contexts;
 
 	/* if non-zero, exit with this code */
 	int exit_code;

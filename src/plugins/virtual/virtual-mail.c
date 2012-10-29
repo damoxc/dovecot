@@ -15,7 +15,7 @@ struct virtual_mail {
 	/* currently active mail */
 	struct mail *backend_mail;
 	/* all allocated mails */
-	ARRAY_DEFINE(backend_mails, struct mail *);
+	ARRAY(struct mail *) backend_mails;
 
 	/* mail is lost if backend_mail doesn't point to correct mail */
 	unsigned int lost:1;
@@ -33,14 +33,14 @@ virtual_mail_alloc(struct mailbox_transaction_context *t,
 	pool = pool_alloconly_create("vmail", 1024);
 	vmail = p_new(pool, struct virtual_mail, 1);
 	vmail->imail.mail.pool = pool;
+	vmail->imail.mail.data_pool =
+		pool_alloconly_create("virtual index_mail", 512);
 	vmail->imail.mail.v = virtual_mail_vfuncs;
 	vmail->imail.mail.mail.box = t->box;
 	vmail->imail.mail.mail.transaction = t;
 	array_create(&vmail->imail.mail.module_contexts, pool,
 		     sizeof(void *), 5);
 
-	vmail->imail.data_pool =
-		pool_alloconly_create("virtual index_mail", 512);
 	vmail->imail.ibox = INDEX_STORAGE_CONTEXT(t->box);
 
 	vmail->wanted_fields = wanted_fields;
@@ -67,7 +67,7 @@ static void virtual_mail_free(struct mail *mail)
 	if (vmail->wanted_headers != NULL)
 		mailbox_header_lookup_unref(&vmail->wanted_headers);
 
-	pool_unref(&vmail->imail.data_pool);
+	pool_unref(&vmail->imail.mail.data_pool);
 	pool_unref(&vmail->imail.mail.pool);
 }
 
@@ -124,10 +124,10 @@ static void virtual_mail_set_seq(struct mail *mail, uint32_t seq, bool saving)
 	bbox = virtual_backend_box_lookup(mbox, vrec->mailbox_id);
 	vmail->backend_mail = backend_mail_find(vmail, bbox->box);
 	if (vmail->backend_mail == NULL)
-		virtual_mail_set_backend_mail(mail, bbox);
+		(void)virtual_mail_set_backend_mail(mail, bbox);
 	vmail->lost = !mail_set_uid(vmail->backend_mail, vrec->real_uid);
 	memset(&vmail->imail.data, 0, sizeof(vmail->imail.data));
-	p_clear(vmail->imail.data_pool);
+	p_clear(vmail->imail.mail.data_pool);
 
 	vmail->imail.data.seq = seq;
 	mail->seq = seq;
@@ -439,6 +439,7 @@ struct mail_vfuncs virtual_mail_vfuncs = {
 	virtual_mail_get_headers,
 	virtual_mail_get_header_stream,
 	virtual_mail_get_stream,
+	index_mail_get_binary_stream,
 	virtual_mail_get_special,
 	virtual_mail_get_real_mail,
 	index_mail_update_flags,

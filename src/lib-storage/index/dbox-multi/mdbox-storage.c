@@ -52,7 +52,7 @@ mdbox_storage_create(struct mail_storage *_storage, struct mail_namespace *ns,
 	_storage->unique_root_dir =
 		p_strdup(_storage->pool, ns->list->set.root_dir);
 
-	dir = mailbox_list_get_path(ns->list, NULL, MAILBOX_LIST_PATH_TYPE_DIR);
+	dir = mailbox_list_get_root_forced(ns->list, MAILBOX_LIST_PATH_TYPE_DIR);
 	storage->storage_dir = p_strconcat(_storage->pool, dir,
 					   "/"MDBOX_GLOBAL_DIR_NAME, NULL);
 	storage->alt_storage_dir = p_strconcat(_storage->pool,
@@ -203,6 +203,8 @@ int mdbox_read_header(struct mdbox_mailbox *mbox,
 	const void *data;
 	size_t data_size;
 
+	i_assert(mbox->box.opened);
+
 	mail_index_get_header_ext(mbox->box.view, mbox->hdr_ext_id,
 				  &data, &data_size);
 	if (data_size < MDBOX_INDEX_HEADER_MIN_SIZE &&
@@ -244,9 +246,10 @@ void mdbox_update_header(struct mdbox_mailbox *mbox,
 	}
 }
 
-static int mdbox_write_index_header(struct mailbox *box,
-				    const struct mailbox_update *update,
-				    struct mail_index_transaction *trans)
+static int ATTR_NULL(2, 3)
+mdbox_write_index_header(struct mailbox *box,
+			 const struct mailbox_update *update,
+			 struct mail_index_transaction *trans)
 {
 	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)box;
 	struct mail_index_transaction *new_trans = NULL;
@@ -273,10 +276,6 @@ static int mdbox_write_index_header(struct mailbox *box,
 	}
 
 	if (hdr->uid_validity != uid_validity) {
-		if (hdr->uid_validity != 0) {
-			/* UIDVALIDITY change requires index to be reset */
-			mail_index_reset(trans);
-		}
 		mail_index_update_header(trans,
 			offsetof(struct mail_index_header, uid_validity),
 			&uid_validity, sizeof(uid_validity), TRUE);
@@ -441,6 +440,11 @@ struct mailbox mdbox_mailbox = {
 		index_storage_get_status,
 		mdbox_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		mdbox_storage_sync_init,

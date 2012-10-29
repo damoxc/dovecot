@@ -1,7 +1,7 @@
 #ifndef AUTH_MASTER_H
 #define AUTH_MASTER_H
 
-#include "network.h"
+#include "net.h"
 
 enum auth_master_flags {
 	/* Enable logging debug information */
@@ -21,6 +21,7 @@ struct auth_user_reply {
 	gid_t gid;
 	const char *home, *chroot;
 	ARRAY_TYPE(const_string) extra_fields;
+	unsigned int anonymous:1;
 };
 
 struct auth_master_connection *
@@ -53,7 +54,7 @@ void auth_user_fields_parse(const char *const *fields, pool_t pool,
 struct auth_master_user_list_ctx *
 auth_master_user_list_init(struct auth_master_connection *conn,
 			   const char *user_mask,
-			   const struct auth_user_info *info);
+			   const struct auth_user_info *info) ATTR_NULL(3);
 const char *auth_master_user_list_next(struct auth_master_user_list_ctx *ctx);
 unsigned int auth_master_user_list_count(struct auth_master_user_list_ctx *ctx);
 /* Returns -1 if anything failed, 0 if ok */

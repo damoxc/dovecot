@@ -44,13 +44,13 @@ maildir_filename_guess(struct maildir_mailbox *mbox, uint32_t uid,
 	mail_index_lookup_view_flags(view, seq, &flags, &keywords);
 	if (array_count(&keywords) == 0) {
 		*have_flags_r = (flags & MAIL_FLAGS_NONRECENT) != 0;
-		fname = maildir_filename_flags_set(NULL, fname, flags, NULL);
+		fname = maildir_filename_flags_set(fname, flags);
 	} else {
 		*have_flags_r = TRUE;
 		kw_ctx = maildir_keywords_sync_init_readonly(mbox->keywords,
 							     mbox->box.index);
-		fname = maildir_filename_flags_set(kw_ctx, fname,
-						   flags, &keywords);
+		fname = maildir_filename_flags_kw_set(kw_ctx, fname,
+						      flags, &keywords);
 		maildir_keywords_sync_deinit(&kw_ctx);
 	}
 
@@ -167,7 +167,7 @@ static int maildir_create_path(struct mailbox *box, const char *path,
 			       enum mailbox_list_path_type type, bool retry)
 {
 	const struct mailbox_permissions *perm = mailbox_get_permissions(box);
-	const char *p, *parent, *error;
+	const char *p, *parent;
 
 	if (mkdir_chgrp(path, perm->dir_create_mode, perm->file_create_gid,
 			perm->file_create_gid_origin) == 0)
@@ -186,14 +186,12 @@ static int maildir_create_path(struct mailbox *box, const char *path,
 		}
 		/* create index/control root directory */
 		parent = t_strdup_until(path, p);
-		if (mailbox_list_mkdir_root(box->list, parent, type, &error) == 0) {
-			/* should work now, try again */
-			return maildir_create_path(box, path, type, FALSE);
+		if (mailbox_list_mkdir_root(box->list, parent, type) < 0) {
+			mail_storage_copy_list_error(box->storage, box->list);
+			return -1;
 		}
-		/* fall through */
-		mail_storage_set_critical(box->storage,
-			"Couldn't create %s: %s", parent, error);
-		path = parent;
+		/* should work now, try again */
+		return maildir_create_path(box, path, type, FALSE);
 	default:
 		mail_storage_set_critical(box->storage,
 					  "mkdir(%s) failed: %m", path);
@@ -216,13 +214,15 @@ static int maildir_create_subdirs(struct mailbox *box)
 		dirs[i] = t_strconcat(mailbox_get_path(box),
 				      "/", subdirs[i], NULL);
 	}
-	types[i] = MAILBOX_LIST_PATH_TYPE_CONTROL;
-	dirs[i++] = mailbox_list_get_path(box->list, box->name,
-					  MAILBOX_LIST_PATH_TYPE_CONTROL);
-	types[i] = MAILBOX_LIST_PATH_TYPE_INDEX;
-	dirs[i++] = mailbox_list_get_path(box->list, box->name,
-					  MAILBOX_LIST_PATH_TYPE_INDEX);
-	i_assert(i == N_ELEMENTS(dirs));
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_CONTROL, &path) > 0) {
+		types[i] = MAILBOX_LIST_PATH_TYPE_CONTROL;
+		dirs[i++] = path;
+	}
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &path) > 0) {
+		types[i] = MAILBOX_LIST_PATH_TYPE_INDEX;
+		dirs[i++] = path;
+	}
+	i_assert(i <= N_ELEMENTS(dirs));
 
 	for (i = 0; i < N_ELEMENTS(dirs); i++) {
 		path = dirs[i];

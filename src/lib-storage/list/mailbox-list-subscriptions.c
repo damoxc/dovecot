@@ -27,7 +27,7 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 	struct mail_namespace *ns, *default_ns = list->ns;
 	struct mail_namespace *namespaces = default_ns->user->namespaces;
 	struct mailbox_node *node;
-	const char *vname, *ns_name, *list_name;
+	const char *vname, *ns_name, *error;
 	unsigned int len;
 	bool created;
 
@@ -56,13 +56,12 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 	/* When listing shared namespace's subscriptions, we need to
 	   autocreate all the visible child namespaces. their subscriptions
 	   are listed later. */
-	if (ns != NULL && ns->type == NAMESPACE_SHARED &&
+	if (ns != NULL && ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
 	    (ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0) {
 		/* we'll need to get the namespace autocreated.
-		   one easy way is to just ask if a mailbox name under
-		   it is valid, and it gets created */
-		list_name = ns_name + ns->prefix_len;
-		(void)mailbox_list_is_valid_existing_name(list, list_name);
+		   one easy way is to just ask to join a reference and
+		   pattern */
+		(void)mailbox_list_join_refpattern(ns->list, ns_name, "");
 	}
 
 	/* When listing pub/ namespace, skip over the namespace
@@ -88,7 +87,7 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 		name = t_strndup(name, len-1);
 	}
 
-	if (!mailbox_list_is_valid_existing_name(list, name)) {
+	if (!mailbox_list_is_valid_name(list, name, &error)) {
 		/* we'll only get into trouble if we show this */
 		return -1;
 	} else {
@@ -249,14 +248,14 @@ mailbox_list_subscriptions_iter_next(struct mailbox_list_iterate_context *_ctx)
 	struct mailbox_list *list = _ctx->list;
 	struct mailbox_node *node;
 	enum mailbox_info_flags subs_flags;
-	const char *vname, *storage_name;
+	const char *vname, *storage_name, *error;
 	int ret;
 
 	node = mailbox_tree_iterate_next(ctx->iter, &vname);
 	if (node == NULL)
 		return NULL;
 
-	ctx->info.name = vname;
+	ctx->info.vname = vname;
 	subs_flags = node->flags & (MAILBOX_SUBSCRIBED |
 				    MAILBOX_CHILD_SUBSCRIBED);
 
@@ -268,7 +267,7 @@ mailbox_list_subscriptions_iter_next(struct mailbox_list_iterate_context *_ctx)
 	}
 
 	storage_name = mailbox_list_get_storage_name(list, vname);
-	if (!mailbox_list_is_valid_pattern(list, storage_name)) {
+	if (!mailbox_list_is_valid_name(list, storage_name, &error)) {
 		/* broken entry in subscriptions file */
 		ctx->info.flags = MAILBOX_NONEXISTENT;
 	} else if (mailbox_list_mailbox(list, storage_name,

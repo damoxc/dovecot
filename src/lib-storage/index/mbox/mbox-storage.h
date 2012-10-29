@@ -46,6 +46,7 @@ struct mbox_mailbox {
 	unsigned int mbox_lock_id, mbox_global_lock_id;
 	struct timeout *keep_lock_to;
 	bool mbox_writeonly;
+	unsigned int external_transactions;
 
 	uint32_t mbox_ext_idx, md5hdr_ext_idx;
 	struct mbox_index_header mbox_hdr;
@@ -69,14 +70,15 @@ struct mbox_transaction_context {
 	struct mailbox_transaction_context t;
 	union mail_index_transaction_module_context module_ctx;
 
-	unsigned int mbox_lock_id;
+	unsigned int read_lock_id;
+	unsigned int write_lock_id;
 };
 
 extern struct mail_vfuncs mbox_mail_vfuncs;
 extern const char *mbox_hide_headers[], *mbox_save_drop_headers[];
 extern unsigned int mbox_hide_headers_count, mbox_save_drop_headers_count;
 
-int mbox_set_syscall_error(struct mbox_mailbox *mbox, const char *function);
+void mbox_set_syscall_error(struct mbox_mailbox *mbox, const char *function);
 
 struct mailbox_sync_context *
 mbox_storage_sync_init(struct mailbox *box, enum mailbox_sync_flags flags);

@@ -2,9 +2,9 @@
 #define MAIL_DELIVER_H
 
 #include "guid.h"
+#include "mail-types.h"
+#include "mail-error.h"
 
-enum mail_flags;
-enum mail_error;
 struct mail_storage;
 struct mail_save_context;
 struct mailbox;
@@ -13,7 +13,7 @@ struct mail_deliver_session {
 	pool_t pool;
 
 	/* List of INBOX GUIDs where this mail has already been saved to */
-	ARRAY_DEFINE(inbox_guids, guid_128_t);
+	ARRAY(guid_128_t) inbox_guids;
 };
 
 struct mail_deliver_context {
@@ -87,7 +87,7 @@ int mail_deliver_save_open(struct mail_deliver_save_open_context *ctx,
 			   enum mail_error *error_r, const char **error_str_r);
 int mail_deliver_save(struct mail_deliver_context *ctx, const char *mailbox,
 		      enum mail_flags flags, const char *const *keywords,
-		      struct mail_storage **storage_r);
+		      struct mail_storage **storage_r) ATTR_NULL(4);
 void mail_deliver_deduplicate_guid_if_needed(struct mail_deliver_session *session,
 					     struct mail_save_context *save_ctx);
 

@@ -2,7 +2,7 @@
 
 #include "lib.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "str.h"
@@ -151,7 +151,8 @@ static int doveadm_connect(struct doveadm_connection *conn)
 	conn->io = io_add(conn->fd, IO_READ, doveadm_input, conn);
 	conn->input = i_stream_create_fd(conn->fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(conn->fd, (size_t)-1, FALSE);
-	o_stream_send_str(conn->output, DOVEADM_HANDSHAKE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
+	o_stream_nsend_str(conn->output, DOVEADM_HANDSHAKE);
 	return 0;
 }
 
@@ -180,12 +181,12 @@ void doveadm_connection_sync(struct doveadm_connection *conn,
 		/* <flags> <username> <command> [<args>] */
 		cmd = t_str_new(256);
 		str_append_c(cmd, '\t');
-		str_tabescape_write(cmd, username);
+		str_append_tabescaped(cmd, username);
 		str_append(cmd, "\tsync\t-d");
 		if (full)
 			str_append(cmd, "\t-f");
 		str_append_c(cmd, '\n');
-		o_stream_send(conn->output, str_data(cmd), str_len(cmd));
+		o_stream_nsend(conn->output, str_data(cmd), str_len(cmd));
 	}
 }
 
