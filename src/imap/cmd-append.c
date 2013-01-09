@@ -3,12 +3,17 @@
 #include "imap-common.h"
 #include "ioloop.h"
 #include "istream.h"
+#include "istream-chain.h"
 #include "ostream.h"
 #include "str.h"
+#include "imap-resp-code.h"
+#include "istream-binary-converter.h"
+#include "mail-storage-private.h"
 #include "imap-parser.h"
 #include "imap-date.h"
 #include "imap-util.h"
 #include "imap-commands.h"
+#include "imap-msgpart-url.h"
 
 #include <sys/time.h>
 
@@ -26,20 +31,26 @@ struct cmd_append_context {
         struct mailbox_transaction_context *t;
 	time_t started;
 
+	struct istream_chain *catchain;
+	uoff_t cat_msg_size;
+
 	struct istream *input;
-	uoff_t msg_size;
+	struct istream *litinput;
+	uoff_t literal_size;
 
 	struct imap_parser *save_parser;
 	struct mail_save_context *save_ctx;
 	unsigned int count;
 
 	unsigned int message_input:1;
+	unsigned int binary_input:1;
+	unsigned int catenate:1;
 	unsigned int failed:1;
 };
 
 static void cmd_append_finish(struct cmd_append_context *ctx);
 static bool cmd_append_continue_message(struct client_command_context *cmd);
-static bool cmd_append_continue_parsing(struct client_command_context *cmd);
+static bool cmd_append_parse_new_msg(struct client_command_context *cmd);
 
 static const char *get_disconnect_reason(struct cmd_append_context *ctx)
 {
@@ -48,9 +59,9 @@ static const char *get_disconnect_reason(struct cmd_append_context *ctx)
 
 	str_printfa(str, "Disconnected in APPEND (%u msgs, %u secs",
 		    ctx->count, secs);
-	if (ctx->input != NULL) {
+	if (ctx->litinput != NULL) {
 		str_printfa(str, ", %"PRIuUOFF_T"/%"PRIuUOFF_T" bytes",
-			    ctx->input->v_offset, ctx->msg_size);
+			    ctx->litinput->v_offset, ctx->literal_size);
 	}
 	str_append_c(str, ')');
 	return str_c(str);
@@ -103,44 +114,13 @@ static void client_input_append(struct client_command_context *cmd)
 		(void)client_handle_unfinished_cmd(cmd);
 	else
 		client_command_free(&cmd);
-	(void)cmd_sync_delayed(client);
+	cmd_sync_delayed(client);
 	o_stream_uncork(client->output);
 
 	if (client->disconnected)
 		client_destroy(client, NULL);
 	else
 		client_continue_pending_input(client);
-}
-
-/* Returns -1 = error, 0 = need more data, 1 = successful. flags and
-   internal_date may be NULL as a result, but mailbox and msg_size are always
-   set when successful. */
-static int validate_args(const struct imap_arg *args,
-			 const struct imap_arg **flags_r,
-			 const char **internal_date_r, uoff_t *msg_size_r,
-			 bool *nonsync_r)
-{
-	/* [<flags>] */
-	if (!imap_arg_get_list(args, flags_r))
-		*flags_r = NULL;
-	else
-		args++;
-
-	/* [<internal date>] */
-	if (args->type != IMAP_ARG_STRING)
-		*internal_date_r = NULL;
-	else {
-		*internal_date_r = imap_arg_as_astring(args);
-		args++;
-	}
-
-	if (!imap_arg_get_literal_size(args, msg_size_r)) {
-		*nonsync_r = FALSE;
-		return FALSE;
-	}
-
-	*nonsync_r = args->type == IMAP_ARG_LITERAL_SIZE_NONSYNC;
-	return TRUE;
 }
 
 static void cmd_append_finish(struct cmd_append_context *ctx)
@@ -155,6 +135,8 @@ static void cmd_append_finish(struct cmd_append_context *ctx)
 	o_stream_set_flush_callback(ctx->client->output,
 				    client_output, ctx->client);
 
+	if (ctx->litinput != NULL)
+		i_stream_unref(&ctx->litinput);
 	if (ctx->input != NULL)
 		i_stream_unref(&ctx->input);
 	if (ctx->save_ctx != NULL)
@@ -165,75 +147,515 @@ static void cmd_append_finish(struct cmd_append_context *ctx)
 		mailbox_free(&ctx->box);
 }
 
-static bool cmd_append_continue_cancel(struct client_command_context *cmd)
+static void cmd_append_send_literal_continue(struct client *client)
+{
+	o_stream_nsend(client->output, "+ OK\r\n", 6);
+	o_stream_nflush(client->output);
+	o_stream_uncork(client->output);
+	o_stream_cork(client->output);
+}
+
+static int
+cmd_append_catenate_url(struct client_command_context *cmd, const char *caturl)
 {
 	struct cmd_append_context *ctx = cmd->context;
-	size_t size;
+	struct imap_msgpart_url *mpurl;
+	struct imap_msgpart_open_result mpresult;
+	uoff_t newsize;
+	const char *error;
+	int ret;
 
-	if (cmd->cancel) {
-		cmd_append_finish(ctx);
-		return TRUE;
+	if (ctx->failed)
+		return -1;
+
+	ret = imap_msgpart_url_parse(cmd->client->user, cmd->client->mailbox,
+				     caturl, &mpurl, &error);
+	if (ret < 0) {
+		client_send_storage_error(cmd, ctx->storage);
+		return -1;
+	}
+	if (ret == 0) {
+		/* invalid url, abort */
+		client_send_tagline(cmd,
+			t_strdup_printf("NO [BADURL %s] %s.", caturl, error));
+		return -1;
 	}
 
-	(void)i_stream_read(ctx->input);
-	(void)i_stream_get_data(ctx->input, &size);
-	i_stream_skip(ctx->input, size);
-
-	if (cmd->client->input->closed) {
-		cmd_append_finish(ctx);
-		return TRUE;
+	/* catenate URL */
+	ret = imap_msgpart_url_read_part(mpurl, &mpresult, &error);
+	if (ret < 0) {
+		client_send_storage_error(cmd, ctx->storage);
+		return -1;
+	}
+	if (ret == 0) {
+		/* invalid url, abort */
+		client_send_tagline(cmd,
+			t_strdup_printf("NO [BADURL %s] %s.", caturl, error));
+		return -1;
+	}
+	if (mpresult.size == 0) {
+		/* empty input */
+		imap_msgpart_url_free(&mpurl);
+		return 0;
 	}
 
-	if (ctx->input->v_offset == ctx->msg_size) {
-		/* finished, but with MULTIAPPEND and LITERAL+ we may get
-		   more messages. */
-		i_stream_unref(&ctx->input);
-		ctx->input = NULL;
-
-		ctx->message_input = FALSE;
-		imap_parser_reset(ctx->save_parser);
-		cmd->func = cmd_append_continue_parsing;
-		return cmd_append_continue_parsing(cmd);
+	newsize = ctx->cat_msg_size + mpresult.size;
+	if (newsize < ctx->cat_msg_size) {
+		client_send_tagline(cmd,
+			"NO [TOOBIG] Composed message grows too big.");
+		imap_msgpart_url_free(&mpurl);
+		return -1;
 	}
 
-	return FALSE;
+	ctx->cat_msg_size = newsize;
+	/* add this input stream to chain */
+	i_stream_chain_append(ctx->catchain, mpresult.input);
+	/* save by reading the chain stream */
+	while (!i_stream_is_eof(mpresult.input)) {
+		ret = i_stream_read(mpresult.input);
+		i_assert(ret != 0); /* we can handle only blocking input here */
+		if (mailbox_save_continue(ctx->save_ctx) < 0 || ret == -1)
+			break;
+	}
+
+	if (mpresult.input->stream_errno != 0) {
+		errno = mpresult.input->stream_errno;
+		mail_storage_set_critical(ctx->box->storage,
+			"read(%s) failed: %m (for CATENATE URL %s)",
+			i_stream_get_name(mpresult.input), caturl);
+		client_send_storage_error(cmd, ctx->storage);
+		ret = -1;
+	} else if (!mpresult.input->eof) {
+		/* save failed */
+		client_send_storage_error(cmd, ctx->storage);
+		ret = -1;
+	} else {
+		ret = 0;
+	}
+	imap_msgpart_url_free(&mpurl);
+	return ret;
 }
 
-static bool cmd_append_cancel(struct cmd_append_context *ctx, bool nonsync)
+static void cmd_append_catenate_text(struct client_command_context *cmd)
 {
-	ctx->failed = TRUE;
+	struct cmd_append_context *ctx = cmd->context;
 
-	if (!nonsync) {
-		cmd_append_finish(ctx);
-		return TRUE;
+	if (ctx->literal_size > (uoff_t)-1 - ctx->cat_msg_size &&
+	    !ctx->failed) {
+		client_send_tagline(cmd,
+			"NO [TOOBIG] Composed message grows too big.");
+		ctx->failed = TRUE;
 	}
 
-	/* we have to read the nonsynced literal so we don't treat the message
-	   data as commands. */
-	ctx->input = i_stream_create_limit(ctx->client->input, ctx->msg_size);
-
-	ctx->message_input = TRUE;
-	ctx->cmd->func = cmd_append_continue_cancel;
-	ctx->cmd->context = ctx;
-	return cmd_append_continue_cancel(ctx->cmd);
+	/* save the mail */
+	ctx->cat_msg_size += ctx->literal_size;
+	if (ctx->literal_size == 0) {
+		/* zero length literal. RFC doesn't explicitly specify
+		   what should be done with this, so we'll simply
+		   handle it by skipping the empty text part. */
+		ctx->litinput = i_stream_create_from_data("", 0);
+		ctx->litinput->eof = TRUE;
+	} else {
+		ctx->litinput = i_stream_create_limit(cmd->client->input,
+						      ctx->literal_size);
+		i_stream_chain_append(ctx->catchain, ctx->litinput);
+	}
 }
 
-static bool cmd_append_continue_parsing(struct client_command_context *cmd)
+static int
+cmd_append_catenate(struct client_command_context *cmd,
+		    const struct imap_arg *args, bool *nonsync_r)
+{
+	struct cmd_append_context *ctx = cmd->context;
+	const char *catpart;
+
+	*nonsync_r = FALSE;
+
+	/* Handle URLs until a TEXT literal is encountered */
+	while (imap_arg_get_atom(args, &catpart)) {
+		const char *caturl;
+
+		if (strcasecmp(catpart, "URL") == 0 ) {
+			/* URL <url> */ 
+			args++;
+			if (!imap_arg_get_astring(args, &caturl))
+				break;
+			if (cmd_append_catenate_url(cmd, caturl) < 0) {
+				/* delay failure until we can stop
+				   parsing input */
+				ctx->failed = TRUE;
+			}
+		} else if (strcasecmp(catpart, "TEXT") == 0) {
+			/* TEXT <literal> */
+			args++;
+			if (!imap_arg_get_literal_size(args, &ctx->literal_size))
+				break;
+			if (args->literal8 && !ctx->binary_input &&
+			    !ctx->failed) {
+				client_send_tagline(cmd,
+					"NO ["IMAP_RESP_CODE_UNKNOWN_CTE"] "
+					"Binary input allowed only when the first part is binary.");
+				ctx->failed = TRUE;
+			}
+			*nonsync_r = args->type == IMAP_ARG_LITERAL_SIZE_NONSYNC;
+			cmd_append_catenate_text(cmd);
+			return 1;
+		} else {
+			break;
+		}
+		args++;
+	}
+
+	if (IMAP_ARG_IS_EOL(args)) {
+		/* ")" */
+		return 0;
+	}
+	if (!ctx->failed)
+		client_send_command_error(cmd, "Invalid arguments.");
+	cmd->client->input_skip_line = TRUE;
+	return -1;
+}
+
+static void cmd_append_finish_catenate(struct client_command_context *cmd)
+{
+	struct cmd_append_context *ctx = cmd->context;
+
+	i_stream_chain_append_eof(ctx->catchain);
+	i_stream_unref(&ctx->input);
+	ctx->catenate = FALSE;
+	ctx->catchain = NULL;
+
+	if (ctx->failed) {
+		/* APPEND has already failed */
+		if (ctx->save_ctx != NULL)
+			mailbox_save_cancel(&ctx->save_ctx);
+	} else {
+		/* do mailbox_save_continue() once more after appending EOF,
+		   to finish any pending reads */
+		(void)mailbox_save_continue(ctx->save_ctx);
+		if (mailbox_save_finish(&ctx->save_ctx) < 0) {
+			client_send_storage_error(cmd, ctx->storage);
+			ctx->failed = TRUE;
+		}
+	}
+}
+
+static bool cmd_append_continue_catenate(struct client_command_context *cmd)
 {
 	struct client *client = cmd->client;
 	struct cmd_append_context *ctx = cmd->context;
 	const struct imap_arg *args;
+	const char *msg;
+	bool fatal, nonsync = FALSE;
+	int ret;
+
+	if (cmd->cancel) {
+		/* cancel the command immediately (disconnection) */
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+
+	/* we're parsing inside CATENATE (..) list after handling a TEXT part.
+	   it's fine that this would need to fully fit into input buffer
+	   (although clients attempting to DoS could simply insert an extra
+	   {1+} between the URLs) */
+	ret = imap_parser_read_args(ctx->save_parser, 0,
+				    IMAP_PARSE_FLAG_LITERAL_SIZE |
+				    IMAP_PARSE_FLAG_LITERAL8 |
+				    IMAP_PARSE_FLAG_INSIDE_LIST, &args);
+	if (ret == -1) {
+		msg = imap_parser_get_error(ctx->save_parser, &fatal);
+		if (fatal)
+			client_disconnect_with_error(client, msg);
+		else if (!ctx->failed)
+			client_send_command_error(cmd, msg);
+		client->input_skip_line = TRUE;
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+	if (ret < 0) {
+		/* need more data */
+		return FALSE;
+	}
+
+	if ((ret = cmd_append_catenate(cmd, args, &nonsync)) < 0) {
+		/* invalid parameters, abort immediately */
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+
+	if (ret == 0) {
+		/* ")" */
+		cmd_append_finish_catenate(cmd);
+
+		/* last catenate part */
+		imap_parser_reset(ctx->save_parser);
+		cmd->func = cmd_append_parse_new_msg;
+		return cmd_append_parse_new_msg(cmd);
+	}
+
+	/* TEXT <literal> */
+
+	/* after literal comes CRLF, if we fail make sure we eat it away */
+	client->input_skip_line = TRUE;
+
+	if (!nonsync) {
+		if (ctx->failed) {
+			/* tagline was already sent, we can abort here */
+			cmd_append_finish(ctx);
+			return TRUE;
+		}
+		cmd_append_send_literal_continue(client);
+	}
+
+	i_assert(ctx->litinput != NULL);
+	ctx->message_input = TRUE;
+	cmd->func = cmd_append_continue_message;
+	return cmd_append_continue_message(cmd);
+}
+
+static int
+cmd_append_handle_args(struct client_command_context *cmd,
+		       const struct imap_arg *args, bool *nonsync_r)
+{
+	struct client *client = cmd->client;
+	struct cmd_append_context *ctx = cmd->context;
 	const struct imap_arg *flags_list;
+	const struct imap_arg *cat_list = NULL;
 	enum mail_flags flags;
 	const char *const *keywords_list;
 	struct mail_keywords *keywords;
-	const char *internal_date_str, *msg;
+	struct istream *input;
+	const char *internal_date_str;
 	time_t internal_date;
 	int ret, timezone_offset;
-	unsigned int save_count;
-	bool nonsync, fatal;
+	bool valid;
 
+	/* [<flags>] */
+	if (!imap_arg_get_list(args, &flags_list))
+		flags_list = NULL;
+	else
+		args++;
+
+	/* [<internal date>] */
+	if (args->type != IMAP_ARG_STRING)
+		internal_date_str = NULL;
+	else {
+		internal_date_str = imap_arg_as_astring(args);
+		args++;
+	}
+
+	/* <message literal> | CATENATE (..) */
+	valid = FALSE;
+	*nonsync_r = FALSE;
+	ctx->catenate = FALSE;
+	if (imap_arg_atom_equals(args, "CATENATE")) {
+		args++;
+		if (imap_arg_get_list(args, &cat_list)) {
+			valid = TRUE;
+			ctx->catenate = TRUE;
+		}
+		/* We'll do BINARY conversion only if the CATENATE's first
+		   part is a literal8. If it doesn't and a literal8 is seen
+		   later we'll abort the append with UNKNOWN-CTE. */
+		ctx->binary_input = imap_arg_atom_equals(&cat_list[0], "TEXT") &&
+			cat_list[1].literal8;
+
+	} else if (imap_arg_get_literal_size(args, &ctx->literal_size)) {
+		*nonsync_r = args->type == IMAP_ARG_LITERAL_SIZE_NONSYNC;
+		ctx->binary_input = args->literal8;
+		valid = TRUE;
+	}
+	/* we parsed the args only up to here. */
+	i_assert(IMAP_ARG_IS_EOL(&args[1]));
+
+	if (!valid) {
+		client->input_skip_line = TRUE;
+		if (!ctx->failed)
+			client_send_command_error(cmd, "Invalid arguments.");
+		return -1;
+	}
+
+	if (flags_list == NULL || ctx->failed) {
+		flags = 0;
+		keywords = NULL;
+	} else {
+		if (!client_parse_mail_flags(cmd, flags_list,
+					     &flags, &keywords_list))
+			return -1;
+		if (keywords_list == NULL)
+			keywords = NULL;
+		else if (mailbox_keywords_create(ctx->box, keywords_list,
+						 &keywords) < 0) {
+			/* invalid keywords - delay failure */
+			client_send_storage_error(cmd, ctx->storage);
+			ctx->failed = TRUE;
+		}
+	}
+
+	if (internal_date_str == NULL || ctx->failed) {
+		/* no time given, default to now. */
+		internal_date = (time_t)-1;
+		timezone_offset = 0;
+	} else if (!imap_parse_datetime(internal_date_str,
+					&internal_date, &timezone_offset)) {
+		client_send_command_error(cmd, "Invalid internal date.");
+		return -1;
+	}
+
+	if (internal_date != (time_t)-1 &&
+	    internal_date > ioloop_time + INTERNALDATE_MAX_FUTURE_SECS) {
+		/* the client specified a time in the future, set it to now. */
+		internal_date = (time_t)-1;
+		timezone_offset = 0;
+	}
+
+	if (cat_list != NULL) {
+		ctx->cat_msg_size = 0;
+		ctx->input = i_stream_create_chain(&ctx->catchain);
+	} else {
+		if (ctx->literal_size == 0) {
+			/* no message data, abort */
+			if (!ctx->failed) {
+				client_send_tagline(cmd,
+					"NO Can't save a zero byte message.");
+			}
+			return -1;
+		}
+		ctx->litinput = i_stream_create_limit(client->input, ctx->literal_size);
+		ctx->input = ctx->litinput;
+		i_stream_ref(ctx->input);
+	}
+	if (ctx->binary_input) {
+		input = i_stream_create_binary_converter(ctx->input);
+		i_stream_unref(&ctx->input);
+		ctx->input = input;
+	}
+
+	if (!ctx->failed) {
+		/* save the mail */
+		ctx->save_ctx = mailbox_save_alloc(ctx->t);
+		mailbox_save_set_flags(ctx->save_ctx, flags, keywords);
+		if (keywords != NULL)
+			mailbox_keywords_unref(&keywords);
+		mailbox_save_set_received_date(ctx->save_ctx,
+					       internal_date, timezone_offset);
+		if (mailbox_save_begin(&ctx->save_ctx, ctx->input) < 0) {
+			/* save initialization failed */
+			client_send_storage_error(cmd, ctx->storage);
+			ctx->failed = TRUE;
+		}
+	}
+	ctx->count++;
+
+	if (cat_list == NULL) {
+		/* normal APPEND */
+		return 1;
+	} else if ((ret = cmd_append_catenate(cmd, cat_list, nonsync_r)) < 0) {
+		/* invalid parameters, abort immediately */
+		return -1;
+	} else if (ret == 0) {
+		/* CATENATE consisted only of URLs */
+		return 0;
+	} else {
+		/* TEXT part found from CATENATE */
+		return 1;
+	}
+}
+
+static bool cmd_append_finish_parsing(struct client_command_context *cmd)
+{
+	struct client *client = cmd->client;
+	struct cmd_append_context *ctx = cmd->context;
+	enum mailbox_sync_flags sync_flags;
+	enum imap_sync_flags imap_flags;
+	struct mail_transaction_commit_changes changes;
+	unsigned int save_count;
+	string_t *msg;
+	int ret;
+
+	/* eat away the trailing CRLF */
+	client->input_skip_line = TRUE;
+
+	if (ctx->failed) {
+		/* we failed earlier, error message is sent */
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+	if (ctx->count == 0) {
+		client_send_command_error(cmd, "Missing message size.");
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+
+	ret = mailbox_transaction_commit_get_changes(&ctx->t, &changes);
+	if (ret < 0) {
+		client_send_storage_error(cmd, ctx->storage);
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+
+	msg = t_str_new(256);
+	save_count = seq_range_count(&changes.saved_uids);
+	if (save_count == 0 || changes.no_read_perm) {
+		/* not supported by backend (virtual) */
+		str_append(msg, "OK Append completed.");
+	} else {
+		i_assert(ctx->count == save_count);
+		str_printfa(msg, "OK [APPENDUID %u ",
+			    changes.uid_validity);
+		imap_write_seq_range(msg, &changes.saved_uids);
+		str_append(msg, "] Append completed.");
+	}
+	pool_unref(&changes.pool);
+
+	if (ctx->box == cmd->client->mailbox) {
+		sync_flags = 0;
+		imap_flags = IMAP_SYNC_FLAG_SAFE;
+	} else {
+		sync_flags = MAILBOX_SYNC_FLAG_FAST;
+		imap_flags = 0;
+	}
+
+	cmd_append_finish(ctx);
+	return cmd_sync(cmd, sync_flags, imap_flags, str_c(msg));
+}
+
+static bool cmd_append_args_can_stop(const struct imap_arg *args)
+{
+	if (args->type == IMAP_ARG_EOL)
+		return TRUE;
+
+	/* [(flags)] ["internal date"] <message literal> | CATENATE (..) */
+	if (args->type == IMAP_ARG_LIST)
+		args++;
+	if (args->type == IMAP_ARG_STRING)
+		args++;
+
+	if (args->type == IMAP_ARG_LITERAL_SIZE ||
+	    args->type == IMAP_ARG_LITERAL_SIZE_NONSYNC)
+		return TRUE;
+	if (imap_arg_atom_equals(args, "CATENATE") &&
+	    args[1].type == IMAP_ARG_LIST)
+		return TRUE;
+	return FALSE;
+}
+
+static bool cmd_append_parse_new_msg(struct client_command_context *cmd)
+{
+	struct client *client = cmd->client;
+	struct cmd_append_context *ctx = cmd->context;
+	const struct imap_arg *args;
+	const char *msg;
+	unsigned int arg_min_count;
+	bool fatal, nonsync;
+	int ret;
+
+	/* this function gets called 1) after parsing APPEND <mailbox> and
+	   2) with MULTIAPPEND extension after already saving one or more
+	   mails. */
 	if (cmd->cancel) {
+		/* cancel the command immediately (disconnection) */
 		cmd_append_finish(ctx);
 		return TRUE;
 	}
@@ -241,9 +663,15 @@ static bool cmd_append_continue_parsing(struct client_command_context *cmd)
 	/* if error occurs, the CRLF is already read. */
 	client->input_skip_line = FALSE;
 
-	/* [<flags>] [<internal date>] <message literal> */
-	ret = imap_parser_read_args(ctx->save_parser, 0,
-				    IMAP_PARSE_FLAG_LITERAL_SIZE, &args);
+	/* parse the entire line up to the first message literal, or in case
+	   the input buffer is full of MULTIAPPEND CATENATE URLs, parse at
+	   least until the beginning of the next message */
+	arg_min_count = 1;
+	do {
+		ret = imap_parser_read_args(ctx->save_parser, arg_min_count++,
+					    IMAP_PARSE_FLAG_LITERAL_SIZE |
+					    IMAP_PARSE_FLAG_LITERAL8, &args);
+	} while (ret > 0 && !cmd_append_args_can_stop(args));
 	if (ret == -1) {
 		if (!ctx->failed) {
 			msg = imap_parser_get_error(ctx->save_parser, &fatal);
@@ -262,138 +690,39 @@ static bool cmd_append_continue_parsing(struct client_command_context *cmd)
 
 	if (IMAP_ARG_IS_EOL(args)) {
 		/* last message */
-		enum mailbox_sync_flags sync_flags;
-		enum imap_sync_flags imap_flags;
-		struct mail_transaction_commit_changes changes;
-		string_t *msg;
-
-		/* eat away the trailing CRLF */
-		client->input_skip_line = TRUE;
-
-		if (ctx->failed) {
-			/* we failed earlier, error message is sent */
-			cmd_append_finish(ctx);
-			return TRUE;
-		}
-		if (ctx->count == 0) {
-			client_send_tagline(cmd, "BAD Missing message size.");
-			cmd_append_finish(ctx);
-			return TRUE;
-		}
-
-		ret = mailbox_transaction_commit_get_changes(&ctx->t, &changes);
-		if (ret < 0) {
-			client_send_storage_error(cmd, ctx->storage);
-			cmd_append_finish(ctx);
-			return TRUE;
-		}
-
-		msg = t_str_new(256);
-		save_count = seq_range_count(&changes.saved_uids);
-		if (save_count == 0 || changes.no_read_perm) {
-			/* not supported by backend (virtual) */
-			str_append(msg, "OK Append completed.");
-		} else {
-			i_assert(ctx->count == save_count);
-			str_printfa(msg, "OK [APPENDUID %u ",
-				    changes.uid_validity);
-			imap_write_seq_range(msg, &changes.saved_uids);
-			str_append(msg, "] Append completed.");
-		}
-		pool_unref(&changes.pool);
-
-		if (ctx->box == cmd->client->mailbox) {
-			sync_flags = 0;
-			imap_flags = IMAP_SYNC_FLAG_SAFE;
-		} else {
-			sync_flags = MAILBOX_SYNC_FLAG_FAST;
-			imap_flags = 0;
-		}
-
-		cmd_append_finish(ctx);
-		return cmd_sync(cmd, sync_flags, imap_flags, str_c(msg));
+		return cmd_append_finish_parsing(cmd);
 	}
 
-	if (!validate_args(args, &flags_list, &internal_date_str,
-			   &ctx->msg_size, &nonsync)) {
-		client_send_command_error(cmd, "Invalid arguments.");
-		client->input_skip_line = TRUE;
-		return cmd_append_cancel(ctx, nonsync);
-	}
-
-	if (ctx->failed) {
-		/* we failed earlier, make sure we just eat nonsync-literal
-		   if it's given. */
-		return cmd_append_cancel(ctx, nonsync);
-	}
-
-	if (flags_list != NULL) {
-		if (!client_parse_mail_flags(cmd, flags_list,
-					     &flags, &keywords_list))
-			return cmd_append_cancel(ctx, nonsync);
-		if (keywords_list == NULL)
-			keywords = NULL;
-		else if (mailbox_keywords_create(ctx->box, keywords_list,
-						 &keywords) < 0) {
-			client_send_storage_error(cmd, ctx->storage);
-			return cmd_append_cancel(ctx, nonsync);
-		}
-	} else {
-		flags = 0;
-		keywords = NULL;
-	}
-
-	if (internal_date_str == NULL) {
-		/* no time given, default to now. */
-		internal_date = (time_t)-1;
-		timezone_offset = 0;
-	} else if (!imap_parse_datetime(internal_date_str,
-					&internal_date, &timezone_offset)) {
-		client_send_tagline(cmd, "BAD Invalid internal date.");
-		return cmd_append_cancel(ctx, nonsync);
-	}
-
-	if (internal_date != (time_t)-1 &&
-	    internal_date > ioloop_time + INTERNALDATE_MAX_FUTURE_SECS) {
-		/* the client specified a time in the future, set it to now. */
-		internal_date = (time_t)-1;
-		timezone_offset = 0;
-	}
-
-	if (ctx->msg_size == 0) {
-		/* no message data, abort */
-		client_send_tagline(cmd, "NO Can't save a zero byte message.");
-		return cmd_append_cancel(ctx, nonsync);
-	}
-
-	/* save the mail */
-	ctx->input = i_stream_create_limit(client->input, ctx->msg_size);
-	ctx->save_ctx = mailbox_save_alloc(ctx->t);
-	mailbox_save_set_flags(ctx->save_ctx, flags, keywords);
-	mailbox_save_set_received_date(ctx->save_ctx,
-				       internal_date, timezone_offset);
-	ret = mailbox_save_begin(&ctx->save_ctx, ctx->input);
-
-	if (keywords != NULL)
-		mailbox_keywords_unref(&keywords);
-
+	ret = cmd_append_handle_args(cmd, args, &nonsync);
 	if (ret < 0) {
-		/* save initialization failed */
-		client_send_storage_error(cmd, ctx->storage);
-		return cmd_append_cancel(ctx, nonsync);
+		/* invalid parameters, abort immediately */
+		cmd_append_finish(ctx);
+		return TRUE;
+	}
+	if (ret == 0) {
+		/* CATENATE contained only URLs. Finish it and see if there
+		   are more messsages. */
+		cmd_append_finish_catenate(cmd);
+		imap_parser_reset(ctx->save_parser);
+		return cmd_append_parse_new_msg(cmd);
 	}
 
-	/* after literal comes CRLF, if we fail make sure we eat it away */
-	client->input_skip_line = TRUE;
+	if (!ctx->catenate) {
+		/* after literal comes CRLF, if we fail make sure
+		   we eat it away */
+		client->input_skip_line = TRUE;
+	}
 
 	if (!nonsync) {
-		o_stream_send(client->output, "+ OK\r\n", 6);
-		o_stream_flush(client->output);
-		o_stream_uncork(client->output);
-		o_stream_cork(client->output);
+		if (ctx->failed) {
+			/* tagline was already sent, we can abort here */
+			cmd_append_finish(ctx);
+			return TRUE;
+		}
+		cmd_append_send_literal_continue(client);
 	}
 
-	ctx->count++;
+	i_assert(ctx->litinput != NULL);
 	ctx->message_input = TRUE;
 	cmd->func = cmd_append_continue_message;
 	return cmd_append_continue_message(cmd);
@@ -403,17 +732,17 @@ static bool cmd_append_continue_message(struct client_command_context *cmd)
 {
 	struct client *client = cmd->client;
 	struct cmd_append_context *ctx = cmd->context;
-	size_t size;
-	int ret;
+	int ret = 0;
 
 	if (cmd->cancel) {
+		/* cancel the command immediately (disconnection) */
 		cmd_append_finish(ctx);
 		return TRUE;
 	}
 
 	if (ctx->save_ctx != NULL) {
-		while (ctx->input->v_offset != ctx->msg_size) {
-			ret = i_stream_read(ctx->input);
+		while (ctx->litinput->v_offset != ctx->literal_size) {
+			ret = i_stream_read(ctx->litinput);
 			if (mailbox_save_continue(ctx->save_ctx) < 0) {
 				/* we still have to finish reading the message
 				   from client */
@@ -426,19 +755,27 @@ static bool cmd_append_continue_message(struct client_command_context *cmd)
 	}
 
 	if (ctx->save_ctx == NULL) {
-		(void)i_stream_read(ctx->input);
-		(void)i_stream_get_data(ctx->input, &size);
-		i_stream_skip(ctx->input, size);
+		/* saving has already failed, we're just eating away the
+		   literal */
+		(void)i_stream_read(ctx->litinput);
+		i_stream_skip(ctx->litinput,
+			      i_stream_get_data_size(ctx->litinput));
 	}
 
-	if (ctx->input->eof || client->input->closed) {
-		bool all_written = ctx->input->v_offset == ctx->msg_size;
+	if (ctx->litinput->eof || client->input->closed) {
+		bool all_written = ctx->litinput->v_offset == ctx->literal_size;
 
-		/* finished */
-		i_stream_unref(&ctx->input);
-		ctx->input = NULL;
+		/* finished - do one more read, to make sure istream-chain
+		   unreferences its stream, which is needed for litinput's
+		   unreferencing to seek the client->input to correct
+		   position */
+		(void)i_stream_read(ctx->input);
+		i_stream_unref(&ctx->litinput);
 
-		if (ctx->save_ctx == NULL) {
+		if (ctx->failed) {
+			if (ctx->save_ctx != NULL)
+				mailbox_save_cancel(&ctx->save_ctx);
+		} else if (ctx->save_ctx == NULL) {
 			/* failed above */
 			client_send_storage_error(cmd, ctx->storage);
 			ctx->failed = TRUE;
@@ -448,24 +785,31 @@ static bool cmd_append_continue_message(struct client_command_context *cmd)
 			ctx->failed = TRUE;
 			mailbox_save_cancel(&ctx->save_ctx);
 			client_disconnect(client, "EOF while appending");
+		} else if (ctx->catenate) {
+			/* CATENATE isn't finished yet */
 		} else if (mailbox_save_finish(&ctx->save_ctx) < 0) {
-			ctx->failed = TRUE;
 			client_send_storage_error(cmd, ctx->storage);
+			ctx->failed = TRUE;
 		}
-		ctx->save_ctx = NULL;
 
 		if (client->input->closed) {
 			cmd_append_finish(ctx);
 			return TRUE;
 		}
 
-		/* prepare for next message */
+		/* prepare for the next message (or its part with catenate) */
 		ctx->message_input = FALSE;
 		imap_parser_reset(ctx->save_parser);
-		cmd->func = cmd_append_continue_parsing;
-		return cmd_append_continue_parsing(cmd);
-	}
 
+		if (ctx->catenate) {
+			cmd->func = cmd_append_continue_catenate;
+			return cmd_append_continue_catenate(cmd);
+		}
+
+		i_stream_unref(&ctx->input);
+		cmd->func = cmd_append_parse_new_msg;
+		return cmd_append_parse_new_msg(cmd);
+	}
 	return FALSE;
 }
 
@@ -514,7 +858,7 @@ bool cmd_append(struct client_command_context *cmd)
 	ctx->save_parser = imap_parser_create(client->input, client->output,
 					      client->set->imap_max_line_length);
 
-	cmd->func = cmd_append_continue_parsing;
+	cmd->func = cmd_append_parse_new_msg;
 	cmd->context = ctx;
-	return cmd_append_continue_parsing(cmd);
+	return cmd_append_parse_new_msg(cmd);
 }

@@ -23,7 +23,7 @@ struct doveadm_print_table_header {
 
 struct doveadm_print_table_context {
 	pool_t pool;
-	ARRAY_DEFINE(headers, struct doveadm_print_table_header);
+	ARRAY(struct doveadm_print_table_header) headers;
 	ARRAY_TYPE(const_string) buffered_values;
 	string_t *stream;
 	unsigned int hdr_idx;

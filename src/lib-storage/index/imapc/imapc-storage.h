@@ -5,8 +5,8 @@
 #include "imapc-settings.h"
 
 #define IMAPC_STORAGE_NAME "imapc"
-#define IMAPC_INDEX_PREFIX "dovecot.index"
 #define IMAPC_LIST_ESCAPE_CHAR '%'
+#define IMAPC_LIST_BROKEN_CHAR '~'
 
 struct imap_arg;
 struct imapc_untagged_reply;
@@ -34,6 +34,12 @@ struct imapc_mailbox_event_callback {
 #define IMAPC_BOX_HAS_FEATURE(mbox, feature) \
 	(((mbox)->storage->set->parsed_features & feature) != 0)
 
+struct imapc_namespace {
+	const char *prefix;
+	char separator;
+	enum mail_namespace_type type;
+};
+
 struct imapc_storage {
 	struct mail_storage storage;
 	const struct imapc_settings *set;
@@ -46,7 +52,10 @@ struct imapc_storage {
 	struct mailbox_status *cur_status;
 	unsigned int reopen_count;
 
-	ARRAY_DEFINE(untagged_callbacks, struct imapc_storage_event_callback);
+	ARRAY(struct imapc_namespace) remote_namespaces;
+	ARRAY(struct imapc_storage_event_callback) untagged_callbacks;
+
+	unsigned int namespaces_requested:1;
 };
 
 struct imapc_mail_cache {
@@ -66,10 +75,10 @@ struct imapc_mailbox {
 	struct mail_index_view *sync_view, *delayed_sync_view;
 	struct timeout *to_idle_check, *to_idle_delay;
 
-	ARRAY_DEFINE(fetch_mails, struct imapc_mail *);
+	ARRAY(struct imapc_mail *) fetch_mails;
 
-	ARRAY_DEFINE(untagged_callbacks, struct imapc_mailbox_event_callback);
-	ARRAY_DEFINE(resp_text_callbacks, struct imapc_mailbox_event_callback);
+	ARRAY(struct imapc_mailbox_event_callback) untagged_callbacks;
+	ARRAY(struct imapc_mailbox_event_callback) resp_text_callbacks;
 
 	enum mail_flags permanent_flags;
 

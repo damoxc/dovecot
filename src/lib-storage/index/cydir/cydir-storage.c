@@ -52,8 +52,7 @@ cydir_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &cydir_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, vname, flags,
-				    CYDIR_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	mbox->storage = (struct cydir_storage *)storage;
 	return &mbox->box;
@@ -83,8 +82,8 @@ static int cydir_mailbox_open(struct mailbox *box)
 		return -1;
 	mail_index_set_fsync_mode(box->index,
 				  box->storage->set->parsed_fsync_mode,
-				  MAIL_INDEX_SYNC_TYPE_APPEND |
-				  MAIL_INDEX_SYNC_TYPE_EXPUNGE);
+				  MAIL_INDEX_FSYNC_MASK_APPENDS |
+				  MAIL_INDEX_FSYNC_MASK_EXPUNGES);
 	return 0;
 }
 
@@ -92,9 +91,10 @@ static int
 cydir_mailbox_create(struct mailbox *box, const struct mailbox_update *update,
 		     bool directory)
 {
-	if (directory &&
-	    (box->list->props & MAILBOX_LIST_PROP_NO_NOSELECT) == 0)
-		return 0;
+	int ret;
+
+	if ((ret = index_storage_mailbox_create(box, directory)) <= 0)
+		return ret;
 
 	return update == NULL ? 0 :
 		index_storage_mailbox_update(box, update);
@@ -116,7 +116,7 @@ struct mail_storage cydir_storage = {
 		NULL,
 		cydir_storage_alloc,
 		NULL,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		cydir_storage_get_list_settings,
 		NULL,
@@ -140,6 +140,11 @@ struct mailbox cydir_mailbox = {
 		index_storage_get_status,
 		NULL,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		cydir_storage_sync_init,

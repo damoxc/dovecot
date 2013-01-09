@@ -32,6 +32,9 @@ struct istream *i_stream_create_mmap(int fd, size_t block_size,
 				     bool autoclose_fd);
 struct istream *i_stream_create_from_data(const void *data, size_t size);
 struct istream *i_stream_create_limit(struct istream *input, uoff_t v_size);
+struct istream *i_stream_create_range(struct istream *input,
+				      uoff_t v_offset, uoff_t v_size);
+struct istream *i_stream_create_error(int stream_errno);
 
 /* Set name (e.g. path) for input stream. */
 void i_stream_set_name(struct istream *stream, const char *name);
@@ -50,10 +53,12 @@ void i_stream_ref(struct istream *stream);
 void i_stream_unref(struct istream **stream);
 /* Call the given callback function when stream is destroyed. */
 void i_stream_set_destroy_callback(struct istream *stream,
-				   istream_callback_t *callback, void *context);
+				   istream_callback_t *callback, void *context)
+	ATTR_NULL(3);
 #define i_stream_set_destroy_callback(stream, callback, context) \
-	CONTEXT_CALLBACK(i_stream_set_destroy_callback, istream_callback_t, \
-			 callback, context, stream)
+	i_stream_set_destroy_callback(stream + \
+		CALLBACK_TYPECHECK(callback, void (*)(typeof(context))), \
+		(istream_callback_t *)callback, context)
 /* Remove the destroy callback. */
 void i_stream_unset_destroy_callback(struct istream *stream);
 
@@ -94,14 +99,14 @@ void i_stream_seek(struct istream *stream, uoff_t v_offset);
    stream's implementation is slow in seeking backwards, it can use this hint
    to cache some of the data in memory. */
 void i_stream_seek_mark(struct istream *stream, uoff_t v_offset);
-/* Returns struct stat, or NULL if error. As the underlying stream may not be
+/* Returns 0 if ok, -1 if error. As the underlying stream may not be
    a file, only some of the fields might be set, others would be zero.
    st_size is always set, and if it's not known, it's -1.
 
    If exact=FALSE, the stream may not return exactly correct values, but the
    returned values can be compared to see if anything had changed (eg. in
    compressed stream st_size could be compressed size) */
-const struct stat *i_stream_stat(struct istream *stream, bool exact);
+int i_stream_stat(struct istream *stream, bool exact, const struct stat **st_r);
 /* Similar to i_stream_stat() call. Returns 1 if size was successfully
    set, 0 if size is unknown, -1 if error. */
 int i_stream_get_size(struct istream *stream, bool exact, uoff_t *size_r);
@@ -120,11 +125,15 @@ char *i_stream_next_line(struct istream *stream);
 /* Like i_stream_next_line(), but reads for more data if needed. Returns NULL
    if more data is needed or error occurred. */
 char *i_stream_read_next_line(struct istream *stream);
+/* Returns TRUE if the last line read with i_stream_next_line() ended with
+   CRLF (instead of LF). */
+bool i_stream_last_line_crlf(struct istream *stream);
 
 /* Returns pointer to beginning of read data, or NULL if there's no data
    buffered. */
 const unsigned char *
 i_stream_get_data(const struct istream *stream, size_t *size_r);
+size_t i_stream_get_data_size(const struct istream *stream);
 /* Like i_stream_get_data(), but returns non-const data. This only works with
    buffered streams (currently only file), others return NULL. */
 unsigned char *i_stream_get_modifiable_data(const struct istream *stream,

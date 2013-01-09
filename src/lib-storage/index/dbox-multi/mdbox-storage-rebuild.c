@@ -7,7 +7,7 @@
 #include "hash.h"
 #include "str.h"
 #include "mail-cache.h"
-#include "dbox-sync-rebuild.h"
+#include "index-rebuild.h"
 #include "mail-namespace.h"
 #include "mailbox-list-private.h"
 #include "mdbox-storage.h"
@@ -45,8 +45,8 @@ struct mdbox_storage_rebuild_context {
 	pool_t pool;
 
 	struct mdbox_map_mail_index_header orig_map_hdr;
-	struct hash_table *guid_hash;
-	ARRAY_DEFINE(msgs, struct mdbox_rebuild_msg *);
+	HASH_TABLE(uint8_t *, struct mdbox_rebuild_msg *) guid_hash;
+	ARRAY(struct mdbox_rebuild_msg *) msgs;
 	ARRAY_TYPE(seq_range) seen_file_ids;
 
 	uint32_t rebuild_count;
@@ -69,8 +69,8 @@ mdbox_storage_rebuild_init(struct mdbox_storage *storage,
 	ctx->storage = storage;
 	ctx->atomic = atomic;
 	ctx->pool = pool_alloconly_create("dbox map rebuild", 1024*256);
-	ctx->guid_hash = hash_table_create(default_pool, ctx->pool, 0,
-					   guid_128_hash, guid_128_cmp);
+	hash_table_create(&ctx->guid_hash, ctx->pool, 0,
+			  guid_128_hash, guid_128_cmp);
 	i_array_init(&ctx->msgs, 512);
 	i_array_init(&ctx->seen_file_ids, 128);
 
@@ -92,10 +92,10 @@ mdbox_storage_rebuild_deinit(struct mdbox_storage_rebuild_context *ctx)
 	i_free(ctx);
 }
 
-static int mdbox_rebuild_msg_offset_cmp(const void *p1, const void *p2)
+static int
+mdbox_rebuild_msg_offset_cmp(struct mdbox_rebuild_msg *const *m1,
+			     struct mdbox_rebuild_msg *const *m2)
 {
-	const struct mdbox_rebuild_msg *const *m1 = p1, *const *m2 = p2;
-
 	if ((*m1)->file_id < (*m2)->file_id)
 		return -1;
 	if ((*m1)->file_id > (*m2)->file_id)
@@ -127,6 +127,7 @@ static int rebuild_file_mails(struct mdbox_storage_rebuild_context *ctx,
 			      struct dbox_file *file, uint32_t file_id)
 {
 	const char *guid;
+	uint8_t *guid_p;
 	struct mdbox_rebuild_msg *rec, *old_rec;
 	uoff_t offset, prev_offset;
 	bool last, first, fixed = FALSE;
@@ -180,9 +181,10 @@ static int rebuild_file_mails(struct mdbox_storage_rebuild_context *ctx,
 		i_assert(!guid_128_is_empty(rec->guid_128));
 		array_append(&ctx->msgs, &rec, 1);
 
-		old_rec = hash_table_lookup(ctx->guid_hash, rec->guid_128);
+		guid_p = rec->guid_128;
+		old_rec = hash_table_lookup(ctx->guid_hash, guid_p);
 		if (old_rec == NULL)
-			hash_table_insert(ctx->guid_hash, rec->guid_128, rec);
+			hash_table_insert(ctx->guid_hash, guid_p, rec);
 		else if (rec->size == old_rec->size) {
 			/* duplicate. save this as a refcount=0 to map,
 			   so it will eventually be deleted. */
@@ -262,7 +264,7 @@ static int rebuild_add_file(struct mdbox_storage_rebuild_context *ctx,
 		if (rebuild_rename_file(ctx, dir, &fname, &file_id) < 0)
 			return -1;
 	}
-	seq_range_array_add(&ctx->seen_file_ids, 0, file_id);
+	seq_range_array_add(&ctx->seen_file_ids, file_id);
 
 	file = mdbox_file_init(ctx->storage, file_id);
 	if ((ret = dbox_file_open(file, &deleted)) > 0 && !deleted)
@@ -305,17 +307,15 @@ static int rebuild_apply_map(struct mdbox_storage_rebuild_context *ctx)
 {
 	struct mdbox_map *map = ctx->storage->map;
 	const struct mail_index_header *hdr;
-	struct mdbox_rebuild_msg *const *msgs, **pos;
+	struct mdbox_rebuild_msg **pos;
 	struct mdbox_rebuild_msg search_msg, *search_msgp = &search_msg;
 	struct dbox_mail_lookup_rec rec;
 	uint32_t seq;
-	unsigned int count;
 
 	array_sort(&ctx->msgs, mdbox_rebuild_msg_offset_cmp);
 	/* msgs now contains a list of all messages that exists in m.* files,
 	   sorted by file_id,offset */
 
-	msgs = array_get_modifiable(&ctx->msgs, &count);
 	hdr = mail_index_get_header(ctx->atomic->sync_view);
 	for (seq = 1; seq <= hdr->messages_count; seq++) {
 		if (mdbox_map_view_lookup_rec(map, ctx->atomic->sync_view,
@@ -327,8 +327,8 @@ static int rebuild_apply_map(struct mdbox_storage_rebuild_context *ctx)
 		search_msg.file_id = rec.rec.file_id;
 		search_msg.offset = rec.rec.offset;
 		search_msg.size = rec.rec.size;
-		pos = bsearch(&search_msgp, msgs, count, sizeof(*msgs),
-			      mdbox_rebuild_msg_offset_cmp);
+		pos = array_bsearch(&ctx->msgs, &search_msgp,
+				    mdbox_rebuild_msg_offset_cmp);
 		if (pos == NULL || (*pos)->map_uid != 0) {
 			/* map record points to nonexistent or
 			   a duplicate message. */
@@ -363,7 +363,7 @@ rebuild_lookup_map_uid(struct mdbox_storage_rebuild_context *ctx,
 
 static void
 rebuild_mailbox_multi(struct mdbox_storage_rebuild_context *ctx,
-		      struct dbox_sync_rebuild_context *rebuild_ctx,
+		      struct index_rebuild_context *rebuild_ctx,
 		      struct mdbox_mailbox *mbox,
 		      struct mail_index_view *view,
 		      struct mail_index_transaction *trans)
@@ -372,6 +372,7 @@ rebuild_mailbox_multi(struct mdbox_storage_rebuild_context *ctx,
 	const struct mail_index_header *hdr;
 	struct mdbox_rebuild_msg *rec;
 	const void *data;
+	const uint8_t *guid_p;
 	bool expunged;
 	uint32_t old_seq, new_seq, uid, map_uid;
 
@@ -392,11 +393,12 @@ rebuild_mailbox_multi(struct mdbox_storage_rebuild_context *ctx,
 
 		mail_index_lookup_ext(view, old_seq, mbox->guid_ext_id,
 				      &data, &expunged);
+		guid_p = data;
 
 		/* see if we can find this message based on
 		   1) GUID, 2) map_uid */
-		rec = data == NULL ? NULL :
-			hash_table_lookup(ctx->guid_hash, data);
+		rec = guid_p == NULL ? NULL :
+			hash_table_lookup(ctx->guid_hash, guid_p);
 		if (rec == NULL) {
 			/* multi-dbox message that wasn't found with GUID.
 			   either it's lost or GUID has been corrupted. we can
@@ -418,8 +420,8 @@ rebuild_mailbox_multi(struct mdbox_storage_rebuild_context *ctx,
 
 			mail_index_lookup_uid(view, old_seq, &uid);
 			mail_index_append(trans, uid, &new_seq);
-			dbox_sync_rebuild_index_metadata(rebuild_ctx,
-							 new_seq, uid);
+			index_rebuild_index_metadata(rebuild_ctx,
+						     new_seq, uid);
 
 			new_dbox_rec.map_uid = rec->map_uid;
 			mail_index_update_ext(trans, new_seq, mbox->ext_id,
@@ -442,7 +444,7 @@ mdbox_rebuild_get_header(struct mail_index_view *view, uint32_t hdr_ext_id,
 	memcpy(hdr_r, data, I_MIN(data_size, sizeof(*hdr_r)));
 }
 
-static void mdbox_header_update(struct dbox_sync_rebuild_context *rebuild_ctx,
+static void mdbox_header_update(struct index_rebuild_context *rebuild_ctx,
 				struct mdbox_mailbox *mbox)
 {
 	struct mdbox_index_header hdr, backup_hdr;
@@ -482,7 +484,7 @@ rebuild_mailbox(struct mdbox_storage_rebuild_context *ctx,
         struct mail_index_sync_ctx *sync_ctx;
 	struct mail_index_view *view;
 	struct mail_index_transaction *trans;
-	struct dbox_sync_rebuild_context *rebuild_ctx;
+	struct index_rebuild_context *rebuild_ctx;
 	enum mail_error error;
 	int ret;
 
@@ -505,18 +507,18 @@ rebuild_mailbox(struct mdbox_storage_rebuild_context *ctx,
 				    MAIL_INDEX_SYNC_FLAG_AVOID_FLAG_UPDATES);
 	if (ret <= 0) {
 		i_assert(ret != 0);
-		mail_storage_set_index_error(box);
+		mailbox_set_index_error(box);
 		mailbox_free(&box);
 		return -1;
 	}
 
-	rebuild_ctx = dbox_sync_index_rebuild_init(&mbox->box, view, trans);
+	rebuild_ctx = index_index_rebuild_init(&mbox->box, view, trans);
 	mdbox_header_update(rebuild_ctx, mbox);
 	rebuild_mailbox_multi(ctx, rebuild_ctx, mbox, view, trans);
-	dbox_sync_index_rebuild_deinit(&rebuild_ctx);
+	index_index_rebuild_deinit(&rebuild_ctx, dbox_get_uidvalidity_next);
 
 	if (mail_index_sync_commit(&sync_ctx) < 0) {
-		mail_storage_set_index_error(box);
+		mailbox_set_index_error(box);
 		ret = -1;
 	}
 
@@ -543,7 +545,7 @@ rebuild_namespace_mailboxes(struct mdbox_storage_rebuild_context *ctx,
 		if ((info->flags & (MAILBOX_NONEXISTENT |
 				    MAILBOX_NOSELECT)) == 0) {
 			T_BEGIN {
-				ret = rebuild_mailbox(ctx, ns, info->name);
+				ret = rebuild_mailbox(ctx, ns, info->vname);
 			} T_END;
 			if (ret < 0) {
 				ret = -1;
@@ -672,7 +674,7 @@ static int rebuild_restore_msg(struct mdbox_storage_rebuild_context *ctx,
 					    &ctx->prev_msg.trans, 0);
 		if (ret <= 0) {
 			i_assert(ret != 0);
-			mail_storage_set_index_error(box);
+			mailbox_set_index_error(box);
 			mailbox_free(&box);
 			return -1;
 		}
@@ -885,7 +887,7 @@ int mdbox_storage_rebuild_in_context(struct mdbox_storage *storage,
 	struct mdbox_storage_rebuild_context *ctx;
 	int ret;
 
-	if (dbox_sync_rebuild_verify_alt_storage(storage->map->root_list) < 0) {
+	if (dbox_verify_alt_storage(storage->map->root_list) < 0) {
 		mail_storage_set_critical(&storage->storage.storage,
 			"mdbox rebuild: Alt storage %s not mounted, aborting",
 			storage->alt_storage_dir);

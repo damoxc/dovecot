@@ -10,6 +10,8 @@ struct index_search_context {
 	struct mail_index_view *view;
 	struct mailbox *box;
 
+	uint32_t pvt_uid, pvt_seq;
+
 	enum mail_fetch_field extra_wanted_fields;
 	struct mailbox_header_lookup_ctx *extra_wanted_headers;
 
@@ -18,7 +20,7 @@ struct index_search_context {
 	struct index_mail *cur_imail;
 	struct mail_thread_context *thread_ctx;
 
-	ARRAY_DEFINE(mails, struct mail *);
+	ARRAY(struct mail *) mails;
 	unsigned int unused_mail_idx;
 	unsigned int max_mails;
 

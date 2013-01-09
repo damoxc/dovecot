@@ -9,7 +9,7 @@
 #include "master-service.h"
 #include "master-service-settings.h"
 #include "mail-namespace.h"
-#include "mail-storage.h"
+#include "mail-storage-private.h"
 #include "mail-storage-service.h"
 #include "mail-search-build.h"
 #include "master-connection.h"
@@ -33,7 +33,7 @@ struct master_connection {
 	unsigned int version_received:1;
 };
 
-static void
+static void ATTR_NULL(1, 2)
 indexer_worker_refresh_proctitle(const char *username, const char *mailbox,
 				 uint32_t seq1, uint32_t seq2)
 {
@@ -89,9 +89,10 @@ index_mailbox_precache(struct master_connection *conn, struct mailbox *box)
 			percentage = counter*100 / max;
 			if (percentage != percentage_sent && percentage < 100) {
 				percentage_sent = percentage;
-				i_snprintf(percentage_str,
-					   sizeof(percentage_str), "%u\n",
-					   percentage);
+				if (i_snprintf(percentage_str,
+					       sizeof(percentage_str), "%u\n",
+					       percentage) < 0)
+					i_unreached();
 				(void)write_full(conn->fd, percentage_str,
 						 strlen(percentage_str));
 			}
@@ -121,29 +122,30 @@ index_mailbox(struct master_connection *conn, struct mail_user *user,
 	const char *path, *errstr;
 	enum mail_error error;
 	enum mailbox_sync_flags sync_flags = MAILBOX_SYNC_FLAG_FULL_READ;
-	int ret = 0;
+	int ret;
 
 	ns = mail_namespace_find(user->namespaces, mailbox);
-	if (ns == NULL) {
-		i_error("Namespace not found for mailbox %s: ", mailbox);
-		return -1;
-	}
-
-	path = mailbox_list_get_path(ns->list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_INDEX);
-	if (*path == '\0') {
+	box = mailbox_alloc(ns->list, mailbox, 0);
+	ret = mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &path);
+	if (ret <= 0) {
+		mailbox_free(&box);
+		if (ret < 0) {
+			i_error("Getting path to mailbox %s failed: %s",
+				mailbox, mailbox_get_last_error(box, NULL));
+			return -1;
+		}
 		i_info("Indexes disabled for mailbox %s, skipping", mailbox);
 		return 0;
 	}
+	ret = 0;
 
-	box = mailbox_alloc(ns->list, mailbox, 0);
 	if (max_recent_msgs != 0) {
 		/* index only if there aren't too many recent messages.
 		   don't bother syncing the mailbox, that alone can take a
 		   while with large maildirs. */
 		if (mailbox_open(box) < 0) {
 			i_error("Opening mailbox %s failed: %s", mailbox,
-				mail_storage_get_last_error(mailbox_get_storage(box), NULL));
+				mailbox_get_last_error(box, NULL));
 			ret = -1;
 		} else {
 			mailbox_get_open_status(box, STATUS_RECENT, &status);
@@ -158,8 +160,7 @@ index_mailbox(struct master_connection *conn, struct mail_user *user,
 		sync_flags |= MAILBOX_SYNC_FLAG_OPTIMIZE;
 
 	if (mailbox_sync(box, sync_flags) < 0) {
-		errstr = mail_storage_get_last_error(mailbox_get_storage(box),
-						     &error);
+		errstr = mailbox_get_last_error(box, &error);
 		if (error != MAIL_ERROR_NOTFOUND) {
 			i_error("Syncing mailbox %s failed: %s",
 				mailbox, errstr);
@@ -169,7 +170,8 @@ index_mailbox(struct master_connection *conn, struct mail_user *user,
 		}
 		ret = -1;
 	} else if (strchr(what, 'i') != NULL) {
-		index_mailbox_precache(conn, box);
+		if (index_mailbox_precache(conn, box) < 0)
+			ret = -1;
 	}
 	mailbox_free(&box);
 	return ret;

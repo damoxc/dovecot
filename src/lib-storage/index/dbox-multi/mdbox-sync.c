@@ -30,10 +30,11 @@ dbox_sync_verify_expunge_guid(struct mdbox_sync_context *ctx, uint32_t seq,
 {
 	const void *data;
 	uint32_t uid;
+	bool expunged;
 
 	mail_index_lookup_uid(ctx->sync_view, seq, &uid);
 	mail_index_lookup_ext(ctx->sync_view, seq,
-			      ctx->mbox->guid_ext_id, &data, NULL);
+			      ctx->mbox->guid_ext_id, &data, &expunged);
 	if (guid_128_is_empty(guid_128) ||
 	    memcmp(data, guid_128, GUID_128_SIZE) == 0)
 		return 0;
@@ -51,7 +52,7 @@ static int mdbox_sync_expunge(struct mdbox_sync_context *ctx, uint32_t seq,
 {
 	uint32_t map_uid;
 
-	if (seq_range_array_add(&ctx->expunged_seqs, 0, seq)) {
+	if (seq_range_array_add(&ctx->expunged_seqs, seq)) {
 		/* already marked as expunged in this sync */
 		return 0;
 	}
@@ -99,6 +100,7 @@ static int dbox_sync_mark_expunges(struct mdbox_sync_context *ctx)
 	unsigned int n;
 	const void *data;
 	uint32_t seq, uid;
+	bool expunged;
 
 	/* use a separate transaction here so that we can commit the changes
 	   during map transaction */
@@ -107,7 +109,7 @@ static int dbox_sync_mark_expunges(struct mdbox_sync_context *ctx)
 	while (seq_range_array_iter_nth(&iter, n++, &seq)) {
 		mail_index_lookup_uid(ctx->sync_view, seq, &uid);
 		mail_index_lookup_ext(ctx->sync_view, seq,
-				      ctx->mbox->guid_ext_id, &data, NULL);
+				      ctx->mbox->guid_ext_id, &data, &expunged);
 		mail_index_expunge_guid(trans, seq, data);
 	}
 	if (mail_index_transaction_commit(&trans) < 0)
@@ -195,7 +197,7 @@ static int mdbox_sync_try_begin(struct mdbox_sync_context *ctx,
 	if (mail_index_reset_fscked(mbox->box.index))
 		mdbox_storage_set_corrupted(mbox->storage);
 	if (ret < 0) {
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 		return -1;
 	}
 	if (ret == 0) {
@@ -298,7 +300,7 @@ int mdbox_sync_finish(struct mdbox_sync_context **_ctx, bool success)
 
 	if (success) {
 		if (mail_index_sync_commit(&ctx->index_sync_ctx) < 0) {
-			mail_storage_set_index_error(&ctx->mbox->box);
+			mailbox_set_index_error(&ctx->mbox->box);
 			ret = -1;
 		}
 	} else {

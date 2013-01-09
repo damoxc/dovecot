@@ -71,10 +71,11 @@ static struct sql_db_cache *dict_sql_db_cache;
 
 static void sql_dict_prev_inc_flush(struct sql_dict_transaction_context *ctx);
 
-static struct dict *
+static int
 sql_dict_init(struct dict *driver, const char *uri,
 	      enum dict_data_type value_type ATTR_UNUSED,
-	      const char *username, const char *base_dir ATTR_UNUSED)
+	      const char *username, const char *base_dir ATTR_UNUSED,
+	      struct dict **dict_r, const char **error_r)
 {
 	struct sql_dict *dict;
 	pool_t pool;
@@ -84,10 +85,10 @@ sql_dict_init(struct dict *driver, const char *uri,
 	dict->pool = pool;
 	dict->dict = *driver;
 	dict->username = p_strdup(pool, username);
-	dict->set = dict_sql_settings_read(pool, uri);
+	dict->set = dict_sql_settings_read(pool, uri, error_r);
 	if (dict->set == NULL) {
 		pool_unref(&pool);
-		return NULL;
+		return -1;
 	}
 
 	/* currently pgsql and sqlite don't support "ON DUPLICATE KEY" */
@@ -95,7 +96,8 @@ sql_dict_init(struct dict *driver, const char *uri,
 
 	dict->db = sql_db_cache_new(dict_sql_db_cache, driver->name,
 				    dict->set->connect);
-	return &dict->dict;
+	*dict_r = &dict->dict;
+	return 0;
 }
 
 static void sql_dict_deinit(struct dict *_dict)
@@ -354,7 +356,10 @@ static bool sql_dict_iterate_next_query(struct sql_dict_iterate_context *ctx)
 	T_BEGIN {
 		string_t *query = t_str_new(256);
 
-		str_printfa(query, "SELECT %s", map->value_field);
+		str_append(query, "SELECT ");
+		if ((ctx->flags & DICT_ITERATE_FLAG_NO_VALUE) == 0)
+			str_printfa(query, "%s,", map->value_field);
+
 		/* get all missing fields */
 		sql_fields = array_get(&map->sql_fields, &count);
 		i = array_count(&values);
@@ -365,7 +370,9 @@ static bool sql_dict_iterate_next_query(struct sql_dict_iterate_context *ctx)
 			i--;
 		}
 		for (; i < count; i++)
-			str_printfa(query, ",%s", sql_fields[i]);
+			str_printfa(query, "%s,", sql_fields[i]);
+		str_truncate(query, str_len(query)-1);
+
 		str_printfa(query, " FROM %s", map->table);
 
 		recurse_type = (ctx->flags & DICT_ITERATE_FLAG_RECURSE) == 0 ?
@@ -559,7 +566,7 @@ struct dict_sql_build_query_field {
 struct dict_sql_build_query {
 	struct sql_dict *dict;
 
-	ARRAY_DEFINE(fields, struct dict_sql_build_query_field);
+	ARRAY(struct dict_sql_build_query_field) fields;
 	const ARRAY_TYPE(const_string) *extra_values;
 	char key1;
 	bool inc;
@@ -730,6 +737,17 @@ static void sql_dict_unset(struct dict_transaction_context *_ctx,
 	} T_END;
 }
 
+static void
+sql_dict_append(struct dict_transaction_context *_ctx,
+		const char *key ATTR_UNUSED, const char *value ATTR_UNUSED)
+{
+	struct sql_dict_transaction_context *ctx =
+		(struct sql_dict_transaction_context *)_ctx;
+
+	i_error("sql dict: Append command not implemented currently");
+	ctx->failed = TRUE;
+}
+
 static unsigned int *
 sql_dict_next_inc_row(struct sql_dict_transaction_context *ctx)
 {
@@ -890,6 +908,7 @@ static struct dict sql_dict = {
 		sql_dict_transaction_rollback,
 		sql_dict_set,
 		sql_dict_unset,
+		sql_dict_append,
 		sql_dict_atomic_inc
 	}
 };

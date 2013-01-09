@@ -91,7 +91,7 @@ int guid_128_from_string(const char *str, guid_128_t guid_r)
 {
 	buffer_t buf;
 
-	buffer_create_data(&buf, guid_r, GUID_128_SIZE);
+	buffer_create_from_data(&buf, guid_r, GUID_128_SIZE);
 	return strlen(str) == GUID_128_SIZE*2 &&
 		hex_to_binary(str, &buf) == 0 &&
 		buf.used == GUID_128_SIZE ? 0 : -1;
@@ -102,16 +102,12 @@ const char *guid_128_to_string(const guid_128_t guid)
 	return binary_to_hex(guid, GUID_128_SIZE);
 }
 
-unsigned int guid_128_hash(const void *p)
+unsigned int guid_128_hash(const uint8_t *guid)
 {
-	const uint8_t *guid = p;
-
 	return mem_hash(guid, GUID_128_SIZE);
 }
 
-int guid_128_cmp(const void *p1, const void *p2)
+int guid_128_cmp(const uint8_t *guid1, const uint8_t *guid2)
 {
-	const uint8_t *g1 = p1, *g2 = p2;
-
-	return memcmp(g1, g2, GUID_128_SIZE);
+	return memcmp(guid1, guid2, GUID_128_SIZE);
 }

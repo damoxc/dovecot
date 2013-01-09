@@ -51,10 +51,8 @@ mdbox_map_init(struct mdbox_storage *storage, struct mailbox_list *root_list)
 	struct mdbox_map *map;
 	const char *root, *index_root;
 
-	root = mailbox_list_get_path(root_list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_DIR);
-	index_root = mailbox_list_get_path(root_list, NULL,
-					   MAILBOX_LIST_PATH_TYPE_INDEX);
+	root = mailbox_list_get_root_forced(root_list, MAILBOX_LIST_PATH_TYPE_DIR);
+	index_root = mailbox_list_get_root_forced(root_list, MAILBOX_LIST_PATH_TYPE_INDEX);
 
 	map = i_new(struct mdbox_map, 1);
 	map->storage = storage;
@@ -79,25 +77,6 @@ mdbox_map_init(struct mdbox_storage *storage, struct mailbox_list *root_list)
 	return map;
 }
 
-void mdbox_map_get_create_mode(struct mdbox_map *map, mode_t *mode_r, gid_t *gid_r,
-			       const char **gid_origin_r)
-{
-	mode_t dir_mode;
-	const char *gid_origin;
-
-	if (!map->create_mode_set) {
-		mailbox_list_get_root_permissions(map->root_list,
-						  &map->_create_mode, &dir_mode,
-						  &map->_create_gid,
-						  &gid_origin);
-		map->_create_gid_origin = i_strdup(gid_origin);
-		map->create_mode_set = TRUE;
-	}
-	*mode_r = map->_create_mode;
-	*gid_r = map->_create_gid;
-	*gid_origin_r = map->_create_gid_origin;
-}
-
 void mdbox_map_deinit(struct mdbox_map **_map)
 {
 	struct mdbox_map *map = *_map;
@@ -109,38 +88,26 @@ void mdbox_map_deinit(struct mdbox_map **_map)
 		mail_index_close(map->index);
 	}
 	mail_index_free(&map->index);
-	i_free(map->_create_gid_origin);
 	i_free(map->index_path);
 	i_free(map->path);
 	i_free(map);
 }
 
-static int mdbox_map_mkdir_storage_path(struct mdbox_map *map, const char *path)
+static int mdbox_map_mkdir_storage(struct mdbox_map *map)
 {
-	struct stat st;
+	if (mailbox_list_mkdir_root(map->root_list, map->path,
+				    MAILBOX_LIST_PATH_TYPE_DIR) < 0) {
+		mail_storage_copy_list_error(MAP_STORAGE(map), map->root_list);
+		return -1;
+	}
 
-	if (stat(path, &st) == 0)
-		return 1;
-
-	if (mailbox_list_mkdir(map->root_list, NULL, path) < 0) {
+	if (strcmp(map->path, map->index_path) != 0 &&
+	    mailbox_list_mkdir_root(map->root_list, map->index_path,
+				    MAILBOX_LIST_PATH_TYPE_INDEX) < 0) {
 		mail_storage_copy_list_error(MAP_STORAGE(map), map->root_list);
 		return -1;
 	}
 	return 0;
-}
-
-static int mdbox_map_mkdir_storage(struct mdbox_map *map)
-{
-	int ret;
-
-	if ((ret = mdbox_map_mkdir_storage_path(map, map->path)) < 0)
-		return -1;
-
-	if (strcmp(map->path, map->index_path) != 0) {
-		if (mdbox_map_mkdir_storage_path(map, map->index_path) < 0)
-			return -1;
-	}
-	return ret;
 }
 
 static void mdbox_map_cleanup(struct mdbox_map *map)
@@ -158,7 +125,7 @@ static void mdbox_map_cleanup(struct mdbox_map *map)
 	} else if (st.st_atime > st.st_ctime + DBOX_TMP_DELETE_SECS) {
 		/* there haven't been any changes to this directory since we
 		   last checked it. */
-	} else if (st.st_atime < ioloop_time - interval) {
+	} else if (st.st_atime < ioloop_time - (time_t)interval) {
 		/* time to scan */
 		(void)unlink_old_files(map->path, DBOX_TEMP_FILE_PREFIX,
 				       ioloop_time - DBOX_TMP_DELETE_SECS);
@@ -168,9 +135,7 @@ static void mdbox_map_cleanup(struct mdbox_map *map)
 static int mdbox_map_open_internal(struct mdbox_map *map, bool create_missing)
 {
 	enum mail_index_open_flags open_flags;
-	mode_t create_mode;
-	gid_t create_gid;
-	const char *create_gid_origin;
+	struct mailbox_permissions perm;
 	int ret = 0;
 
 	if (map->view != NULL) {
@@ -178,10 +143,10 @@ static int mdbox_map_open_internal(struct mdbox_map *map, bool create_missing)
 		return 1;
 	}
 
-	mdbox_map_get_create_mode(map, &create_mode, &create_gid,
-				  &create_gid_origin);
-	mail_index_set_permissions(map->index, create_mode,
-				   create_gid, create_gid_origin);
+	mailbox_list_get_root_permissions(map->root_list, &perm);
+	mail_index_set_permissions(map->index, perm.file_create_mode,
+				   perm.file_create_gid,
+				   perm.file_create_gid_origin);
 
 	open_flags = MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY |
 		mail_storage_settings_to_index_flags(MAP_STORAGE(map)->set);
@@ -468,7 +433,7 @@ int mdbox_map_get_zero_ref_files(struct mdbox_map *map,
 				      &data, &expunged);
 		if (data != NULL && !expunged) {
 			rec = data;
-			seq_range_array_add(file_ids_r, 0, rec->file_id);
+			seq_range_array_add(file_ids_r, rec->file_id);
 		}
 	}
 	return 0;
@@ -995,7 +960,7 @@ mdbox_map_find_primary_files(struct mdbox_map_append_context *ctx,
 				  &file_id) < 0)
 			continue;
 
-		seq_range_array_add(file_ids_r, 0, file_id);
+		seq_range_array_add(file_ids_r, file_id);
 	}
 	if (errno != 0) {
 		mail_storage_set_critical(storage,
@@ -1047,7 +1012,7 @@ mdbox_map_find_appendable_file(struct mdbox_map_append_context *ctx,
 
 		if (seq_range_exists(&checked_file_ids, rec->file_id))
 			continue;
-		seq_range_array_add(&checked_file_ids, 0, rec->file_id);
+		seq_range_array_add(&checked_file_ids, rec->file_id);
 
 		if (++backwards_lookup_count > MAX_BACKWARDS_LOOKUPS) {
 			/* we've wasted enough time here */

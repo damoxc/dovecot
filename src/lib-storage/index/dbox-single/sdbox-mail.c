@@ -16,7 +16,7 @@ static void sdbox_mail_set_expunged(struct dbox_mail *mail)
 {
 	struct mail *_mail = &mail->imail.mail.mail;
 
-	(void)mail_index_refresh(_mail->box->index);
+	mail_index_refresh(_mail->box->index);
 	if (mail_index_is_expunged(_mail->transaction->view, _mail->seq)) {
 		mail_set_expunged(_mail);
 		return;
@@ -106,6 +106,7 @@ struct mail_vfuncs sdbox_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	dbox_mail_get_received_date,
@@ -116,11 +117,13 @@ struct mail_vfuncs sdbox_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	dbox_mail_get_stream,
+	index_mail_get_binary_stream,
 	dbox_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
 	index_mail_set_cache_corrupted,

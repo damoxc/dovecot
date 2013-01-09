@@ -125,8 +125,7 @@ static int maildir_mail_stat(struct mail *mail, struct stat *st_r)
 
 	if (imail->data.stream != NULL) {
 		mail->transaction->stats.fstat_lookup_count++;
-		stp = i_stream_stat(imail->data.stream, FALSE);
-		if (stp == NULL)
+		if (i_stream_stat(imail->data.stream, FALSE, &stp) < 0)
 			return -1;
 		*st_r = *stp;
 	} else if (!mail->saving) {
@@ -201,7 +200,7 @@ maildir_mail_get_fname(struct maildir_mailbox *mbox, struct mail *mail,
 	/* one reason this could happen is if we delayed opening
 	   dovecot-uidlist and we're trying to open a mail that got recently
 	   expunged. Let's test this theory first: */
-	(void)mail_index_refresh(mbox->box.index);
+	mail_index_refresh(mbox->box.index);
 	view = mail_index_view_open(mbox->box.index);
 	exists = mail_index_lookup_seq(view, mail->uid, &seq);
 	mail_index_view_close(&view);
@@ -496,7 +495,7 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		if (guid != NULL) {
 			if (*guid != '\0') {
 				*value_r = mail->data.guid =
-					p_strdup(mail->data_pool, guid);
+					p_strdup(mail->mail.data_pool, guid);
 				return 0;
 			}
 
@@ -504,8 +503,8 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 				"Maildir %s: Corrupted dovecot-uidlist: "
 				"UID %u had empty GUID, clearing it",
 				mailbox_get_path(_mail->box), _mail->uid);
-			maildir_uidlist_set_ext(mbox->uidlist, _mail->uid,
-				MAILDIR_UIDLIST_REC_EXT_GUID, NULL);
+			maildir_uidlist_unset_ext(mbox->uidlist, _mail->uid,
+				MAILDIR_UIDLIST_REC_EXT_GUID);
 		}
 
 		/* default to base filename: */
@@ -533,8 +532,8 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		}
 		end = strchr(fname, MAILDIR_INFO_SEP);
 		mail->data.filename = end == NULL ?
-			p_strdup(mail->data_pool, fname) :
-			p_strdup_until(mail->data_pool, fname, end);
+			p_strdup(mail->mail.data_pool, fname) :
+			p_strdup_until(mail->mail.data_pool, fname, end);
 		*value_r = mail->data.filename;
 		return 0;
 	case MAIL_FETCH_UIDL_BACKEND:
@@ -548,7 +547,7 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 			return maildir_mail_get_special(_mail,
 					MAIL_FETCH_UIDL_FILE_NAME, value_r);
 		} else {
-			*value_r = p_strdup(mail->data_pool, uidl);
+			*value_r = p_strdup(mail->mail.data_pool, uidl);
 		}
 		return 0;
 	case MAIL_FETCH_POP3_ORDER:
@@ -557,7 +556,7 @@ maildir_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 		if (order == NULL) {
 			*value_r = "";
 		} else {
-			*value_r = p_strdup(mail->data_pool, order);
+			*value_r = p_strdup(mail->mail.data_pool, order);
 		}
 		return 0;
 	default:
@@ -617,19 +616,18 @@ static void maildir_mail_remove_sizes_from_uidlist(struct mail *mail)
 
 	if (maildir_uidlist_lookup_ext(mbox->uidlist, mail->uid,
 				       MAILDIR_UIDLIST_REC_EXT_VSIZE) != NULL) {
-		maildir_uidlist_set_ext(mbox->uidlist, mail->uid,
-					MAILDIR_UIDLIST_REC_EXT_VSIZE, NULL);
+		maildir_uidlist_unset_ext(mbox->uidlist, mail->uid,
+					  MAILDIR_UIDLIST_REC_EXT_VSIZE);
 	}
 	if (maildir_uidlist_lookup_ext(mbox->uidlist, mail->uid,
 				       MAILDIR_UIDLIST_REC_EXT_PSIZE) != NULL) {
-		maildir_uidlist_set_ext(mbox->uidlist, mail->uid,
-					MAILDIR_UIDLIST_REC_EXT_PSIZE, NULL);
+		maildir_uidlist_unset_ext(mbox->uidlist, mail->uid,
+					  MAILDIR_UIDLIST_REC_EXT_PSIZE);
 	}
 }
 
 static int
-do_fix_size(struct maildir_mailbox *mbox, const char *path,
-	    const char *wrong_key_p)
+do_fix_size(struct maildir_mailbox *mbox, const char *path, char *wrong_key_p)
 {
 	const char *fname, *newpath, *extra, *info, *dir;
 	struct stat st;
@@ -726,6 +724,7 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	maildir_mail_get_received_date,
@@ -736,11 +735,13 @@ struct mail_vfuncs maildir_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	maildir_mail_get_stream,
+	index_mail_get_binary_stream,
 	maildir_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	maildir_update_pop3_uidl,
 	index_mail_expunge,
 	maildir_mail_set_cache_corrupted,

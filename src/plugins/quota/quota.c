@@ -4,7 +4,7 @@
 #include "array.h"
 #include "hash.h"
 #include "str.h"
-#include "network.h"
+#include "net.h"
 #include "write-full.h"
 #include "eacces-error.h"
 #include "mailbox-list-private.h"
@@ -183,7 +183,7 @@ int quota_user_read_settings(struct mail_user *user,
 			     const char **error_r)
 {
 	struct quota_settings *quota_set;
-	char root_name[6 + MAX_INT_STRLEN];
+	char root_name[5 + MAX_INT_STRLEN + 1];
 	const char *env, *error;
 	unsigned int i;
 	pool_t pool;
@@ -195,13 +195,12 @@ int quota_user_read_settings(struct mail_user *user,
 	quota_set->debug = user->mail_debug;
 	quota_set->quota_exceeded_msg =
 		mail_user_plugin_getenv(user, "quota_exceeded_message");
-	quota_set->ignore_save_errors =
-		mail_user_plugin_getenv(user, "quota_ignore_save_errors") != NULL;
 	if (quota_set->quota_exceeded_msg == NULL)
 		quota_set->quota_exceeded_msg = DEFAULT_QUOTA_EXCEEDED_MSG;
 
 	p_array_init(&quota_set->root_sets, pool, 4);
-	i_strocpy(root_name, "quota", sizeof(root_name));
+	if (i_strocpy(root_name, "quota", sizeof(root_name)) < 0)
+		i_unreached();
 	for (i = 2;; i++) {
 		env = mail_user_plugin_getenv(user, root_name);
 		if (env == NULL || *env == '\0')
@@ -214,7 +213,8 @@ int quota_user_read_settings(struct mail_user *user,
 			pool_unref(&pool);
 			return -1;
 		}
-		i_snprintf(root_name, sizeof(root_name), "quota%d", i);
+		if (i_snprintf(root_name, sizeof(root_name), "quota%d", i) < 0)
+			i_unreached();
 	}
 	if (array_count(&quota_set->root_sets) == 0) {
 		pool_unref(&pool);
@@ -634,14 +634,13 @@ void quota_add_user_namespace(struct quota *quota, struct mail_namespace *ns)
 
 	/* first check if there already exists a namespace with the exact same
 	   path. we don't want to count them twice. */
-	path = mailbox_list_get_path(ns->list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	if (path != NULL) {
+	if (mailbox_list_get_root_path(ns->list, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				       &path)) {
 		namespaces = array_get(&quota->namespaces, &count);
 		for (i = 0; i < count; i++) {
-			path2 = mailbox_list_get_path(namespaces[i]->list, NULL,
-				     	MAILBOX_LIST_PATH_TYPE_MAILBOX);
-			if (path2 != NULL && strcmp(path, path2) == 0) {
+			if (mailbox_list_get_root_path(namespaces[i]->list,
+				MAILBOX_LIST_PATH_TYPE_MAILBOX, &path2) &&
+			    strcmp(path, path2) == 0) {
 				/* duplicate */
 				return;
 			}
@@ -1113,7 +1112,7 @@ int quota_transaction_commit(struct quota_transaction_context **_ctx)
 		ret = -1;
 	else if (ctx->bytes_used != 0 || ctx->count_used != 0 ||
 		 ctx->recalculate) T_BEGIN {
-		ARRAY_DEFINE(warn_roots, struct quota_root *);
+		ARRAY(struct quota_root *) warn_roots;
 
 		mailbox_name = mailbox_get_vname(ctx->box);
 		(void)mail_namespace_find_unalias(

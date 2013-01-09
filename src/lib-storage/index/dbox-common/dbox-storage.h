@@ -10,7 +10,6 @@ struct dbox_save_context;
 
 #define DBOX_SUBSCRIPTION_FILE_NAME "subscriptions"
 #define DBOX_UIDVALIDITY_FILE_NAME "dovecot-uidvalidity"
-#define DBOX_INDEX_PREFIX "dovecot.index"
 #define DBOX_TEMP_FILE_PREFIX ".temp."
 #define DBOX_ALT_SYMLINK_NAME "dbox-alt-root"
 
@@ -67,5 +66,6 @@ void dbox_notify_changes(struct mailbox *box);
 int dbox_mailbox_open(struct mailbox *box);
 int dbox_mailbox_create(struct mailbox *box,
 			const struct mailbox_update *update, bool directory);
+int dbox_verify_alt_storage(struct mailbox_list *list);
 
 #endif

@@ -33,6 +33,12 @@
 #define AUTH_DNS_WARN_MSECS 500
 #define CACHED_PASSWORD_SCHEME "SHA1"
 
+struct auth_request_proxy_dns_lookup_ctx {
+	struct auth_request *request;
+	auth_request_proxy_cb_t *callback;
+	struct dns_lookup *dns_lookup;
+};
+
 unsigned int auth_request_state_count[AUTH_REQUEST_STATE_MAX];
 
 static void get_log_prefix(string_t *str, struct auth_request *auth_request,
@@ -50,6 +56,7 @@ auth_request_new(const struct mech_module *mech)
 
 	request->refcount = 1;
 	request->last_access = ioloop_time;
+	request->session_pid = (pid_t)-1;
 
 	request->set = global_auth_settings;
 	request->mech = mech;
@@ -71,6 +78,7 @@ struct auth_request *auth_request_new_dummy(void)
 
 	request->refcount = 1;
 	request->last_access = ioloop_time;
+	request->session_pid = (pid_t)-1;
 	request->set = global_auth_settings;
 	return request;
 }
@@ -135,8 +143,7 @@ void auth_request_fail(struct auth_request *request)
 
 	auth_request_set_state(request, AUTH_REQUEST_STATE_FINISHED);
 	auth_request_refresh_last_access(request);
-	auth_request_handler_reply(request, AUTH_CLIENT_RESULT_FAILURE,
-				   NULL, 0);
+	auth_request_handler_reply(request, AUTH_CLIENT_RESULT_FAILURE, "", 0);
 }
 
 void auth_request_internal_failure(struct auth_request *request)
@@ -167,6 +174,8 @@ void auth_request_unref(struct auth_request **_request)
 			    strlen(request->mech_password));
 	}
 
+	if (request->dns_lookup_ctx != NULL)
+		dns_lookup_abort(&request->dns_lookup_ctx->dns_lookup);
 	if (request->to_abort != NULL)
 		timeout_remove(&request->to_abort);
 	if (request->to_penalty != NULL)
@@ -230,9 +239,9 @@ bool auth_request_import_info(struct auth_request *request,
 	if (strcmp(key, "service") == 0)
 		request->service = p_strdup(request->pool, value);
 	else if (strcmp(key, "lip") == 0)
-		net_addr2ip(value, &request->local_ip);
+		(void)net_addr2ip(value, &request->local_ip);
 	else if (strcmp(key, "rip") == 0)
-		net_addr2ip(value, &request->remote_ip);
+		(void)net_addr2ip(value, &request->remote_ip);
 	else if (strcmp(key, "lport") == 0)
 		request->local_port = atoi(value);
 	else if (strcmp(key, "rport") == 0)
@@ -269,6 +278,20 @@ bool auth_request_import_auth(struct auth_request *request,
 	} else {
 		return FALSE;
 	}
+	return TRUE;
+}
+
+bool auth_request_import_master(struct auth_request *request,
+				const char *key, const char *value)
+{
+	pid_t pid;
+
+	/* master request lookups may set these */
+	if (strcmp(key, "session_pid") == 0) {
+		if (str_to_pid(value, &pid) == 0)
+			request->session_pid = pid;
+	} else
+		return FALSE;
 	return TRUE;
 }
 
@@ -317,7 +340,7 @@ void auth_request_continue(struct auth_request *request,
 	i_assert(request->state == AUTH_REQUEST_STATE_MECH_CONTINUE);
 
 	if (request->successful) {
-		auth_request_success(request, NULL, 0);
+		auth_request_success(request, "", 0);
 		return;
 	}
 
@@ -415,22 +438,6 @@ static void auth_request_save_cache(struct auth_request *request,
 			  result == PASSDB_RESULT_OK);
 }
 
-static void auth_request_userdb_reply_update_user(struct auth_request *request)
-{
-	const char *str, *p;
-
-	str = t_strdup(auth_stream_reply_export(request->userdb_reply));
-
-	/* reset the reply and add the new username */
-	auth_stream_reply_reset(request->userdb_reply);
-	auth_stream_reply_add(request->userdb_reply, NULL, request->user);
-
-	/* add the rest */
-	p = strchr(str, '\t');
-	if (p != NULL)
-		auth_stream_reply_import(request->userdb_reply, p + 1);
-}
-
 static bool auth_request_master_lookup_finish(struct auth_request *request)
 {
 	struct auth_passdb *passdb;
@@ -445,8 +452,6 @@ static bool auth_request_master_lookup_finish(struct auth_request *request)
 	request->master_user = request->user;
 	request->user = request->requested_login_user;
 	request->requested_login_user = NULL;
-	if (request->userdb_reply != NULL)
-		auth_request_userdb_reply_update_user(request);
 
 	request->skip_password_check = TRUE;
 	request->passdb_password = NULL;
@@ -782,7 +787,8 @@ void auth_request_lookup_credentials(struct auth_request *request,
 		auth_request_log_debug(request, "password",
 			"passdb doesn't support credential lookups");
 		auth_request_lookup_credentials_callback(
-			PASSDB_RESULT_SCHEME_NOT_AVAILABLE, NULL, 0, request);
+					PASSDB_RESULT_SCHEME_NOT_AVAILABLE,
+					&uchar_nul, 0, request);
 	} else if (passdb->blocking) {
 		passdb_blocking_lookup_credentials(request);
 	} else {
@@ -863,7 +869,7 @@ static bool auth_request_lookup_user_cache(struct auth_request *request,
 	}
 
 	*result_r = USERDB_RESULT_OK;
-	*reply_r = auth_stream_reply_init_userdb(request->pool);
+	*reply_r = auth_stream_reply_init(request->pool);
 	auth_stream_reply_import(*reply_r, value);
 	return TRUE;
 }
@@ -1237,8 +1243,6 @@ auth_request_try_update_username(struct auth_request *request,
 				       "username changed %s -> %s",
 				       request->user, new_value);
 		request->user = p_strdup(request->pool, new_value);
-		if (request->userdb_reply != NULL)
-			auth_request_userdb_reply_update_user(request);
 	}
 	return TRUE;
 }
@@ -1342,9 +1346,7 @@ void auth_request_init_userdb_reply(struct auth_request *request)
 {
 	struct userdb_module *module = request->userdb->userdb;
 
-	request->userdb_reply = auth_stream_reply_init_userdb(request->pool);
-	auth_stream_reply_add(request->userdb_reply, NULL, request->user);
-
+	request->userdb_reply = auth_stream_reply_init(request->pool);
 	userdb_template_export(module->default_fields_tmpl, request);
 }
 
@@ -1452,23 +1454,28 @@ void auth_request_set_userdb_field_values(struct auth_request *request,
 
 static bool auth_request_proxy_is_self(struct auth_request *request)
 {
-	const char *const *tmp, *port = NULL, *destuser = NULL;
+	const char *const *tmp, *port = NULL;
 
 	if (!request->proxy_host_is_self)
 		return FALSE;
 
+	/* check if the port is the same */
 	tmp = auth_stream_split(request->extra_fields);
 	for (; *tmp != NULL; tmp++) {
 		if (strncmp(*tmp, "port=", 5) == 0)
 			port = *tmp + 5;
-		else if (strncmp(*tmp, "destuser=", 9) == 0)
-			destuser = *tmp + 9;
 	}
 
 	if (port != NULL && !str_uint_equals(port, request->local_port))
 		return FALSE;
-	return destuser == NULL ||
-		strcmp(destuser, request->original_username) == 0;
+	/* don't check destuser. in some systems destuser is intentionally
+	   changed to proxied connections, but that shouldn't affect the
+	   proxying decision.
+
+	   it's unlikely any systems would actually want to proxy a connection
+	   to itself only to change the username, since it can already be done
+	   without proxying by changing the "user" field. */
+	return TRUE;
 }
 
 static bool
@@ -1512,19 +1519,16 @@ static void auth_request_proxy_finish_ip(struct auth_request *request)
 	}
 }
 
-struct auth_request_proxy_dns_lookup_ctx {
-	struct auth_request *request;
-	auth_request_proxy_cb_t *callback;
-};
-
 static void
 auth_request_proxy_dns_callback(const struct dns_lookup_result *result,
-				void *context)
+				struct auth_request_proxy_dns_lookup_ctx *ctx)
 {
-	struct auth_request_proxy_dns_lookup_ctx *ctx = context;
 	struct auth_request *request = ctx->request;
 	const char *host;
 	unsigned int i;
+
+	request->dns_lookup_ctx = NULL;
+	ctx->dns_lookup = NULL;
 
 	host = auth_stream_reply_find(request->extra_fields, "host");
 	i_assert(host != NULL);
@@ -1554,7 +1558,6 @@ auth_request_proxy_dns_callback(const struct dns_lookup_result *result,
 	}
 	if (ctx->callback != NULL)
 		ctx->callback(result->ret == 0, request);
-	i_free(ctx);
 }
 
 static int auth_request_proxy_host_lookup(struct auth_request *request,
@@ -1589,10 +1592,11 @@ static int auth_request_proxy_host_lookup(struct auth_request *request,
 		}
 	}
 
-	ctx = i_new(struct auth_request_proxy_dns_lookup_ctx, 1);
+	ctx = p_new(request->pool, struct auth_request_proxy_dns_lookup_ctx, 1);
 	ctx->request = request;
 
-	if (dns_lookup(host, &dns_set, auth_request_proxy_dns_callback, ctx) < 0) {
+	if (dns_lookup(host, &dns_set, auth_request_proxy_dns_callback, ctx,
+		       &ctx->dns_lookup) < 0) {
 		/* failed early */
 		request->internal_failure = TRUE;
 		auth_request_proxy_finish_failure(request);
@@ -1607,7 +1611,7 @@ int auth_request_proxy_finish(struct auth_request *request,
 {
 	int ret;
 
-	if (!request->proxy)
+	if (!request->proxy || request->auth_only)
 		return 1;
 
 	if ((ret = auth_request_proxy_host_lookup(request, callback)) <= 0)

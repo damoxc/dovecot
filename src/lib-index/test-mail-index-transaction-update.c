@@ -49,6 +49,14 @@ void mail_index_transaction_lookup_latest_keywords(struct mail_index_transaction
 {
 }
 
+struct mail_keywords *
+mail_index_keywords_create_from_indexes(struct mail_index *index ATTR_UNUSED,
+					const ARRAY_TYPE(keyword_indexes)
+						*keyword_indexes ATTR_UNUSED)
+{
+	return NULL;
+}
+
 static struct mail_index_transaction *
 mail_index_transaction_new(void)
 {
@@ -131,7 +139,7 @@ static void test_mail_index_append(void)
 static void test_mail_index_flag_update_fastpath(void)
 {
 	struct mail_index_transaction *t;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	unsigned int count;
 
 	hdr.messages_count = 20;
@@ -160,12 +168,10 @@ static void test_mail_index_flag_update_fastpath(void)
 	test_assert(updates[0].add_flags == MAIL_DELETED);
 	test_assert(updates[0].remove_flags ==
 		    (MAIL_ANSWERED | MAIL_FLAGGED | MAIL_SEEN | MAIL_DRAFT));
-	test_assert(updates[0].padding == 0);
 	test_assert(updates[1].uid1 == 16);
 	test_assert(updates[1].uid2 == 16);
 	test_assert(updates[1].add_flags == MAIL_DELETED);
 	test_assert(updates[1].remove_flags == 0);
-	test_assert(updates[1].padding == 0);
 	test_assert(!t->log_updates);
 	test_end();
 }
@@ -173,7 +179,7 @@ static void test_mail_index_flag_update_fastpath(void)
 static void test_mail_index_flag_update_simple_merges(void)
 {
 	struct mail_index_transaction *t;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	unsigned int count;
 
 	hdr.messages_count = 20;
@@ -216,7 +222,7 @@ static void test_mail_index_flag_update_simple_merges(void)
 static void test_mail_index_flag_update_complex_merges(void)
 {
 	struct mail_index_transaction *t;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	unsigned int count;
 
 	hdr.messages_count = 20;
@@ -271,11 +277,11 @@ static void test_mail_index_flag_update_complex_merges(void)
 	test_end();
 }
 
-static bool
+static void
 flags_array_check(struct mail_index_transaction *t,
 		  const enum mail_flags *flags, unsigned int msg_count)
 {
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	unsigned int i, count, seq;
 
 	if (array_is_created(&t->updates))
@@ -298,7 +304,6 @@ flags_array_check(struct mail_index_transaction *t,
 	}
 	for (; seq <= msg_count; seq++)
 		test_assert(flags[seq] == 0);
-	return TRUE;
 }
 
 static void test_mail_index_flag_update_random(void)
@@ -349,7 +354,7 @@ static void test_mail_index_flag_update_random(void)
 static void test_mail_index_cancel_flag_updates(void)
 {
 	struct mail_index_transaction *t;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	unsigned int count;
 
 	hdr.messages_count = 20;
@@ -361,15 +366,15 @@ static void test_mail_index_cancel_flag_updates(void)
 	updates = array_get(&t->updates, &count);
 	test_assert(count == 1);
 	test_assert(updates[0].uid1 == 5 && updates[0].uid2 == 7);
-	mail_index_cancel_flag_updates(t, 5);
+	test_assert(mail_index_cancel_flag_updates(t, 5));
 	test_assert(updates[0].uid1 == 6 && updates[0].uid2 == 7);
-	mail_index_cancel_flag_updates(t, 7);
+	test_assert(mail_index_cancel_flag_updates(t, 7));
 	test_assert(updates[0].uid1 == 6 && updates[0].uid2 == 6);
-	mail_index_cancel_flag_updates(t, 6);
+	test_assert(mail_index_cancel_flag_updates(t, 6));
 	test_assert(!array_is_created(&t->updates));
 
 	mail_index_update_flags_range(t, 5, 7, MODIFY_REPLACE, 0);
-	mail_index_cancel_flag_updates(t, 6);
+	test_assert(mail_index_cancel_flag_updates(t, 6));
 	updates = array_get(&t->updates, &count);
 	test_assert(count == 2);
 	test_assert(updates[0].uid1 == 5 && updates[0].uid2 == 5);
@@ -382,7 +387,7 @@ static void test_mail_index_flag_update_appends(void)
 {
 	struct mail_index_transaction *t;
 	const struct mail_index_record *appends;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	unsigned int count;
 	uint32_t seq;
 

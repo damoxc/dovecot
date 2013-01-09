@@ -1,41 +1,122 @@
 /* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "array.h"
+#include "module-dir.h"
 #include "str.h"
+#include "istream.h"
+#include "ostream.h"
 #include "fs-api-private.h"
 
-static struct fs *fs_classes[] = {
-	&fs_class_posix,
-	&fs_class_sis,
-	&fs_class_sis_queue
-};
+static struct module *fs_modules = NULL;
+static ARRAY(const struct fs *) fs_classes;
 
-static struct fs *
+static int
 fs_alloc(const struct fs *fs_class, const char *args,
-	 const struct fs_settings *set)
+	 const struct fs_settings *set, struct fs **fs_r, const char **error_r)
 {
 	struct fs *fs;
+	int ret;
 
-	fs = fs_class->v.init(args, set);
+	fs = fs_class->v.alloc();
 	fs->last_error = str_new(default_pool, 64);
-	return fs;
+
+	T_BEGIN {
+		ret = fs_class->v.init(fs, args, set);
+	} T_END;
+	if (ret < 0) {
+		/* a bit kludgy way to allow data stack frame usage in normal
+		   conditions but still be able to return error message from
+		   data stack. */
+		*error_r = t_strdup_printf("%s: %s", fs_class->name,
+					   fs_last_error(fs));
+		fs_deinit(&fs);
+		return -1;
+	}
+	*fs_r = fs;
+	return 0;
 }
 
-struct fs *fs_init(const char *driver, const char *args,
-		   const struct fs_settings *set)
+static void fs_class_register(const struct fs *fs_class)
 {
-	unsigned int i;
+	array_append(&fs_classes, &fs_class, 1);
+}
 
-	for (i = 0; i < N_ELEMENTS(fs_classes); i++) {
-		if (strcmp(fs_classes[i]->name, driver) == 0)
-			return fs_alloc(fs_classes[i], args, set);
+static void fs_classes_init(void)
+{
+	i_array_init(&fs_classes, 8);
+	fs_class_register(&fs_class_posix);
+	fs_class_register(&fs_class_sis);
+	fs_class_register(&fs_class_sis_queue);
+}
+
+static const struct fs *fs_class_find(const char *driver)
+{
+	const struct fs *const *classp;
+
+	if (!array_is_created(&fs_classes))
+		fs_classes_init();
+
+	array_foreach(&fs_classes, classp) {
+		if (strcmp((*classp)->name, driver) == 0)
+			return *classp;
 	}
-	i_fatal("Unknown fs driver: %s", driver);
+	return NULL;
+}
+
+static void fs_class_deinit_modules(void)
+{
+	module_dir_unload(&fs_modules);
+}
+
+static void fs_class_try_load_plugin(const char *driver)
+{
+	const char *module_name = t_strdup_printf("fs_%s", driver);
+	struct module *module;
+	struct module_dir_load_settings mod_set;
+	const struct fs *fs_class;
+
+	memset(&mod_set, 0, sizeof(mod_set));
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
+	mod_set.ignore_missing = TRUE;
+
+	fs_modules = module_dir_load_missing(fs_modules, MODULE_DIR,
+					     module_name, &mod_set);
+	module_dir_init(fs_modules);
+
+	module = module_dir_find(fs_modules, module_name);
+	fs_class = module == NULL ? NULL :
+		module_get_symbol(module, t_strdup_printf("fs_class_%s", driver));
+	if (fs_class != NULL)
+		fs_class_register(fs_class);
+
+	lib_atexit(fs_class_deinit_modules);
+}
+
+int fs_init(const char *driver, const char *args,
+	    const struct fs_settings *set,
+	    struct fs **fs_r, const char **error_r)
+{
+	const struct fs *fs_class;
+
+	fs_class = fs_class_find(driver);
+	if (fs_class == NULL) {
+		T_BEGIN {
+			fs_class_try_load_plugin(driver);
+		} T_END;
+		fs_class = fs_class_find(driver);
+	}
+	if (fs_class == NULL) {
+		*error_r = t_strdup_printf("Unknown fs driver: %s", driver);
+		return -1;
+	}
+	return fs_alloc(fs_class, args, set, fs_r, error_r);
 }
 
 void fs_deinit(struct fs **_fs)
 {
 	struct fs *fs = *_fs;
+	string_t *last_error = fs->last_error;
 
 	*_fs = NULL;
 
@@ -44,25 +125,25 @@ void fs_deinit(struct fs **_fs)
 			fs->name, fs->files_open_count);
 	}
 
-	str_free(&fs->last_error);
 	fs->v.deinit(fs);
+	str_free(&last_error);
 }
 
-int fs_open(struct fs *fs, const char *path, int mode_flags,
-	    struct fs_file **file_r)
+struct fs_file *fs_file_init(struct fs *fs, const char *path, int mode_flags)
 {
-	int ret;
+	struct fs_file *file;
+
+	i_assert(path != NULL);
 
 	T_BEGIN {
-		ret = fs->v.open(fs, path, mode_flags & FS_OPEN_MODE_MASK,
-				 mode_flags & ~FS_OPEN_MODE_MASK, file_r);
+		file = fs->v.file_init(fs, path, mode_flags & FS_OPEN_MODE_MASK,
+				       mode_flags & ~FS_OPEN_MODE_MASK);
 	} T_END;
-	if (ret == 0)
-		fs->files_open_count++;
-	return ret;
+	fs->files_open_count++;
+	return file;
 }
 
-void fs_close(struct fs_file **_file)
+void fs_file_deinit(struct fs_file **_file)
 {
 	struct fs_file *file = *_file;
 
@@ -71,7 +152,28 @@ void fs_close(struct fs_file **_file)
 	*_file = NULL;
 
 	file->fs->files_open_count--;
-	file->fs->v.close(file);
+	file->fs->v.file_deinit(file);
+}
+
+enum fs_properties fs_get_properties(struct fs *fs)
+{
+	return fs->v.get_properties(fs);
+}
+
+void fs_set_metadata(struct fs_file *file, const char *key, const char *value)
+{
+	if (file->fs->v.set_metadata != NULL)
+		file->fs->v.set_metadata(file, key, value);
+}
+
+int fs_get_metadata(struct fs_file *file,
+		    const ARRAY_TYPE(fs_metadata) **metadata_r)
+{
+	if (file->fs->v.get_metadata == NULL) {
+		fs_set_error(file->fs, "Metadata not supported by backend");
+		return -1;
+	}
+	return file->fs->v.get_metadata(file, metadata_r);
 }
 
 const char *fs_file_path(struct fs_file *file)
@@ -91,9 +193,39 @@ const char *fs_file_last_error(struct fs_file *file)
 	return fs_last_error(file->fs);
 }
 
+bool fs_prefetch(struct fs_file *file, uoff_t length)
+{
+	return file->fs->v.prefetch(file, length);
+}
+
 ssize_t fs_read(struct fs_file *file, void *buf, size_t size)
 {
-	return file->fs->v.read(file, buf, size);
+	const unsigned char *data;
+	size_t data_size;
+	ssize_t ret;
+
+	if (file->fs->v.read != NULL)
+		return file->fs->v.read(file, buf, size);
+
+	/* backend didn't bother to implement read(), but we can do it with
+	   streams. */
+	if (file->pending_read_input == NULL)
+		file->pending_read_input = fs_read_stream(file, size+1);
+	ret = i_stream_read_data(file->pending_read_input,
+				 &data, &data_size, size-1);
+	if (ret == 0) {
+		fs_set_error_async(file->fs);
+		return -1;
+	}
+	if (ret < 0 && file->pending_read_input->stream_errno != 0) {
+		fs_set_error(file->fs, "read(%s) failed: %m",
+			     i_stream_get_name(file->pending_read_input));
+	} else {
+		ret = I_MIN(size, data_size);
+		memcpy(buf, data, ret);
+	}
+	i_stream_unref(&file->pending_read_input);
+	return ret;
 }
 
 struct istream *fs_read_stream(struct fs_file *file, size_t max_buffer_size)
@@ -103,7 +235,37 @@ struct istream *fs_read_stream(struct fs_file *file, size_t max_buffer_size)
 
 int fs_write(struct fs_file *file, const void *data, size_t size)
 {
-	return file->fs->v.write(file, data, size);
+	struct ostream *output;
+	ssize_t ret;
+	int err;
+
+	if (file->fs->v.write != NULL)
+		return file->fs->v.write(file, data, size);
+
+	/* backend didn't bother to implement write(), but we can do it with
+	   streams. */
+	if (!file->write_pending) {
+		output = fs_write_stream(file);
+		if ((ret = o_stream_send(output, data, size)) < 0) {
+			err = errno;
+			fs_set_error(file->fs, "fs_write(%s) failed: %m",
+				     o_stream_get_name(output));
+			fs_write_stream_abort(file, &output);
+			errno = err;
+			return -1;
+		}
+		i_assert((size_t)ret == size);
+		ret = fs_write_stream_finish(file, &output);
+	} else {
+		ret = fs_write_stream_finish_async(file);
+	}
+	if (ret == 0) {
+		fs_set_error_async(file->fs);
+		file->write_pending = TRUE;
+		return -1;
+	}
+	file->write_pending = FALSE;
+	return ret < 0 ? -1 : 0;
 }
 
 struct ostream *fs_write_stream(struct fs_file *file)
@@ -121,12 +283,35 @@ int fs_write_stream_finish(struct fs_file *file, struct ostream **output)
 	return file->fs->v.write_stream_finish(file, TRUE);
 }
 
+int fs_write_stream_finish_async(struct fs_file *file)
+{
+	return file->fs->v.write_stream_finish(file, TRUE);
+}
+
 void fs_write_stream_abort(struct fs_file *file, struct ostream **output)
 {
 	i_assert(*output == file->output);
 
 	*output = NULL;
 	(void)file->fs->v.write_stream_finish(file, FALSE);
+}
+
+void fs_file_set_async_callback(struct fs_file *file,
+				fs_file_async_callback_t *callback,
+				void *context)
+{
+	if (file->fs->v.set_async_callback != NULL)
+		file->fs->v.set_async_callback(file, callback, context);
+	else
+		callback(context);
+}
+
+int fs_wait_async(struct fs *fs)
+{
+	if (fs->v.wait_async == NULL)
+		return 0;
+	else
+		return fs->v.wait_async(fs);
 }
 
 int fs_lock(struct fs_file *file, unsigned int secs, struct fs_lock **lock_r)
@@ -142,39 +327,54 @@ void fs_unlock(struct fs_lock **_lock)
 	lock->file->fs->v.unlock(lock);
 }
 
-int fs_fdatasync(struct fs_file *file)
+int fs_exists(struct fs_file *file)
 {
-	return file->fs->v.fdatasync(file);
+	return file->fs->v.exists(file);
 }
 
-int fs_exists(struct fs *fs, const char *path)
+int fs_stat(struct fs_file *file, struct stat *st_r)
 {
-	return fs->v.exists(fs, path);
+	return file->fs->v.stat(file, st_r);
 }
 
-int fs_stat(struct fs *fs, const char *path, struct stat *st_r)
+int fs_copy(struct fs_file *src, struct fs_file *dest)
 {
-	return fs->v.stat(fs, path, st_r);
+	i_assert(src->fs == dest->fs);
+	return src->fs->v.copy(src, dest);
 }
 
-int fs_link(struct fs *fs, const char *src, const char *dest)
+int fs_copy_finish_async(struct fs_file *dest)
 {
-	return fs->v.link(fs, src, dest);
+	return dest->fs->v.copy(NULL, dest);
 }
 
-int fs_rename(struct fs *fs, const char *src, const char *dest)
+int fs_rename(struct fs_file *src, struct fs_file *dest)
 {
-	return fs->v.rename(fs, src, dest);
+	i_assert(src->fs == dest->fs);
+	return src->fs->v.rename(src, dest);
 }
 
-int fs_unlink(struct fs *fs, const char *path)
+int fs_delete(struct fs_file *file)
 {
-	return fs->v.unlink(fs, path);
+	return file->fs->v.delete_file(file);
 }
 
-int fs_rmdir(struct fs *fs, const char *path)
+struct fs_iter *fs_iter_init(struct fs *fs, const char *path)
 {
-	return fs->v.rmdir(fs, path);
+	return fs->v.iter_init(fs, path);
+}
+
+int fs_iter_deinit(struct fs_iter **_iter)
+{
+	struct fs_iter *iter = *_iter;
+
+	*_iter = NULL;
+	return iter->fs->v.iter_deinit(iter);
+}
+
+const char *fs_iter_next(struct fs_iter *iter)
+{
+	return iter->fs->v.iter_next(iter);
 }
 
 void fs_set_error(struct fs *fs, const char *fmt, ...)
@@ -196,4 +396,10 @@ void fs_set_critical(struct fs *fs, const char *fmt, ...)
 	str_vprintfa(fs->last_error, fmt, args);
 	i_error("fs-%s: %s", fs->name, str_c(fs->last_error));
 	va_end(args);
+}
+
+void fs_set_error_async(struct fs *fs)
+{
+	fs_set_error(fs, "Asynchronous operation in progress");
+	errno = EAGAIN;
 }

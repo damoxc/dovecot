@@ -16,6 +16,7 @@
 #include "mail-storage-service.h"
 #include "mail-search-build.h"
 #include "mail-search-parser.h"
+#include "mailbox-list-iter.h"
 #include "doveadm.h"
 #include "doveadm-settings.h"
 #include "doveadm-print.h"
@@ -46,6 +47,8 @@ void doveadm_mail_failed_error(struct doveadm_mail_cmd_context *ctx,
 		break;
 	case MAIL_ERROR_NOTPOSSIBLE:
 	case MAIL_ERROR_EXISTS:
+	case MAIL_ERROR_CONVERSION:
+	case MAIL_ERROR_INVALIDDATA:
 		exit_code = DOVEADM_EX_NOTPOSSIBLE;
 		break;
 	case MAIL_ERROR_PARAMS:
@@ -76,7 +79,7 @@ void doveadm_mail_failed_storage(struct doveadm_mail_cmd_context *ctx,
 {
 	enum mail_error error;
 
-	(void)mail_storage_get_last_error(storage, &error);
+	mail_storage_get_last_error(storage, &error);
 	doveadm_mail_failed_error(ctx, error);
 }
 
@@ -107,7 +110,8 @@ cmd_purge_run(struct doveadm_mail_cmd_context *ctx, struct mail_user *user)
 	int ret = 0;
 
 	for (ns = user->namespaces; ns != NULL; ns = ns->next) {
-		if (ns->type != NAMESPACE_PRIVATE || ns->alias_for != NULL)
+		if (ns->type != MAIL_NAMESPACE_TYPE_PRIVATE ||
+		    ns->alias_for != NULL)
 			continue;
 
 		if (mail_storage_purge(ns->storage) < 0) {
@@ -140,11 +144,6 @@ doveadm_mailbox_find(struct mail_user *user, const char *mailbox)
 	}
 
 	ns = mail_namespace_find(user->namespaces, mailbox);
-	if (ns == NULL) {
-		i_fatal_status(DOVEADM_EX_NOTFOUND,
-			       "Can't find namespace for mailbox %s", mailbox);
-	}
-
 	return mailbox_alloc(ns->list, mailbox, MAILBOX_FLAG_IGNORE_ACLS);
 }
 
@@ -201,17 +200,17 @@ static int cmd_force_resync_box(struct doveadm_mail_cmd_context *ctx,
 	struct mailbox *box;
 	int ret = 0;
 
-	box = mailbox_alloc(info->ns->list, info->name,
+	box = mailbox_alloc(info->ns->list, info->vname,
 			    MAILBOX_FLAG_IGNORE_ACLS);
 	if (mailbox_open(box) < 0) {
-		i_error("Opening mailbox %s failed: %s", info->name,
+		i_error("Opening mailbox %s failed: %s", info->vname,
 			mailbox_get_last_error(box, NULL));
 		doveadm_mail_failed_mailbox(ctx, box);
 		ret = -1;
 	} else if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FORCE_RESYNC |
 				MAILBOX_SYNC_FLAG_FIX_INCONSISTENT) < 0) {
 		i_error("Forcing a resync on mailbox %s failed: %s",
-			info->name, mailbox_get_last_error(box, NULL));
+			info->vname, mailbox_get_last_error(box, NULL));
 		doveadm_mail_failed_mailbox(ctx, box);
 		ret = -1;
 	}
@@ -226,8 +225,7 @@ static int cmd_force_resync_run(struct doveadm_mail_cmd_context *ctx,
 		MAILBOX_LIST_ITER_RAW_LIST |
 		MAILBOX_LIST_ITER_RETURN_NO_FLAGS |
 		MAILBOX_LIST_ITER_STAR_WITHIN_NS;
-	const enum namespace_type ns_mask =
-		NAMESPACE_PRIVATE | NAMESPACE_SHARED | NAMESPACE_PUBLIC;
+	const enum mail_namespace_type ns_mask = MAIL_NAMESPACE_TYPE_MASK_ALL;
 	struct mailbox_list_iterate_context *iter;
 	const struct mailbox_info *info;
 	int ret = 0;
@@ -274,7 +272,7 @@ doveadm_mail_next_user(struct doveadm_mail_cmd_context *ctx,
 	const char *error;
 	int ret;
 
-	i_set_failure_prefix(t_strdup_printf("doveadm(%s): ", input->username));
+	i_set_failure_prefix("doveadm(%s): ", input->username);
 
 	/* see if we want to execute this command via (another)
 	   doveadm server */
@@ -701,7 +699,7 @@ void doveadm_mail_init(void)
 		doveadm_mail_register_cmd(mail_commands[i]);
 
 	memset(&mod_set, 0, sizeof(mod_set));
-	mod_set.version = master_service_get_version_string(master_service);
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
 	mod_set.require_init_funcs = TRUE;
 	mod_set.debug = doveadm_debug;
 	mod_set.binary_name = "doveadm";

@@ -64,7 +64,7 @@ void index_mailbox_set_recent_uid(struct mailbox *box, uint32_t uid)
 	}
 	ibox->recent_flags_prev_uid = uid;
 
-	seq_range_array_add(&ibox->recent_flags, 64, uid);
+	seq_range_array_add_with_init(&ibox->recent_flags, 64, uid);
 	ibox->recent_flags_count++;
 }
 
@@ -154,6 +154,7 @@ static void index_view_sync_recs_get(struct index_mailbox_sync_context *ctx)
 	i_array_init(&ctx->hidden_updates, 32);
 	while (mail_index_view_sync_next(ctx->sync_ctx, &sync_rec)) {
 		switch (sync_rec.type) {
+		case MAIL_INDEX_VIEW_SYNC_TYPE_MODSEQ:
 		case MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS:
 			if (!mail_index_lookup_seq_range(ctx->ctx.box->view,
 							 sync_rec.uid1,
@@ -161,17 +162,22 @@ static void index_view_sync_recs_get(struct index_mailbox_sync_context *ctx)
 							 &seq1, &seq2))
 				break;
 
-			if (!sync_rec.hidden) {
+			if (!sync_rec.hidden &&
+			    sync_rec.type == MAIL_INDEX_VIEW_SYNC_TYPE_FLAGS) {
 				seq_range_array_add_range(&ctx->flag_updates,
 							  seq1, seq2);
-			} else if (array_is_created(&ctx->hidden_updates)) {
+			} else {
 				seq_range_array_add_range(&ctx->hidden_updates,
 							  seq1, seq2);
 			}
 			break;
 		}
 	}
+}
 
+static void
+index_view_sync_cleanup_updates(struct index_mailbox_sync_context *ctx)
+{
 	/* remove expunged messages from flag updates */
 	if (ctx->expunges != NULL) {
 		seq_range_array_remove_seq_range(&ctx->flag_updates,
@@ -219,6 +225,14 @@ index_mailbox_sync_init(struct mailbox *box, enum mailbox_sync_flags flags,
 	}
 	index_view_sync_recs_get(ctx);
 	index_sync_search_results_expunge(ctx);
+
+	/* sync private index if needed. it doesn't use box->view, so it
+	   doesn't matter if it's called at _sync_init() or _sync_deinit().
+	   however we also need to know if any private flags have changed
+	   since last sync, so we need to call it before _sync_next() calls. */
+	(void)index_storage_mailbox_sync_pvt(box, &ctx->flag_updates,
+					     &ctx->hidden_updates);
+	index_view_sync_cleanup_updates(ctx);
 	return &ctx->ctx;
 }
 
@@ -333,7 +347,7 @@ index_mailbox_expunge_unseen_recent(struct index_mailbox_sync_context *ctx)
 			for (uid = range[i].seq1; uid <= range[i].seq2; uid++) {
 				if (uid >= hdr->next_uid)
 					break;
-				mail_index_lookup_seq(view, uid, &seq);
+				(void)mail_index_lookup_seq(view, uid, &seq);
 				i_assert(seq != 0);
 			}
 		}
@@ -349,11 +363,10 @@ void index_sync_update_recent_count(struct mailbox *box)
 
 	hdr = mail_index_get_header(box->view);
 	if (hdr->first_recent_uid > ibox->recent_flags_prev_uid) {
-		mail_index_lookup_seq_range(box->view,
-					    hdr->first_recent_uid,
-					    hdr->next_uid,
-					    &seq1, &seq2);
-		if (seq1 != 0) {
+		if (mail_index_lookup_seq_range(box->view,
+						hdr->first_recent_uid,
+						hdr->next_uid,
+						&seq1, &seq2)) {
 			index_mailbox_set_recent_seq(box, box->view,
 						     seq1, seq2);
 		}
@@ -379,7 +392,7 @@ int index_mailbox_sync_deinit(struct mailbox_sync_context *_ctx,
 	if (ctx->sync_ctx != NULL) {
 		if (mail_index_view_sync_commit(&ctx->sync_ctx,
 						&delayed_expunges) < 0) {
-			mail_storage_set_index_error(_ctx->box);
+			mailbox_set_index_error(_ctx->box);
 			ret = -1;
 		}
 	}
@@ -394,6 +407,7 @@ int index_mailbox_sync_deinit(struct mailbox_sync_context *_ctx,
 	if (status_r != NULL)
 		status_r->sync_delayed_expunges = delayed_expunges;
 
+	/* update search results after private index is updated */
 	index_sync_search_results_update(ctx);
 
 	if (array_is_created(&ctx->flag_updates))
@@ -448,8 +462,7 @@ enum mailbox_sync_type index_sync_type_convert(enum mail_index_sync_type type)
 		ret |= MAILBOX_SYNC_TYPE_EXPUNGE;
 	if ((type & (MAIL_INDEX_SYNC_TYPE_FLAGS |
 		     MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD |
-		     MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE |
-		     MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET)) != 0)
+		     MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE)) != 0)
 		ret |= MAILBOX_SYNC_TYPE_FLAGS;
 	return ret;
 }
@@ -479,6 +492,7 @@ int index_storage_list_index_has_changed(struct mailbox *box,
 	struct stat st;
 	uint32_t ext_id;
 	bool expunged;
+	int ret;
 
 	if (mail_index_is_in_memory(mail_index_view_get_index(list_view)))
 		return 1;
@@ -492,10 +506,15 @@ int index_storage_list_index_has_changed(struct mailbox *box,
 		return 1;
 	}
 
-	dir = mailbox_list_get_path(box->list, box->name,
-				    MAILBOX_LIST_PATH_TYPE_INDEX);
+	ret = mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &dir);
+	if (ret < 0)
+		return -1;
+	i_assert(ret > 0);
+
 	path = t_strconcat(dir, "/", box->index_prefix, ".log", NULL);
 	if (stat(path, &st) < 0) {
+		if (errno == ENOENT)
+			return 1;
 		mail_storage_set_critical(box->storage,
 					  "stat(%s) failed: %m", path);
 		return -1;
@@ -518,6 +537,7 @@ void index_storage_list_index_update_sync(struct mailbox *box,
 	struct stat st;
 	uint32_t ext_id;
 	bool expunged;
+	int ret;
 
 	list_view = mail_index_transaction_get_view(trans);
 	if (mail_index_is_in_memory(mail_index_view_get_index(list_view)))
@@ -530,8 +550,11 @@ void index_storage_list_index_update_sync(struct mailbox *box,
 		return;
 	old_rec = data;
 
-	dir = mailbox_list_get_path(box->list, box->name,
-				    MAILBOX_LIST_PATH_TYPE_INDEX);
+	ret = mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &dir);
+	if (ret < 0)
+		return;
+	i_assert(ret > 0);
+
 	path = t_strconcat(dir, "/", box->index_prefix, ".log", NULL);
 	if (stat(path, &st) < 0) {
 		mail_storage_set_critical(box->storage,

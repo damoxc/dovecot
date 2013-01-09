@@ -32,6 +32,7 @@ struct mdbox_save_context {
 	struct mdbox_mailbox *mbox;
 	struct mdbox_sync_context *sync_ctx;
 
+	struct dbox_file *cur_file;
 	struct dbox_file_append_context *cur_file_append;
 	struct mdbox_map_append_context *append_ctx;
 
@@ -39,7 +40,7 @@ struct mdbox_save_context {
 	struct mdbox_map_atomic_context *atomic;
 	struct mdbox_map_transaction_context *map_trans;
 
-	ARRAY_DEFINE(mails, struct dbox_save_mail);
+	ARRAY(struct dbox_save_mail) mails;
 };
 
 static struct dbox_file *
@@ -105,9 +106,9 @@ mdbox_save_alloc(struct mailbox_transaction_context *t)
 
 	if (ctx != NULL) {
 		/* use the existing allocated structure */
+		ctx->cur_file = NULL;
 		ctx->ctx.failed = FALSE;
 		ctx->ctx.finished = FALSE;
-		ctx->ctx.cur_file = NULL;
 		ctx->ctx.dbox_output = NULL;
 		ctx->cur_file_append = NULL;
 		return &ctx->ctx.ctx;
@@ -132,14 +133,12 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 
 	/* get the size of the mail to be saved, if possible */
 	if (i_stream_get_size(input, TRUE, &mail_size) <= 0) {
-		const struct stat *st;
-
 		/* we couldn't find out the exact size. fallback to non-exact,
 		   maybe it'll give something useful. the mail size is used
 		   only to figure out if it's causing mdbox file to grow
 		   too large. */
-		st = i_stream_stat(input, FALSE);
-		mail_size = st->st_size > 0 ? st->st_size : 0;
+		if (i_stream_get_size(input, FALSE, &mail_size) <= 0)
+			mail_size = 0;
 	}
 	if (mdbox_map_append_next(ctx->append_ctx, mail_size, 0,
 				  &ctx->cur_file_append,
@@ -150,7 +149,7 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 	i_assert(ctx->ctx.dbox_output->offset <= (uint32_t)-1);
 	append_offset = ctx->ctx.dbox_output->offset;
 
-	ctx->ctx.cur_file = ctx->cur_file_append->file;
+	ctx->cur_file = ctx->cur_file_append->file;
 	dbox_save_begin(&ctx->ctx, input);
 
 	save_mail = array_append_space(&ctx->mails);
@@ -435,8 +434,8 @@ int mdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 		/* missing GUID, something's broken. don't copy using
 		   refcounting. */
 		return mail_storage_copy(_ctx, mail);
-	} else if (_ctx->guid != NULL &&
-		   (guid_128_from_string(_ctx->guid, wanted_guid) < 0 ||
+	} else if (_ctx->data.guid != NULL &&
+		   (guid_128_from_string(_ctx->data.guid, wanted_guid) < 0 ||
 		    memcmp(guid_data, wanted_guid, sizeof(wanted_guid)) != 0)) {
 		/* GUID change requested. we can't do it with refcount
 		   copying */

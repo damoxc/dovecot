@@ -9,23 +9,20 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-master \
 	-I$(top_srcdir)/src/lib-mail \
 	-I$(top_srcdir)/src/lib-imap \
+	-I$(top_srcdir)/src/lib-imap-urlauth \
+	-I$(top_srcdir)/src/lib-imap-storage \
 	-I$(top_srcdir)/src/lib-index \
 	-I$(top_srcdir)/src/lib-storage
 
 imap_LDFLAGS = -export-dynamic
 
-if !BUILD_SHARED_LIBS
-unused_objects = \
-	../lib/mountpoint.o
-endif
-
 imap_LDADD = \
-	$(unused_objects) \
+	../lib-imap-urlauth/libimap-urlauth.la \
 	$(LIBDOVECOT_STORAGE) \
 	$(LIBDOVECOT) \
 	$(MODULE_LIBS)
 imap_DEPENDENCIES = \
-	$(unused_objects) \
+	../lib-imap-urlauth/libimap-urlauth.la \
 	$(LIBDOVECOT_STORAGE_DEPS) \
 	$(LIBDOVECOT_DEPS)
 
@@ -42,6 +39,7 @@ cmds = \
 	cmd-examine.c \
 	cmd-expunge.c \
 	cmd-fetch.c \
+	cmd-genurlauth.c \
 	cmd-id.c \
 	cmd-idle.c \
 	cmd-list.c \
@@ -49,7 +47,9 @@ cmds = \
 	cmd-lsub.c \
 	cmd-namespace.c \
 	cmd-noop.c \
+	cmd-notify.c \
 	cmd-rename.c \
+	cmd-resetkey.c \
 	cmd-search.c \
 	cmd-select.c \
 	cmd-sort.c \
@@ -60,6 +60,7 @@ cmds = \
 	cmd-uid.c \
 	cmd-unselect.c \
 	cmd-unsubscribe.c \
+	cmd-urlfetch.c \
 	cmd-x-cancel.c
 
 imap_SOURCES = \
@@ -70,6 +71,8 @@ imap_SOURCES = \
 	imap-expunge.c \
 	imap-fetch.c \
 	imap-fetch-body.c \
+	imap-list.c \
+	imap-notify.c \
 	imap-search.c \
 	imap-search-args.c \
 	imap-settings.c \
@@ -78,7 +81,6 @@ imap_SOURCES = \
 	mail-storage-callbacks.c \
 	main.c
 
-
 headers = \
 	imap-client.h \
 	imap-commands.h \
@@ -86,6 +88,8 @@ headers = \
 	imap-common.h \
 	imap-expunge.h \
 	imap-fetch.h \
+	imap-list.h \
+	imap-notify.h \
 	imap-search.h \
 	imap-search-args.h \
 	imap-settings.h \

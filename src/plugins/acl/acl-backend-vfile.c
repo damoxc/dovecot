@@ -129,29 +129,32 @@ static const char *
 acl_backend_vfile_get_local_dir(struct acl_backend *backend, const char *name)
 {
 	struct mail_namespace *ns = mailbox_list_get_namespace(backend->list);
-	const char *dir, *inbox;
+	enum mailbox_list_path_type type;
+	const char *dir, *inbox, *error;
 
 	if (*name == '\0')
 		name = NULL;
-	else if (!mailbox_list_is_valid_existing_name(ns->list, name))
+	else if (!mailbox_list_is_valid_name(ns->list, name, &error))
 		return NULL;
 
-	if (mail_storage_is_mailbox_file(ns->storage)) {
-		dir = mailbox_list_get_path(ns->list, name,
-					    MAILBOX_LIST_PATH_TYPE_CONTROL);
+	type = mail_storage_is_mailbox_file(ns->storage) ?
+		MAILBOX_LIST_PATH_TYPE_CONTROL : MAILBOX_LIST_PATH_TYPE_MAILBOX;
+	if (name == NULL) {
+		if (!mailbox_list_get_root_path(ns->list, type, &dir))
+			return FALSE;
 	} else {
-		dir = mailbox_list_get_path(ns->list, name,
-					    MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	}
-	if (name == NULL && dir != NULL) {
-		/* verify that the directory isn't same as INBOX's directory.
-		   this is mainly for Maildir. */
-		inbox = mailbox_list_get_path(ns->list, "INBOX",
-					      MAILBOX_LIST_PATH_TYPE_MAILBOX);
-		if (strcmp(inbox, dir) == 0) {
-			/* can't have default ACLs with this setup */
+		if (mailbox_list_get_path(ns->list, name, type, &dir) <= 0)
 			return NULL;
-		}
+	}
+
+	/* verify that the directory isn't same as INBOX's directory.
+	   this is mainly for Maildir. */
+	if (name == NULL &&
+	    mailbox_list_get_path(ns->list, "INBOX",
+				  MAILBOX_LIST_PATH_TYPE_MAILBOX, &inbox) > 0 &&
+	    strcmp(inbox, dir) == 0) {
+		/* can't have default ACLs with this setup */
+		return NULL;
 	}
 	return dir;
 }
@@ -237,11 +240,13 @@ acl_backend_vfile_has_acl(struct acl_backend *_backend, const char *name)
 	/* See if the mailbox exists. If we wanted recursive lookups we could
 	   skip this, but at least for now we assume that if an existing
 	   mailbox has no ACL it's equivalent to default ACLs. */
-	path = mailbox_list_get_path(_backend->list, name,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	ret = path == NULL ? 0 :
-		acl_backend_vfile_exists(backend, path,
-					 &new_validity.mailbox_validity);
+	if (mailbox_list_get_path(_backend->list, name,
+				  MAILBOX_LIST_PATH_TYPE_MAILBOX, &path) <= 0)
+		ret = -1;
+	else {
+		ret = acl_backend_vfile_exists(backend, path,
+					       &new_validity.mailbox_validity);
+	}
 	if (ret == 0 &&
 	    (dir = acl_backend_vfile_get_local_dir(_backend, name)) != NULL) {
 		local_path = t_strconcat(dir, "/", name, NULL);
@@ -482,18 +487,18 @@ acl_backend_vfile_read(struct acl_object_vfile *aclobj,
 
 	if (fstat(fd, &st) < 0) {
 		if (errno == ESTALE && try_retry) {
-			(void)close(fd);
+			i_close_fd(&fd);
 			return 0;
 		}
 
 		i_error("fstat(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	if (S_ISDIR(st.st_mode)) {
 		/* we opened a directory. */
 		*is_dir_r = TRUE;
-		(void)close(fd);
+		i_close_fd(&fd);
 		return 0;
 	}
 
@@ -1072,17 +1077,17 @@ acl_backend_vfile_update_write(struct acl_object_vfile *aclobj,
 	for (i = 0; i < count && !rights[i].global; i++) {
 		if (rights[i].rights != NULL) {
 			vfile_write_right(str, &rights[i], FALSE);
-			o_stream_send(output, str_data(str), str_len(str));
+			o_stream_nsend(output, str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 		if (rights[i].neg_rights != NULL) {
 			vfile_write_right(str, &rights[i], TRUE);
-			o_stream_send(output, str_data(str), str_len(str));
+			o_stream_nsend(output, str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 	}
 	str_free(&str);
-	if (o_stream_flush(output) < 0) {
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", path);
 		ret = -1;
 	}

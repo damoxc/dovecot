@@ -76,13 +76,24 @@ void password_set_encryption_rounds(unsigned int rounds);
 /* INTERNAL: */
 const char *password_generate_salt(size_t len);
 const char *password_generate_md5_crypt(const char *pw, const char *salt);
-int password_generate_otp(const char *pw, const char *state,
-			  unsigned int algo, const char **result_r);
+int password_generate_otp(const char *pw, const char *state_data,
+			  unsigned int algo, const char **result_r)
+	ATTR_NULL(2);
 void password_generate_rpa(const char *pw, unsigned char result[]);
 
 int crypt_verify(const char *plaintext, const char *user,
 		 const unsigned char *raw_password, size_t size,
 		 const char **error_r);
+
+int scram_sha1_scheme_parse(const unsigned char *credentials, size_t size,
+			    unsigned int *iter_count_r, const char **salt_r,
+			    unsigned char stored_key_r[],
+			    unsigned char server_key_r[], const char **error_r);
+int scram_sha1_verify(const char *plaintext, const char *user ATTR_UNUSED,
+		      const unsigned char *raw_password, size_t size,
+		      const char **error_r ATTR_UNUSED);
+void scram_sha1_generate(const char *plaintext, const char *user ATTR_UNUSED,
+			 const unsigned char **raw_password_r, size_t *size_r);
 
 /* check wich of the algorithms Blowfisch, SHA-256 and SHA-512 are
    supported by the used libc's/glibc's crypt() */

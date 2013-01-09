@@ -28,9 +28,9 @@ struct sqlpool_db {
 	const struct sql_db *driver;
 	unsigned int connection_limit;
 
-	ARRAY_DEFINE(hosts, struct sqlpool_host);
+	ARRAY(struct sqlpool_host) hosts;
 	/* all connections from all hosts */
-	ARRAY_DEFINE(all_connections, struct sqlpool_connection);
+	ARRAY(struct sqlpool_connection) all_connections;
 	/* index of last connection in all_connections that was used to
 	   send a query. */
 	unsigned int last_query_conn_idx;
@@ -80,7 +80,7 @@ static void
 driver_sqlpool_commit_callback(const char *error,
 			       struct sqlpool_transaction_context *ctx);
 
-static struct sqlpool_request *
+static struct sqlpool_request * ATTR_NULL(2)
 sqlpool_request_new(struct sqlpool_db *db, const char *query)
 {
 	struct sqlpool_request *request;
@@ -424,7 +424,7 @@ driver_sqlpool_parse_hosts(struct sqlpool_db *db, const char *connect_string)
 	}
 
 	/* build a new connect string without our settings or hosts */
-	(void)array_append_space(&connect_args);
+	array_append_zero(&connect_args);
 	connect_string = t_strarray_join(array_idx(&connect_args, 0), " ");
 
 	if (array_count(&hostnames) == 0) {
@@ -639,8 +639,9 @@ driver_sqlpool_query_callback(struct sql_result *result,
 	}
 }
 
-static void driver_sqlpool_query(struct sql_db *_db, const char *query,
-				 sql_query_callback_t *callback, void *context)
+static void ATTR_NULL(3, 4)
+driver_sqlpool_query(struct sql_db *_db, const char *query,
+		     sql_query_callback_t *callback, void *context)
 {
         struct sqlpool_db *db = (struct sqlpool_db *)_db;
 	struct sqlpool_request *request;

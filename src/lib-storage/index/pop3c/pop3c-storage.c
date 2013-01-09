@@ -117,8 +117,7 @@ pop3c_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.mail_vfuncs = &pop3c_mail_vfuncs;
 	mbox->storage = (struct pop3c_storage *)storage;
 
-	index_storage_mailbox_alloc(&mbox->box, vname, flags,
-				    POP3C_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 	return &mbox->box;
 }
 
@@ -229,7 +228,7 @@ struct mail_storage pop3c_storage = {
 		pop3c_get_setting_parser_info,
 		pop3c_storage_alloc,
 		pop3c_storage_create,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		pop3c_storage_get_list_settings,
 		NULL,
@@ -253,6 +252,11 @@ struct mailbox pop3c_mailbox = {
 		index_storage_get_status,
 		index_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		pop3c_storage_sync_init,

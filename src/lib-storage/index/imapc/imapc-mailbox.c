@@ -70,7 +70,7 @@ static int imapc_mailbox_commit_delayed_expunges(struct imapc_mailbox *mbox)
 	array_clear(&mbox->delayed_expunged_uids);
 	ret = mail_index_transaction_commit(&trans);
 	if (ret < 0)
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 	return ret;
 }
 
@@ -85,7 +85,7 @@ int imapc_mailbox_commit_delayed_trans(struct imapc_mailbox *mbox,
 		mail_index_view_close(&mbox->delayed_sync_view);
 	if (mbox->delayed_sync_trans != NULL) {
 		if (mail_index_transaction_commit(&mbox->delayed_sync_trans) < 0) {
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 			ret = -1;
 		}
 		*changes_r = TRUE;
@@ -117,8 +117,8 @@ static void imapc_mailbox_idle_notify(struct imapc_mailbox *mbox)
 	    mbox->to_idle_delay == NULL) {
 		io_loop_set_current(mbox->storage->root_ioloop);
 		mbox->to_idle_delay =
-			timeout_add(NOTIFY_DELAY_MSECS,
-				    imapc_mailbox_idle_timeout, mbox);
+			timeout_add_short(NOTIFY_DELAY_MSECS,
+					  imapc_mailbox_idle_timeout, mbox);
 		io_loop_set_current(old_ioloop);
 	}
 }
@@ -346,7 +346,7 @@ static void imapc_untagged_fetch(const struct imapc_untagged_reply *reply,
 		mail_index_lookup_keywords(mbox->delayed_sync_view, lseq,
 					   &old_kws);
 
-		(void)array_append_space(&keywords);
+		array_append_zero(&keywords);
 		kw = mail_index_keywords_create(mbox->box.index,
 						array_idx(&keywords, 0));
 		if (!keywords_are_equal(kw, &old_kws)) {

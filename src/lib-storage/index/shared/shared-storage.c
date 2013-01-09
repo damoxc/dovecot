@@ -49,7 +49,7 @@ shared_storage_create(struct mail_storage *_storage, struct mail_namespace *ns,
 		p_strdup(_storage->pool, ns->unexpanded_set->location);
 	storage->storage_class_name = p_strdup(_storage->pool, driver);
 
-	storage_class = mail_storage_find_class(driver);
+	storage_class = mail_user_get_storage_class(_storage->user, driver);
 	if (storage_class != NULL)
 		_storage->class_flags = storage_class->class_flags;
 	else if (strcmp(driver, "auto") != 0) {
@@ -125,7 +125,7 @@ static bool shared_namespace_exists(struct mail_namespace *ns)
 	const char *path;
 	struct stat st;
 
-	path = mailbox_list_get_path(ns->list, NULL, MAILBOX_LIST_PATH_TYPE_DIR);
+	path = mailbox_list_get_root_forced(ns->list, MAILBOX_LIST_PATH_TYPE_DIR);
 	if (path == NULL) {
 		/* we can't know if this exists */
 		return TRUE;
@@ -281,7 +281,7 @@ int shared_storage_get_namespace(struct mail_namespace **_ns,
 	/* create the new namespace */
 	new_ns = i_new(struct mail_namespace, 1);
 	new_ns->refcount = 1;
-	new_ns->type = NAMESPACE_SHARED;
+	new_ns->type = MAIL_NAMESPACE_TYPE_SHARED;
 	new_ns->user = user;
 	new_ns->prefix = i_strdup(str_c(prefix));
 	new_ns->owner = owner;
@@ -353,7 +353,7 @@ struct mail_storage shared_storage = {
 		NULL,
 		shared_storage_alloc,
 		shared_storage_create,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		shared_storage_get_list_settings,
 		NULL,

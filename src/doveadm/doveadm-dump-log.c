@@ -119,8 +119,10 @@ static const char *log_record_type(unsigned int type)
 		break;
 	}
 
-	if (type & MAIL_TRANSACTION_EXTERNAL)
+	if ((type & MAIL_TRANSACTION_EXTERNAL) != 0)
 		name = t_strconcat(name, " (ext)", NULL);
+	if ((type & MAIL_TRANSACTION_SYNC) != 0)
+		name = t_strconcat(name, " (sync)", NULL);
 	return name;
 }
 
@@ -282,8 +284,8 @@ static void log_record_print(const struct mail_transaction_header *hdr,
 		const struct mail_transaction_flag_update *u = data;
 
 		for (; size > 0; size -= sizeof(*u), u++) {
-			printf(" - uids=%u-%u (flags +%x-%x)\n",
-			       u->uid1, u->uid2, u->add_flags, u->remove_flags);
+			printf(" - uids=%u-%u (flags +%x-%x, modseq_inc_flag=%d)\n",
+			       u->uid1, u->uid2, u->add_flags, u->remove_flags, u->modseq_inc_flag);
 		}
 		break;
 	}
@@ -507,7 +509,7 @@ static bool test_dump_log(const char *path)
 	    hdr.major_version == MAIL_TRANSACTION_LOG_MAJOR_VERSION &&
 	    hdr.hdr_size >= MAIL_TRANSACTION_LOG_HEADER_MIN_SIZE)
 		ret = TRUE;
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret;
 }
 

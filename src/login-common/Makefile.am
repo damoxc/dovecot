@@ -4,7 +4,6 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
 	-I$(top_srcdir)/src/lib-settings \
 	-I$(top_srcdir)/src/lib-auth \
-	-I$(top_srcdir)/src/lib-dns \
 	-I$(top_srcdir)/src/lib-master \
 	-I$(top_srcdir)/src/lib-ssl-iostream \
 	-I$(top_srcdir)/src/lib-mail \
@@ -23,7 +22,12 @@ liblogin_la_SOURCES = \
 	ssl-proxy-gnutls.c \
 	ssl-proxy-openssl.c
 
+if BUILD_OPENSSL
+openssl_obj = ../lib-ssl-iostream/iostream-openssl-common.lo
+endif
+
 liblogin_la_LIBADD = \
+	$(openssl_obj) \
 	$(SSL_LIBS)
 
 headers = \

@@ -1,6 +1,7 @@
 /* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "fs-api.h"
 #include "master-service.h"
 #include "mail-index-modseq.h"
 #include "mail-search-build.h"
@@ -26,6 +27,27 @@ static struct mail_storage *sdbox_storage_alloc(void)
 	storage->storage.storage = sdbox_storage;
 	storage->storage.storage.pool = pool;
 	return &storage->storage.storage;
+}
+
+static int sdbox_storage_create(struct mail_storage *_storage,
+				struct mail_namespace *ns,
+				const char **error_r)
+{
+	struct dbox_storage *storage = (struct dbox_storage *)_storage;
+	enum fs_properties props;
+
+	if (dbox_storage_create(_storage, ns, error_r) < 0)
+		return -1;
+
+	if (storage->attachment_fs != NULL) {
+		props = fs_get_properties(storage->attachment_fs);
+		if ((props & FS_PROPERTY_RENAME) == 0) {
+			*error_r = "mail_attachment_fs: "
+				"Backend doesn't support renaming";
+			return -1;
+		}
+	}
+	return 0;
 }
 
 static const char *
@@ -105,8 +127,7 @@ sdbox_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &sdbox_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, vname,
-				    flags, DBOX_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	ibox = INDEX_STORAGE_CONTEXT(&mbox->box);
 	ibox->index_flags |= MAIL_INDEX_OPEN_FLAG_KEEP_BACKUPS |
@@ -123,6 +144,8 @@ int sdbox_read_header(struct sdbox_mailbox *mbox,
 	const void *data;
 	size_t data_size;
 	int ret = 0;
+
+	i_assert(mbox->box.opened);
 
 	view = mail_index_view_open(mbox->box.index);
 	mail_index_get_header_ext(view, mbox->hdr_ext_id,
@@ -179,9 +202,10 @@ static void sdbox_update_header(struct sdbox_mailbox *mbox,
 	       sizeof(mbox->mailbox_guid));
 }
 
-static int sdbox_mailbox_create_indexes(struct mailbox *box,
-					const struct mailbox_update *update,
-					struct mail_index_transaction *trans)
+static int ATTR_NULL(2, 3)
+sdbox_mailbox_create_indexes(struct mailbox *box,
+			     const struct mailbox_update *update,
+			     struct mail_index_transaction *trans)
 {
 	struct sdbox_mailbox *mbox = (struct sdbox_mailbox *)box;
 	struct mail_index_transaction *new_trans = NULL;
@@ -204,10 +228,6 @@ static int sdbox_mailbox_create_indexes(struct mailbox *box,
 	}
 
 	if (hdr->uid_validity != uid_validity) {
-		if (hdr->uid_validity != 0) {
-			/* UIDVALIDITY change requires index to be reset */
-			mail_index_reset(trans);
-		}
 		mail_index_update_header(trans,
 			offsetof(struct mail_index_header, uid_validity),
 			&uid_validity, sizeof(uid_validity), TRUE);
@@ -237,7 +257,7 @@ static int sdbox_mailbox_create_indexes(struct mailbox *box,
 	sdbox_update_header(mbox, trans, update);
 	if (new_trans != NULL) {
 		if (mail_index_transaction_commit(&new_trans) < 0) {
-			mail_storage_set_index_error(box);
+			mailbox_set_index_error(box);
 			return -1;
 		}
 	}
@@ -362,9 +382,9 @@ dbox_mailbox_update(struct mailbox *box, const struct mailbox_update *update)
 		if (mailbox_open(box) < 0)
 			return -1;
 	}
-	if (update->cache_updates != NULL)
-		index_storage_mailbox_update_cache(box, update);
-	return sdbox_mailbox_create_indexes(box, update, NULL);
+	if (sdbox_mailbox_create_indexes(box, update, NULL) < 0)
+		return -1;
+	return index_storage_mailbox_update_common(box, update);
 }
 
 struct mail_storage sdbox_storage = {
@@ -374,7 +394,7 @@ struct mail_storage sdbox_storage = {
 	.v = {
                 NULL,
 		sdbox_storage_alloc,
-		dbox_storage_create,
+		sdbox_storage_create,
 		dbox_storage_destroy,
 		NULL,
 		dbox_storage_get_list_settings,
@@ -391,7 +411,7 @@ struct mail_storage dbox_storage = {
 	.v = {
 		NULL,
 		sdbox_storage_alloc,
-		dbox_storage_create,
+		sdbox_storage_create,
 		dbox_storage_destroy,
 		NULL,
 		dbox_storage_get_list_settings,
@@ -416,6 +436,11 @@ struct mailbox sdbox_mailbox = {
 		index_storage_get_status,
 		sdbox_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		sdbox_storage_sync_init,

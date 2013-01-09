@@ -38,25 +38,28 @@ acllist_clear(struct acl_backend_vfile *backend, uoff_t file_size)
 	}
 }
 
-static const char *acl_list_get_root_dir(struct acl_backend_vfile *backend)
+static const char *acl_list_get_root_dir(struct acl_backend_vfile *backend,
+					 enum mailbox_list_path_type *type_r)
 {
 	struct mail_storage *storage;
 	const char *rootdir, *maildir;
 
-	rootdir = mailbox_list_get_path(backend->backend.list, NULL,
-					MAILBOX_LIST_PATH_TYPE_DIR);
+	rootdir = mailbox_list_get_root_forced(backend->backend.list,
+					       MAILBOX_LIST_PATH_TYPE_DIR);
+	*type_r = MAILBOX_LIST_PATH_TYPE_DIR;
 
 	storage = mailbox_list_get_namespace(backend->backend.list)->storage;
 	if (mail_storage_is_mailbox_file(storage)) {
-		maildir = mailbox_list_get_path(backend->backend.list, NULL,
-						MAILBOX_LIST_PATH_TYPE_MAILBOX);
+		maildir = mailbox_list_get_root_forced(backend->backend.list,
+						       MAILBOX_LIST_PATH_TYPE_MAILBOX);
 		if (strcmp(maildir, rootdir) == 0) {
 			/* dovecot-acl-list would show up as a mailbox if we
 			   created it to root dir. since we don't really have
 			   any other good alternatives, place it to control
 			   dir */
-			rootdir = mailbox_list_get_path(backend->backend.list,
-					NULL, MAILBOX_LIST_PATH_TYPE_CONTROL);
+			rootdir = mailbox_list_get_root_forced(backend->backend.list,
+					MAILBOX_LIST_PATH_TYPE_CONTROL);
+			*type_r = MAILBOX_LIST_PATH_TYPE_CONTROL;
 		}
 	}
 	return rootdir;
@@ -64,7 +67,9 @@ static const char *acl_list_get_root_dir(struct acl_backend_vfile *backend)
 
 static const char *acl_list_get_path(struct acl_backend_vfile *backend)
 {
-	return t_strconcat(acl_list_get_root_dir(backend),
+	enum mailbox_list_path_type type;
+
+	return t_strconcat(acl_list_get_root_dir(backend, &type),
 			   "/"ACLLIST_FILENAME, NULL);
 }
 
@@ -109,7 +114,7 @@ static int acl_backend_vfile_acllist_read(struct acl_backend_vfile *backend)
 	}
 	if (fstat(fd, &st) < 0) {
 		i_error("fstat(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	backend->acllist_mtime = st.st_mtime;
@@ -187,7 +192,7 @@ acllist_append(struct acl_backend_vfile *backend, struct ostream *output,
 			const char *line;
 			line = t_strdup_printf("%s %s\n",
 					       dec2str(acllist.mtime), name);
-			o_stream_send_str(output, line);
+			o_stream_nsend_str(output, line);
 		} T_END;
 	}
 	acl_object_deinit(&aclobj);
@@ -200,18 +205,18 @@ acl_backend_vfile_acllist_try_rebuild(struct acl_backend_vfile *backend)
 	struct mailbox_list *list = backend->backend.list;
 	struct mail_namespace *ns;
 	struct mailbox_list_iterate_context *iter;
+	enum mailbox_list_path_type type;
 	const struct mailbox_info *info;
-	const char *rootdir, *origin, *acllist_path;
+	const char *rootdir, *acllist_path;
 	struct ostream *output;
 	struct stat st;
+	struct mailbox_permissions perm;
 	string_t *path;
-	mode_t file_mode, dir_mode;
-	gid_t gid;
 	int fd, ret;
 
 	i_assert(!backend->rebuilding_acllist);
 
-	rootdir = acl_list_get_root_dir(backend);
+	rootdir = acl_list_get_root_dir(backend, &type);
 	if (rootdir == NULL)
 		return 0;
 
@@ -227,14 +232,17 @@ acl_backend_vfile_acllist_try_rebuild(struct acl_backend_vfile *backend)
 	/* Build it into a temporary file and rename() over. There's no need
 	   to use locking, because even if multiple processes are rebuilding
 	   the file at the same time the result should be the same. */
-	mailbox_list_get_root_permissions(list, &file_mode, &dir_mode,
-					  &gid, &origin);
-	fd = safe_mkstemp_group(path, file_mode, gid, origin);
+	mailbox_list_get_root_permissions(list, &perm);
+	fd = safe_mkstemp_group(path, perm.file_create_mode,
+				perm.file_create_gid,
+				perm.file_create_gid_origin);
 	if (fd == -1 && errno == ENOENT) {
-		if (mailbox_list_mkdir_parent(backend->backend.list, NULL,
-					      str_c(path)) < 0)
+		if (mailbox_list_mkdir_root(backend->backend.list,
+					    rootdir, type) < 0)
 			return -1;
-		fd = safe_mkstemp_group(path, file_mode, gid, origin);
+		fd = safe_mkstemp_group(path, perm.file_create_mode,
+					perm.file_create_gid,
+					perm.file_create_gid_origin);
 	}
 	if (fd == -1) {
 		if (errno == EACCES) {
@@ -246,6 +254,7 @@ acl_backend_vfile_acllist_try_rebuild(struct acl_backend_vfile *backend)
 		return -1;
 	}
 	output = o_stream_create_fd_file(fd, 0, FALSE);
+	o_stream_cork(output);
 
 	ret = 0;
 	acllist_clear(backend, 0);
@@ -255,13 +264,13 @@ acl_backend_vfile_acllist_try_rebuild(struct acl_backend_vfile *backend)
 				      MAILBOX_LIST_ITER_RAW_LIST |
 				      MAILBOX_LIST_ITER_RETURN_NO_FLAGS);
 	while ((info = mailbox_list_iter_next(iter)) != NULL) {
-		if (acllist_append(backend, output, info->name) < 0) {
+		if (acllist_append(backend, output, info->vname) < 0) {
 			ret = -1;
 			break;
 		}
 	}
 
-	if (output->stream_errno != 0) {
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", str_c(path));
 		ret = -1;
 	}
