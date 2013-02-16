@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -43,18 +43,17 @@ struct mdbox_purge_context {
 	/* list of file_ids that we need to purge */
 	ARRAY_TYPE(seq_range) purge_file_ids;
 
-	/* map_uid => mdbox_msg_action */
-	struct hash_table *altmoves;
+	/* uint32_t map_uid => enum mdbox_msg_action action */
+	HASH_TABLE(void *, void *) altmoves;
 	bool have_altmoves;
 
 	struct mdbox_map_atomic_context *atomic;
 	struct mdbox_map_append_context *append_ctx;
 };
 
-static int mdbox_map_file_msg_offset_cmp(const void *p1, const void *p2)
+static int mdbox_map_file_msg_offset_cmp(const struct mdbox_map_file_msg *m1,
+					 const struct mdbox_map_file_msg *m2)
 {
-	const struct mdbox_map_file_msg *m1 = p1, *m2 = p2;
-
 	if (m1->offset < m2->offset)
 		return -1;
 	else if (m1->offset > m2->offset)
@@ -105,7 +104,7 @@ mdbox_file_metadata_copy(struct dbox_file *file, struct ostream *output)
 	if ((ret = mdbox_file_read_metadata_hdr(file, &meta_hdr)) <= 0)
 		return ret;
 
-	o_stream_send(output, &meta_hdr, sizeof(meta_hdr));
+	o_stream_nsend(output, &meta_hdr, sizeof(meta_hdr));
 	buf_size = i_stream_get_max_buffer_size(file->input);
 	/* use unlimited line length for metadata */
 	i_stream_set_max_buffer_size(file->input, (size_t)-1);
@@ -114,8 +113,8 @@ mdbox_file_metadata_copy(struct dbox_file *file, struct ostream *output)
 			/* end of metadata */
 			break;
 		}
-		o_stream_send_str(output, line);
-		o_stream_send(output, "\n", 1);
+		o_stream_nsend_str(output, line);
+		o_stream_nsend(output, "\n", 1);
 	}
 	i_stream_set_max_buffer_size(file->input, buf_size);
 
@@ -123,7 +122,7 @@ mdbox_file_metadata_copy(struct dbox_file *file, struct ostream *output)
 		dbox_file_set_corrupted(file, "missing end-of-metadata line");
 		return 0;
 	}
-	o_stream_send(output, "\n", 1);
+	o_stream_nsend(output, "\n", 1);
 	return 1;
 }
 
@@ -175,9 +174,6 @@ mdbox_purge_want_altpath(struct mdbox_purge_context *ctx, uint32_t map_uid)
 		return FALSE;
 
 	value = hash_table_lookup(ctx->altmoves, POINTER_CAST(map_uid));
-	if (value == NULL)
-		return FALSE;
-
 	action = POINTER_CAST_TO(value, enum mdbox_msg_action);
 	return action == MDBOX_MSG_ACTION_MOVE_TO_ALT;
 }
@@ -217,8 +213,7 @@ mdbox_purge_save_msg(struct mdbox_purge_context *ctx, struct dbox_file *file,
 			"read(%s) failed: %m", file->cur_path);
 		return -1;
 	}
-	if (output->stream_errno != 0) {
-		errno = output->stream_errno;
+	if (o_stream_nfinish(output) < 0) {
 		mail_storage_set_critical(&file->storage->storage,
 					  "write(%s) failed: %m",
 					  out_file_append->file->cur_path);
@@ -369,7 +364,7 @@ mdbox_file_purge(struct mdbox_purge_context *ctx, struct dbox_file *file,
 							 &ext_refs);
 			if (ret <= 0)
 				break;
-			seq_range_array_add(&expunged_map_uids, 0,
+			seq_range_array_add(&expunged_map_uids,
 					    msgs[i].map_uid);
 		} else {
 			/* non-expunged message. write it to output file. */
@@ -424,7 +419,8 @@ mdbox_file_purge(struct mdbox_purge_context *ctx, struct dbox_file *file,
 	   temporarily vanished */
 	if (ret > 0) {
 		(void)dbox_file_unlink(file);
-		mdbox_map_remove_file_id(ctx->storage->map, file_id);
+		if (mdbox_map_remove_file_id(ctx->storage->map, file_id) < 0)
+			ret = -1;
 	} else {
 		dbox_file_unlock(file);
 	}
@@ -475,7 +471,7 @@ mdbox_purge_alloc(struct mdbox_storage *storage)
 	ctx->lowest_primary_file_id = (uint32_t)-1;
 	i_array_init(&ctx->primary_file_ids, 64);
 	i_array_init(&ctx->purge_file_ids, 64);
-	ctx->altmoves = hash_table_create(default_pool, pool, 0, NULL, NULL);
+	hash_table_create_direct(&ctx->altmoves, pool, 0);
 	return ctx;
 }
 
@@ -534,7 +530,7 @@ static int mdbox_purge_get_primary_files(struct mdbox_purge_context *ctx)
 
 		str_truncate(path, dir_len);
 		str_append(path, d->d_name);
-		seq_range_array_add(&ctx->primary_file_ids, 0, file_id);
+		seq_range_array_add(&ctx->primary_file_ids, file_id);
 	}
 	if (array_count(&ctx->primary_file_ids) > 0) {
 		const struct seq_range *range =
@@ -569,6 +565,7 @@ static int mdbox_altmove_add_files(struct mdbox_purge_context *ctx)
 	const uint32_t *map_uids;
 	unsigned int i, count, alt_refcount = 0;
 	struct mdbox_map_mail_index_record cur_rec;
+	enum mdbox_msg_action action;
 	uint32_t cur_map_uid;
 	uint16_t cur_refcount = 0;
 	uoff_t offset;
@@ -599,10 +596,11 @@ static int mdbox_altmove_add_files(struct mdbox_purge_context *ctx)
 		if (alt_refcount == cur_refcount &&
 		    seq_range_exists(&ctx->primary_file_ids, cur_rec.file_id)) {
 			/* all instances marked as moved to alt storage */
+			action = MDBOX_MSG_ACTION_MOVE_TO_ALT;
 			hash_table_insert(ctx->altmoves,
-				POINTER_CAST(cur_map_uid),
-				POINTER_CAST(MDBOX_MSG_ACTION_MOVE_TO_ALT));
-			seq_range_array_add(&ctx->purge_file_ids, 0,
+					  POINTER_CAST(cur_map_uid),
+					  POINTER_CAST(action));
+			seq_range_array_add(&ctx->purge_file_ids,
 					    cur_rec.file_id);
 		}
 	}
@@ -632,9 +630,10 @@ static int mdbox_altmove_add_files(struct mdbox_purge_context *ctx)
 			continue;
 		}
 
+		action = MDBOX_MSG_ACTION_MOVE_FROM_ALT;
 		hash_table_insert(ctx->altmoves, POINTER_CAST(cur_map_uid),
-				  POINTER_CAST(MDBOX_MSG_ACTION_MOVE_FROM_ALT));
-		seq_range_array_add(&ctx->purge_file_ids, 0, cur_rec.file_id);
+				  POINTER_CAST(action));
+		seq_range_array_add(&ctx->purge_file_ids, cur_rec.file_id);
 	}
 	ctx->have_altmoves = hash_table_count(ctx->altmoves) > 0;
 	return ret;
@@ -671,7 +670,8 @@ int mdbox_purge(struct mail_storage *_storage)
 			if (mdbox_file_purge(ctx, file, file_id) < 0)
 				ret = -1;
 		} else {
-			mdbox_map_remove_file_id(storage->map, file_id);
+			if (mdbox_map_remove_file_id(storage->map, file_id) < 0)
+				ret = -1;
 		}
 		dbox_file_unref(&file);
 	} T_END;

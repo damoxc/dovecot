@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -50,7 +50,7 @@ struct lazy_expunge_transaction {
 	bool failed;
 };
 
-const char *lazy_expunge_plugin_version = DOVECOT_VERSION;
+const char *lazy_expunge_plugin_version = DOVECOT_ABI_VERSION;
 
 static MODULE_CONTEXT_DEFINE_INIT(lazy_expunge_mail_storage_module,
 				  &mail_storage_module_register);
@@ -159,7 +159,7 @@ static void lazy_expunge_mail_expunge(struct mail *_mail)
 
 	save_ctx = mailbox_save_alloc(lt->dest_trans);
 	mailbox_save_copy_flags(save_ctx, _mail);
-	save_ctx->flags &= ~MAIL_DELETED;
+	save_ctx->data.flags &= ~MAIL_DELETED;
 	if (mailbox_copy(&save_ctx, _mail) < 0 && !_mail->expunged)
 		lt->failed = TRUE;
 	mmail->super.expunge(_mail);
@@ -242,8 +242,7 @@ static void lazy_expunge_mail_allocated(struct mail *_mail)
 }
 
 static int
-lazy_expunge_mailbox_rename(struct mailbox *src, struct mailbox *dest,
-			    bool rename_children)
+lazy_expunge_mailbox_rename(struct mailbox *src, struct mailbox *dest)
 {
 	union mailbox_module_context *lbox = LAZY_EXPUNGE_CONTEXT(src);
 	struct lazy_expunge_mailbox_list *src_llist =
@@ -258,7 +257,7 @@ lazy_expunge_mailbox_rename(struct mailbox *src, struct mailbox *dest,
 			"Can't rename mailboxes to/from expunge namespace.");
 		return -1;
 	}
-	return lbox->super.rename(src, dest, rename_children);
+	return lbox->super.rename_box(src, dest);
 }
 
 static void lazy_expunge_mailbox_allocated(struct mailbox *box)
@@ -280,9 +279,9 @@ static void lazy_expunge_mailbox_allocated(struct mailbox *box)
 		v->transaction_begin = lazy_expunge_transaction_begin;
 		v->transaction_commit = lazy_expunge_transaction_commit;
 		v->transaction_rollback = lazy_expunge_transaction_rollback;
-		v->rename = lazy_expunge_mailbox_rename;
+		v->rename_box = lazy_expunge_mailbox_rename;
 	} else {
-		v->rename = lazy_expunge_mailbox_rename;
+		v->rename_box = lazy_expunge_mailbox_rename;
 	}
 }
 
@@ -300,7 +299,7 @@ static void lazy_expunge_mailbox_list_created(struct mailbox_list *list)
 	if (strcmp(list->ns->prefix, luser->env) == 0)
 		list->ns->flags |= NAMESPACE_FLAG_NOQUOTA;
 
-	if (list->ns->type == NAMESPACE_PRIVATE) {
+	if (list->ns->type == MAIL_NAMESPACE_TYPE_PRIVATE) {
 		llist = p_new(list->pool, struct lazy_expunge_mailbox_list, 1);
 		MODULE_CONTEXT_SET(list, lazy_expunge_mailbox_list_module,
 				   llist);

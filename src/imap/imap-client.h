@@ -14,6 +14,7 @@ struct client;
 struct mail_storage;
 struct imap_parser;
 struct imap_arg;
+struct imap_urlauth_context;
 
 struct mailbox_keywords {
 	/* All keyword names. The array itself exists in mail_index.
@@ -29,6 +30,9 @@ struct imap_search_update {
 	char *tag;
 	struct mail_search_result *result;
 	bool return_uids;
+
+	pool_t fetch_pool;
+	struct imap_fetch_context *fetch_ctx;
 };
 
 enum client_command_state {
@@ -36,6 +40,8 @@ enum client_command_state {
 	CLIENT_COMMAND_STATE_WAIT_INPUT,
 	/* Waiting to be able to send more output */
 	CLIENT_COMMAND_STATE_WAIT_OUTPUT,
+	/* Waiting for external interaction */
+	CLIENT_COMMAND_STATE_WAIT_EXTERNAL,
 	/* Wait for other commands to finish execution */
 	CLIENT_COMMAND_STATE_WAIT_UNAMBIGUITY,
 	/* Waiting for other commands to finish so we can sync */
@@ -43,15 +49,6 @@ enum client_command_state {
 	/* Command is finished */
 	CLIENT_COMMAND_STATE_DONE
 };
-
-struct imap_module_register {
-	unsigned int id;
-};
-
-union imap_module_context {
-	struct imap_module_register *reg;
-};
-extern struct imap_module_register imap_module_register;
 
 struct client_command_context {
 	struct client_command_context *prev, *next;
@@ -72,7 +69,7 @@ struct client_command_context {
 	void *context;
 
 	/* Module-specific contexts. */
-	ARRAY_DEFINE(module_contexts, union imap_module_context *);
+	ARRAY(union imap_module_context *) module_contexts;
 
 	struct imap_parser *parser;
 	enum client_command_state state;
@@ -85,26 +82,24 @@ struct client_command_context {
 	unsigned int search_save_result:1; /* search result is being updated */
 	unsigned int search_save_result_used:1; /* command uses search save */
 	unsigned int temp_executed:1; /* temporary execution state tracking */
+	unsigned int tagline_sent:1;
 };
 
-struct partial_fetch_cache {
-	unsigned int select_counter;
-	unsigned int uid;
-
-	uoff_t physical_start;
-	bool cr_skipped;
-	struct message_size pos;
+struct imap_client_vfuncs {
+	void (*destroy)(struct client *client, const char *reason);
 };
 
 struct client {
 	struct client *prev, *next;
 
+	struct imap_client_vfuncs v;
 	const char *session_id;
+
 	int fd_in, fd_out;
 	struct io *io;
 	struct istream *input;
 	struct ostream *output;
-	struct timeout *to_idle, *to_idle_output;
+	struct timeout *to_idle, *to_idle_output, *to_delayed_input;
 
 	pool_t pool;
 	struct mail_storage_service_user *service_user;
@@ -114,7 +109,6 @@ struct client {
         struct mail_user *user;
 	struct mailbox *mailbox;
         struct mailbox_keywords keywords;
-	unsigned int select_counter; /* increased when mailbox is changed */
 	unsigned int sync_counter;
 	uint32_t messages_count, recent_count, uidvalidity;
 	enum mailbox_feature enabled_features;
@@ -133,26 +127,29 @@ struct client {
 	uint64_t sync_last_full_modseq;
 	uint64_t highest_fetch_modseq;
 
-	struct partial_fetch_cache last_partial;
-
 	/* SEARCHRES extension: Last saved SEARCH result */
 	ARRAY_TYPE(seq_range) search_saved_uidset;
 	/* SEARCH=CONTEXT extension: Searches that get updated */
-	ARRAY_DEFINE(search_updates, struct imap_search_update);
+	ARRAY(struct imap_search_update) search_updates;
+	/* NOTIFY extension */
+	struct imap_notify_context *notify_ctx;
+	uint32_t notify_uidnext;
 
 	/* client input/output is locked by this command */
 	struct client_command_context *input_lock;
-	struct client_command_context *output_lock;
+	struct client_command_context *output_cmd_lock;
 	/* command changing the mailbox */
 	struct client_command_context *mailbox_change_lock;
 
+	/* IMAP URLAUTH context (RFC4467) */
+	struct imap_urlauth_context *urlauth_ctx;	
+
 	/* Module-specific contexts. */
-	ARRAY_DEFINE(module_contexts, union imap_module_context *);
+	ARRAY(union imap_module_context *) module_contexts;
 
 	/* syncing marks this TRUE when it sees \Deleted flags. this is by
 	   EXPUNGE for Outlook-workaround. */
 	unsigned int sync_seen_deletes:1;
-	unsigned int sync_seen_expunges:1;
 	unsigned int disconnected:1;
 	unsigned int destroyed:1;
 	unsigned int handling_input:1;
@@ -164,7 +161,20 @@ struct client {
 	unsigned int input_skip_line:1; /* skip all the data until we've
 					   found a new line */
 	unsigned int modseqs_sent_since_sync:1;
+	unsigned int notify_immediate_expunges:1;
+	unsigned int notify_count_changes:1;
+	unsigned int notify_flag_changes:1;
 };
+
+struct imap_module_register {
+	unsigned int id;
+};
+
+union imap_module_context {
+	struct imap_client_vfuncs super;
+	struct imap_module_register *reg;
+};
+extern struct imap_module_register imap_module_register;
 
 extern struct client *imap_clients;
 extern unsigned int imap_client_count;
@@ -175,15 +185,18 @@ struct client *client_create(int fd_in, int fd_out, const char *session_id,
 			     struct mail_user *user,
 			     struct mail_storage_service_user *service_user,
 			     const struct imap_settings *set);
-void client_destroy(struct client *client, const char *reason);
+void client_destroy(struct client *client, const char *reason) ATTR_NULL(2);
 
 /* Disconnect client connection */
 void client_disconnect(struct client *client, const char *reason);
 void client_disconnect_with_error(struct client *client, const char *msg);
 
+/* Send a line of data to client. */
+void client_send_line(struct client *client, const char *data);
 /* Send a line of data to client. Returns 1 if ok, 0 if buffer is getting full,
-   -1 if error */
-int client_send_line(struct client *client, const char *data);
+   -1 if error. This should be used when you're (potentially) sending a lot of
+   lines to client. */
+int client_send_line_next(struct client *client, const char *data);
 /* Send line of data to client, prefixed with client->tag. You need to prefix
    the data with "OK ", "NO " or "BAD ". */
 void client_send_tagline(struct client_command_context *cmd, const char *data);
@@ -193,6 +206,10 @@ void client_send_tagline(struct client_command_context *cmd, const char *data);
    in which case the error is looked up from imap_parser. */
 void client_send_command_error(struct client_command_context *cmd,
 			       const char *msg);
+
+/* Send a NO command reply with the default internal error message to client
+   via client_send_tagline(). */
+void client_send_internal_error(struct client_command_context *cmd);
 
 /* Read a number of arguments. Returns TRUE if everything was read or
    FALSE if either needs more data or error occurred. */
@@ -214,6 +231,7 @@ client_search_update_lookup(struct client *client, const char *tag,
 			    unsigned int *idx_r);
 void client_search_updates_free(struct client *client);
 
+struct client_command_context *client_command_alloc(struct client *client);
 void client_command_cancel(struct client_command_context **cmd);
 void client_command_free(struct client_command_context **cmd);
 

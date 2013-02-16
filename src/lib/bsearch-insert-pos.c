@@ -1,9 +1,10 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "bsearch-insert-pos.h"
 
+#undef bsearch_insert_pos
 bool bsearch_insert_pos(const void *key, const void *base, unsigned int nmemb,
 			size_t size, int (*cmp)(const void *, const void *),
 			unsigned int *idx_r)

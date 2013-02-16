@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "pop3-common.h"
 #include "ioloop.h"
@@ -29,7 +29,16 @@ static bool verbose_proctitle = FALSE;
 static struct mail_storage_service_ctx *storage_service;
 static struct master_login *master_login = NULL;
 
-void (*hook_client_created)(struct client **client) = NULL;
+pop3_client_created_func_t *hook_client_created = NULL;
+
+pop3_client_created_func_t *
+pop3_client_created_hook_set(pop3_client_created_func_t *new_hook)
+{
+	pop3_client_created_func_t *old_hook = hook_client_created;
+
+	hook_client_created = new_hook;
+	return old_hook;
+}
 
 void pop3_refresh_proctitle(void)
 {
@@ -90,7 +99,7 @@ client_create_from_input(const struct mail_storage_service_input *input,
 			 const char **error_r)
 {
 	const char *lookup_error_str =
-		"-ERR [IN-USE] "MAIL_ERRSTR_CRITICAL_MSG"\r\n";
+		"-ERR [SYS/TEMP] "MAIL_ERRSTR_CRITICAL_MSG"\r\n";
 	struct mail_storage_service_user *user;
 	struct mail_user *mail_user;
 	struct client *client;
@@ -107,11 +116,9 @@ client_create_from_input(const struct mail_storage_service_input *input,
 	if (set->verbose_proctitle)
 		verbose_proctitle = TRUE;
 
-	client = client_create(fd_in, fd_out, input->session_id,
-			       mail_user, user, set);
-	if (client != NULL) T_BEGIN {
+	if (client_create(fd_in, fd_out, input->session_id,
+			  mail_user, user, set, &client) == 0)
 		client_add_input(client, input_buf);
-	} T_END;
 	return 0;
 }
 
@@ -129,9 +136,9 @@ static void main_stdio_run(const char *username)
 	if (input.username == NULL)
 		i_fatal("USER environment missing");
 	if ((value = getenv("IP")) != NULL)
-		net_addr2ip(value, &input.remote_ip);
+		(void)net_addr2ip(value, &input.remote_ip);
 	if ((value = getenv("LOCAL_IP")) != NULL)
-		net_addr2ip(value, &input.local_ip);
+		(void)net_addr2ip(value, &input.local_ip);
 
 	input_base64 = getenv("CLIENT_INPUT");
 	input_buf = input_base64 == NULL ? NULL :
@@ -158,12 +165,14 @@ login_client_connected(const struct master_login_client *client,
 	input.userdb_fields = extra_fields;
 	input.session_id = client->session_id;
 
-	buffer_create_const_data(&input_buf, client->data,
-				 client->auth_req.data_size);
+	buffer_create_from_const_data(&input_buf, client->data,
+				      client->auth_req.data_size);
 	if (client_create_from_input(&input, client->fd, client->fd,
 				     &input_buf, &error) < 0) {
+		int fd = client->fd;
+
 		i_error("%s", error);
-		(void)close(client->fd);
+		i_close_fd(&fd);
 		master_service_client_connection_destroyed(master_service);
 	}
 }
@@ -173,7 +182,7 @@ static void login_client_failed(const struct master_login_client *client,
 {
 	const char *msg;
 
-	msg = t_strdup_printf("-ERR [IN-USE] %s\r\n", errormsg);
+	msg = t_strdup_printf("-ERR [SYS/TEMP] %s\r\n", errormsg);
 	if (write(client->fd, msg, strlen(msg)) < 0) {
 		/* ignored */
 	}
@@ -205,7 +214,7 @@ int main(int argc, char *argv[])
 
 	if (IS_STANDALONE() && getuid() == 0 &&
 	    net_getpeername(1, NULL, NULL) == 0) {
-		printf("-ERR pop3 binary must not be started from "
+		printf("-ERR [SYS/PERM] pop3 binary must not be started from "
 		       "inetd, use pop3-login instead.\n");
 		return 1;
 	}

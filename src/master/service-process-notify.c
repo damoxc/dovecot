@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -14,7 +14,7 @@ struct service_process_notify {
 	int fd;
 	struct io *io_write;
 	struct aqueue *process_queue;
-	ARRAY_DEFINE(processes, struct service_process *);
+	ARRAY(struct service_process *) processes;
 };
 
 struct service_process_notify *

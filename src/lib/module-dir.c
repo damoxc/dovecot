@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -60,8 +60,13 @@ static void module_free(struct module *module)
 {
 	if (module->deinit != NULL && module->initialized)
 		module->deinit();
-	if (dlclose(module->handle) != 0)
-		i_error("dlclose(%s) failed: %m", module->path);
+	/* dlclose()ing removes all symbols from valgrind's visibility.
+	   if GDB environment is set, don't actually unload the module
+	   (the GDB environment is used elsewhere too) */
+	if (getenv("GDB") == NULL) {
+		if (dlclose(module->handle) != 0)
+			i_error("dlclose(%s) failed: %m", module->path);
+	}
 	i_free(module->path);
 	i_free(module->name);
 	i_free(module);
@@ -168,6 +173,17 @@ static void *quiet_dlopen(const char *path, int flags)
 #endif
 }
 
+static bool versions_equal(const char *str1, const char *str2)
+{
+	while (*str1 == *str2) {
+		if (*str1 == '\0' || *str1 == '(')
+			return TRUE;
+		str1++;
+		str2++;
+	}
+	return FALSE;
+}
+
 static struct module *
 module_load(const char *path, const char *name,
 	    const struct module_dir_load_settings *set,
@@ -212,12 +228,12 @@ module_load(const char *path, const char *name,
 	module->name = i_strdup(name);
 	module->handle = handle;
 
-	module_version = set->version == NULL ? NULL :
+	module_version = set->abi_version == NULL ? NULL :
 		get_symbol(module, t_strconcat(name, "_version", NULL), TRUE);
 	if (module_version != NULL &&
-	    strcmp(*module_version, set->version) != 0) {
-		i_error("Module is for different version %s: %s",
-			*module_version, path);
+	    !versions_equal(*module_version, set->abi_version)) {
+		i_error("Module is for different ABI version %s (we have %s): %s",
+			*module_version, set->abi_version, path);
 		module_free(module);
 		return NULL;
 	}
@@ -299,7 +315,7 @@ static void check_duplicates(ARRAY_TYPE(const_string) *names,
 	}
 }
 
-static bool module_is_loaded(struct module *modules, const char *name)
+struct module *module_dir_find(struct module *modules, const char *name)
 {
 	struct module *module;
 	unsigned int len = strlen(name);
@@ -308,10 +324,15 @@ static bool module_is_loaded(struct module *modules, const char *name)
 		if (strncmp(module->name, name, len) == 0) {
 			if (module->name[len] == '\0' ||
 			    strcmp(module->name + len, "_plugin") == 0)
-				return TRUE;
+				return module;
 		}
 	}
-	return FALSE;
+	return NULL;
+}
+
+static bool module_is_loaded(struct module *modules, const char *name)
+{
+	return module_dir_find(modules, name) != NULL;
 }
 
 static void module_names_fix(const char **module_names)
@@ -327,7 +348,7 @@ static void module_names_fix(const char **module_names)
 		module_names[i] = module_file_get_name(module_names[i]);
 
 	/* @UNSAFE: drop duplicates */
-	qsort(module_names, i, sizeof(*module_names), i_strcmp_p);
+	i_qsort(module_names, i, sizeof(*module_names), i_strcmp_p);
 	for (i = j = 1; module_names[i] != NULL; i++) {
 		if (strcmp(module_names[i-1], module_names[i]) != 0)
 			module_names[j++] = module_names[i];
@@ -483,8 +504,10 @@ void module_dir_deinit(struct module *modules)
 	struct module *module, **rev;
 	unsigned int i, count = 0;
 
-	for (module = modules; module != NULL; module = module->next)
-		count++;
+	for (module = modules; module != NULL; module = module->next) {
+		if (module->deinit != NULL && module->initialized)
+			count++;
+	}
 
 	if (count == 0)
 		return;
@@ -492,18 +515,19 @@ void module_dir_deinit(struct module *modules)
 	/* @UNSAFE: deinitialize in reverse order */
 	T_BEGIN {
 		rev = t_new(struct module *, count);
-		for (i = 0, module = modules; i < count; i++) {
-			rev[count-i-1] = module;
+		for (i = 0, module = modules; i < count; ) {
+			if (module->deinit != NULL && module->initialized) {
+				rev[count-i-1] = module;
+				i++;
+			}
 			module = module->next;
 		}
 
 		for (i = 0; i < count; i++) {
 			module = rev[i];
 
-			if (module->deinit != NULL && module->initialized) {
-				module->deinit();
-				module->initialized = FALSE;
-			}
+			module->deinit();
+			module->initialized = FALSE;
 		}
 	} T_END;
 }

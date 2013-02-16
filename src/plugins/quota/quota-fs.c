@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 /* Only for reporting filesystem quota */
 
@@ -276,10 +276,11 @@ static void fs_quota_namespace_added(struct quota *quota,
 	struct fs_quota_root *root;
 	const char *dir;
 
-	dir = mailbox_list_get_path(ns->list, NULL,
-				    MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	mount = dir == NULL ? NULL :
-		fs_quota_mountpoint_get(dir);
+	if (!mailbox_list_get_root_path(ns->list, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+					&dir))
+		mount = NULL;
+	else
+		mount = fs_quota_mountpoint_get(dir);
 	if (mount != NULL) {
 		root = fs_quota_root_find_mountpoint(quota, mount);
 		if (root != NULL && root->mount == NULL)
@@ -567,9 +568,15 @@ fs_quota_get_linux(struct fs_quota_root *root, bool group, bool bytes,
 			/* values always returned in 512 byte blocks */
 			*value_r = xdqblk.d_bcount * 512;
 			*limit_r = xdqblk.d_blk_softlimit * 512;
+			if (*limit_r == 0) {
+				*limit_r = xdqblk.d_blk_hardlimit * 512;
+			}
 		} else {
 			*value_r = xdqblk.d_icount;
 			*limit_r = xdqblk.d_ino_softlimit;
+			if (*limit_r == 0) {
+				*limit_r = xdqblk.d_ino_hardlimit;
+			}
 		}
 	} else
 #endif
@@ -601,9 +608,15 @@ fs_quota_get_linux(struct fs_quota_root *root, bool group, bool bytes,
 			*value_r = dqblk.dqb_curblocks;
 #endif
 			*limit_r = dqblk.dqb_bsoftlimit * 1024;
+			if (*limit_r == 0) {
+				*limit_r = dqblk.dqb_bhardlimit * 1024;
+			}
 		} else {
 			*value_r = dqblk.dqb_curinodes;
 			*limit_r = dqblk.dqb_isoftlimit;
+			if (*limit_r == 0) {
+				*limit_r = dqblk.dqb_ihardlimit;
+			}
 		}
 	}
 	return 1;
@@ -634,9 +647,15 @@ fs_quota_get_bsdaix(struct fs_quota_root *root, bool group, bool bytes,
 	if (bytes) {
 		*value_r = (uint64_t)dqblk.dqb_curblocks * DEV_BSIZE;
 		*limit_r = (uint64_t)dqblk.dqb_bsoftlimit * DEV_BSIZE;
+		if (*limit_r == 0) {
+			*limit_r = (uint64_t)dqblk.dqb_bhardlimit * DEV_BSIZE;
+		}
 	} else {
 		*value_r = dqblk.dqb_curinodes;
 		*limit_r = dqblk.dqb_isoftlimit;
+		if (*limit_r == 0) {
+			*limit_r = dqblk.dqb_ihardlimit;
+		}
 	}
 	return 1;
 }
@@ -665,9 +684,16 @@ fs_quota_get_hpux(struct fs_quota_root *root, bool bytes,
 			root->mount->block_size;
 		*limit_r = (uint64_t)dqblk.dqb_bsoftlimit *
 			root->mount->block_size;
+		if (*limit_r == 0) {
+			*limit_r = (uint64_t)dqblk.dqb_bhardlimit *
+				root->mount->block_size;
+		}
 	} else {
 		*value_r = dqblk.dqb_curfiles;
 		*limit_r = dqblk.dqb_fsoftlimit;
+		if (*limit_r == 0) {
+			*limit_r = dqblk.dqb_fhardlimit;
+		}
 	}
 	return 1;
 }
@@ -694,9 +720,15 @@ fs_quota_get_solaris(struct fs_quota_root *root, bool bytes,
 	if (bytes) {
 		*value_r = (uint64_t)dqblk.dqb_curblocks * DEV_BSIZE;
 		*limit_r = (uint64_t)dqblk.dqb_bsoftlimit * DEV_BSIZE;
+		if (*limit_r == 0) {
+			*limit_r = (uint64_t)dqblk.dqb_bhardlimit * DEV_BSIZE;
+		}
 	} else {
 		*value_r = dqblk.dqb_curfiles;
 		*limit_r = dqblk.dqb_fsoftlimit;
+		if (*limit_r == 0) {
+			*limit_r = dqblk.dqb_fhardlimit;
+		}
 	}
 	return 1;
 }
@@ -740,8 +772,9 @@ static bool fs_quota_match_box(struct quota_root *_root, struct mailbox *box)
 	if (root->storage_mount_path == NULL)
 		return TRUE;
 
-	mailbox_path = mailbox_list_get_path(box->list, box->name,
-					     MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				&mailbox_path) <= 0)
+		return FALSE;
 	if (stat(mailbox_path, &mst) < 0) {
 		if (errno != ENOENT)
 			i_error("stat(%s) failed: %m", mailbox_path);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -13,19 +13,20 @@
 
 void dbox_save_add_to_index(struct dbox_save_context *ctx)
 {
+	struct mail_save_data *mdata = &ctx->ctx.data;
 	enum mail_flags save_flags;
 
-	save_flags = ctx->ctx.flags & ~MAIL_RECENT;
-	mail_index_append(ctx->trans, ctx->ctx.uid, &ctx->seq);
+	save_flags = mdata->flags & ~MAIL_RECENT;
+	mail_index_append(ctx->trans, mdata->uid, &ctx->seq);
 	mail_index_update_flags(ctx->trans, ctx->seq, MODIFY_REPLACE,
 				save_flags);
-	if (ctx->ctx.keywords != NULL) {
+	if (mdata->keywords != NULL) {
 		mail_index_update_keywords(ctx->trans, ctx->seq,
-					   MODIFY_REPLACE, ctx->ctx.keywords);
+					   MODIFY_REPLACE, mdata->keywords);
 	}
-	if (ctx->ctx.min_modseq != 0) {
+	if (mdata->min_modseq != 0) {
 		mail_index_update_modseq(ctx->trans, ctx->seq,
-					 ctx->ctx.min_modseq);
+					 mdata->min_modseq);
 	}
 }
 
@@ -55,15 +56,14 @@ void dbox_save_begin(struct dbox_save_context *ctx, struct istream *input)
 	o_stream_cork(ctx->dbox_output);
 	if (o_stream_send(ctx->dbox_output, &dbox_msg_hdr,
 			  sizeof(dbox_msg_hdr)) < 0) {
-		mail_storage_set_critical(_storage,
-			"o_stream_send(%s) failed: %m", 
-			ctx->cur_file->cur_path);
+		mail_storage_set_critical(_storage, "write(%s) failed: %m",
+					  o_stream_get_name(ctx->dbox_output));
 		ctx->failed = TRUE;
 	}
-	_ctx->output = ctx->dbox_output;
+	_ctx->data.output = ctx->dbox_output;
 
-	if (_ctx->received_date == (time_t)-1)
-		_ctx->received_date = ioloop_time;
+	if (_ctx->data.received_date == (time_t)-1)
+		_ctx->data.received_date = ioloop_time;
 	index_attachment_save_begin(_ctx, storage->attachment_fs, ctx->input);
 }
 
@@ -75,15 +75,15 @@ int dbox_save_continue(struct mail_save_context *_ctx)
 	if (ctx->failed)
 		return -1;
 
-	if (_ctx->attach != NULL)
+	if (_ctx->data.attach != NULL)
 		return index_attachment_save_continue(_ctx);
 
 	do {
-		if (o_stream_send_istream(_ctx->output, ctx->input) < 0) {
+		if (o_stream_send_istream(_ctx->data.output, ctx->input) < 0) {
 			if (!mail_storage_set_error_from_errno(storage)) {
 				mail_storage_set_critical(storage,
-					"o_stream_send_istream(%s) failed: %m",
-					ctx->cur_file->cur_path);
+					"write(%s) failed: %m",
+					o_stream_get_name(_ctx->data.output));
 			}
 			ctx->failed = TRUE;
 			return -1;
@@ -99,20 +99,28 @@ int dbox_save_continue(struct mail_save_context *_ctx)
 
 void dbox_save_end(struct dbox_save_context *ctx)
 {
+	struct mail_save_data *mdata = &ctx->ctx.data;
 	struct ostream *dbox_output = ctx->dbox_output;
 
-	if (ctx->ctx.attach != NULL) {
+	if (mdata->attach != NULL && !ctx->failed) {
 		if (index_attachment_save_finish(&ctx->ctx) < 0)
 			ctx->failed = TRUE;
 	}
-	if (ctx->ctx.output != dbox_output) {
+	if (o_stream_nfinish(mdata->output) < 0) {
+		mail_storage_set_critical(ctx->ctx.transaction->box->storage,
+					  "write(%s) failed: %m",
+					  o_stream_get_name(mdata->output));
+		ctx->failed = TRUE;
+	}
+	if (mdata->output != dbox_output) {
 		/* e.g. zlib plugin had changed this */
 		o_stream_ref(dbox_output);
-		o_stream_destroy(&ctx->ctx.output);
-		ctx->ctx.output = dbox_output;
+		o_stream_destroy(&mdata->output);
+		mdata->output = dbox_output;
 	}
 	index_mail_cache_parse_deinit(ctx->ctx.dest_mail,
-				      ctx->ctx.received_date, !ctx->failed);
+				      ctx->ctx.data.received_date,
+				      !ctx->failed);
 }
 
 void dbox_save_write_metadata(struct mail_save_context *_ctx,
@@ -121,6 +129,7 @@ void dbox_save_write_metadata(struct mail_save_context *_ctx,
 			      guid_128_t guid_128)
 {
 	struct dbox_save_context *ctx = (struct dbox_save_context *)_ctx;
+	struct mail_save_data *mdata = &ctx->ctx.data;
 	struct dbox_metadata_header metadata_hdr;
 	const char *guid;
 	string_t *str;
@@ -129,7 +138,7 @@ void dbox_save_write_metadata(struct mail_save_context *_ctx,
 	memset(&metadata_hdr, 0, sizeof(metadata_hdr));
 	memcpy(metadata_hdr.magic_post, DBOX_MAGIC_POST,
 	       sizeof(metadata_hdr.magic_post));
-	o_stream_send(output, &metadata_hdr, sizeof(metadata_hdr));
+	o_stream_nsend(output, &metadata_hdr, sizeof(metadata_hdr));
 
 	str = t_str_new(256);
 	if (output_msg_size != ctx->input->v_offset) {
@@ -141,18 +150,18 @@ void dbox_save_write_metadata(struct mail_save_context *_ctx,
 			    (unsigned long long)ctx->input->v_offset);
 	}
 	str_printfa(str, "%c%lx\n", DBOX_METADATA_RECEIVED_TIME,
-		    (unsigned long)_ctx->received_date);
+		    (unsigned long)mdata->received_date);
 	if (mail_get_virtual_size(_ctx->dest_mail, &vsize) < 0)
 		i_unreached();
 	str_printfa(str, "%c%llx\n", DBOX_METADATA_VIRTUAL_SIZE,
 		    (unsigned long long)vsize);
-	if (_ctx->pop3_uidl != NULL) {
-		i_assert(strchr(_ctx->pop3_uidl, '\n') == NULL);
+	if (mdata->pop3_uidl != NULL) {
+		i_assert(strchr(mdata->pop3_uidl, '\n') == NULL);
 		str_printfa(str, "%c%s\n", DBOX_METADATA_POP3_UIDL,
-			    _ctx->pop3_uidl);
+			    mdata->pop3_uidl);
 	}
 
-	guid = _ctx->guid;
+	guid = mdata->guid;
 	if (guid != NULL)
 		mail_generate_guid_128_hash(guid, guid_128);
 	else {
@@ -174,5 +183,5 @@ void dbox_save_write_metadata(struct mail_save_context *_ctx,
 	dbox_attachment_save_write_metadata(_ctx, str);
 
 	str_append_c(str, '\n');
-	o_stream_send(output, str_data(str), str_len(str));
+	o_stream_nsend(output, str_data(str), str_len(str));
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "file-lock.h"
@@ -26,6 +26,19 @@ bool file_lock_method_parse(const char *name, enum file_lock_method *method_r)
 	else
 		return FALSE;
 	return TRUE;
+}
+
+const char *file_lock_method_to_str(enum file_lock_method method)
+{
+	switch (method) {
+	case FILE_LOCK_METHOD_FCNTL:
+		return "fcntl";
+	case FILE_LOCK_METHOD_FLOCK:
+		return "flock";
+	case FILE_LOCK_METHOD_DOTLOCK:
+		return "dotlock";
+	}
+	i_unreached();
 }
 
 int file_try_lock(int fd, const char *path, int lock_type,

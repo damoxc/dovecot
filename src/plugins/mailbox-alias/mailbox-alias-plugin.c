@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -21,7 +21,7 @@ struct mailbox_alias {
 struct mailbox_alias_user {
 	union mail_user_module_context module_ctx;
 
-	ARRAY_DEFINE(aliases, struct mailbox_alias);
+	ARRAY(struct mailbox_alias) aliases;
 };
 
 struct mailbox_alias_mailbox_list {
@@ -45,7 +45,7 @@ static MODULE_CONTEXT_DEFINE_INIT(mailbox_alias_storage_module,
 static MODULE_CONTEXT_DEFINE_INIT(mailbox_alias_mailbox_list_module,
 				  &mailbox_list_module_register);
 
-const char *mailbox_alias_plugin_version = DOVECOT_VERSION;
+const char *mailbox_alias_plugin_version = DOVECOT_ABI_VERSION;
 
 static const char *
 mailbox_alias_find_new(struct mail_user *user, const char *new_vname)
@@ -67,10 +67,15 @@ static int mailbox_symlink_exists(struct mailbox_list *list, const char *vname,
 		MAILBOX_ALIAS_LIST_CONTEXT(list);
 	struct stat st;
 	const char *symlink_name, *symlink_path;
+	int ret;
 
 	symlink_name = alist->module_ctx.super.get_storage_name(list, vname);
-	symlink_path = mailbox_list_get_path(list, symlink_name,
-					     MAILBOX_LIST_PATH_TYPE_DIR);
+	ret = mailbox_list_get_path(list, symlink_name,
+				    MAILBOX_LIST_PATH_TYPE_DIR, &symlink_path);
+	if (ret < 0)
+		return -1;
+	i_assert(ret > 0);
+
 	if (lstat(symlink_path, &st) < 0) {
 		if (errno == ENOENT) {
 			*existence_r = MAILBOX_SYMLINK_EXISTENCE_NONEXISTENT;
@@ -126,11 +131,22 @@ mailbox_alias_create_symlink(struct mailbox *box,
 			     const char *old_name, const char *new_name)
 {
 	const char *old_path, *new_path, *fname;
+	int ret;
 
-	old_path = mailbox_list_get_path(box->list, old_name,
-					 MAILBOX_LIST_PATH_TYPE_DIR);
-	new_path = mailbox_list_get_path(box->list, new_name,
-					 MAILBOX_LIST_PATH_TYPE_DIR);
+	ret = mailbox_list_get_path(box->list, old_name,
+				    MAILBOX_LIST_PATH_TYPE_DIR, &old_path);
+	if (ret > 0) {
+		ret = mailbox_list_get_path(box->list, new_name,
+					    MAILBOX_LIST_PATH_TYPE_DIR,
+					    &new_path);
+	}
+	if (ret < 0)
+		return -1;
+	if (ret == 0) {
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
+			"Mailbox aliases not supported by storage");
+		return -1;
+	}
 	fname = strrchr(old_path, '/');
 	i_assert(fname != NULL);
 	fname++;
@@ -179,7 +195,7 @@ mailbox_alias_create(struct mailbox *box, const struct mailbox_update *update,
 	const char *symlink_name;
 	int ret;
 
-	ret = abox->module_ctx.super.create(box, update, directory);
+	ret = abox->module_ctx.super.create_box(box, update, directory);
 	if (mailbox_alias_find_new(box->storage->user, box->vname) == NULL)
 		return ret;
 	if (ret < 0 && mailbox_get_last_mail_error(box) != MAIL_ERROR_EXISTS)
@@ -221,11 +237,10 @@ static int mailbox_alias_delete(struct mailbox *box)
 		return 0;
 	}
 
-	return abox->module_ctx.super.delete(box);
+	return abox->module_ctx.super.delete_box(box);
 }
 
-static int mailbox_alias_rename(struct mailbox *src, struct mailbox *dest,
-				bool rename_children)
+static int mailbox_alias_rename(struct mailbox *src, struct mailbox *dest)
 {
 	struct mailbox_alias_mailbox *abox = MAILBOX_ALIAS_CONTEXT(src);
 	int ret;
@@ -249,7 +264,7 @@ static int mailbox_alias_rename(struct mailbox *src, struct mailbox *dest,
 		return -1;
 	}
 
-	return abox->module_ctx.super.rename(src, dest, rename_children);
+	return abox->module_ctx.super.rename_box(src, dest);
 }
 
 static void mailbox_alias_mail_user_created(struct mail_user *user)
@@ -312,9 +327,9 @@ static void mailbox_alias_mailbox_allocated(struct mailbox *box)
 	abox->module_ctx.super = *v;
 	box->vlast = &abox->module_ctx.super;
 
-	v->create = mailbox_alias_create;
-	v->delete = mailbox_alias_delete;
-	v->rename = mailbox_alias_rename;
+	v->create_box = mailbox_alias_create;
+	v->delete_box = mailbox_alias_delete;
+	v->rename_box = mailbox_alias_rename;
 	MODULE_CONTEXT_SET(box, mailbox_alias_storage_module, abox);
 }
 

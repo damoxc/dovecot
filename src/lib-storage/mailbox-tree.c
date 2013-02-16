@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -9,6 +9,8 @@ struct mailbox_tree_context {
 	pool_t pool;
 	char separator;
 	bool parents_nonexistent;
+	bool sorted;
+	unsigned int node_size;
 
 	struct mailbox_node *nodes;
 };
@@ -19,7 +21,7 @@ struct mailbox_tree_iterate_context {
 
 	char separator;
 
-	ARRAY_DEFINE(node_path, struct mailbox_node *);
+	ARRAY(struct mailbox_node *) node_path;
 	string_t *path_str;
 	size_t parent_pos;
 
@@ -28,11 +30,20 @@ struct mailbox_tree_iterate_context {
 
 struct mailbox_tree_context *mailbox_tree_init(char separator)
 {
+	return mailbox_tree_init_size(separator, sizeof(struct mailbox_node));
+}
+
+struct mailbox_tree_context *
+mailbox_tree_init_size(char separator, unsigned int mailbox_node_size)
+{
 	struct mailbox_tree_context *tree;
+
+	i_assert(mailbox_node_size >= sizeof(struct mailbox_node));
 
 	tree = i_new(struct mailbox_tree_context, 1);
 	tree->pool = pool_alloconly_create(MEMPOOL_GROWING"mailbox_tree", 10240);
 	tree->separator = separator;
+	tree->node_size = mailbox_node_size;
 	return tree;
 }
 
@@ -62,7 +73,12 @@ void mailbox_tree_clear(struct mailbox_tree_context *tree)
 	tree->nodes = NULL;
 }
 
-static struct mailbox_node *
+pool_t mailbox_tree_get_pool(struct mailbox_tree_context *tree)
+{
+	return tree->pool;
+}
+
+static struct mailbox_node * ATTR_NULL(2)
 mailbox_tree_traverse(struct mailbox_tree_context *tree, const char *path,
 		      bool create, bool *created_r)
 {
@@ -104,12 +120,12 @@ mailbox_tree_traverse(struct mailbox_tree_context *tree, const char *path,
 			if (!create)
 				break;
 
-			*node = p_new(tree->pool, struct mailbox_node, 1);
+			*node = p_malloc(tree->pool, tree->node_size);
 			(*node)->parent = parent;
 			(*node)->name = p_strdup(tree->pool, name);
 			if (tree->parents_nonexistent)
 				(*node)->flags = MAILBOX_NONEXISTENT;
-
+			tree->sorted = FALSE;
 			*created_r = TRUE;
 		}
 
@@ -138,8 +154,7 @@ mailbox_tree_get(struct mailbox_tree_context *tree, const char *path,
 	if (created && tree->parents_nonexistent)
 		node->flags = 0;
 
-	if (created_r != NULL)
-		*created_r = created;
+	*created_r = created;
 	return node;
 }
 
@@ -163,7 +178,7 @@ mailbox_tree_iterate_init(struct mailbox_tree_context *tree,
 
 	ctx = i_new(struct mailbox_tree_iterate_context, 1);
 	ctx->separator = tree->separator;
-	ctx->root = root != NULL ? root : mailbox_tree_get(tree, NULL, NULL);
+	ctx->root = root != NULL ? root : tree->nodes;
 	ctx->flags_mask = flags_mask;
 	ctx->path_str = str_new(default_pool, 256);
 	i_array_init(&ctx->node_path, 16);
@@ -246,4 +261,83 @@ void mailbox_tree_iterate_deinit(struct mailbox_tree_iterate_context **_ctx)
 	str_free(&ctx->path_str);
 	array_free(&ctx->node_path);
 	i_free(ctx);
+}
+
+static struct mailbox_node * ATTR_NULL(1, 2)
+mailbox_tree_dup_branch(struct mailbox_tree_context *dest_tree,
+			struct mailbox_node *dest_parent,
+			const struct mailbox_node *src)
+{
+	struct mailbox_node *node, *dest_nodes = NULL, **dest = &dest_nodes;
+
+	for (; src != NULL; src = src->next) {
+		*dest = node = p_malloc(dest_tree->pool, dest_tree->node_size);
+		node->name = p_strdup(dest_tree->pool, src->name);
+		node->flags = src->flags;
+
+		node->parent = dest_parent;
+		node->children = mailbox_tree_dup_branch(dest_tree, node,
+							 src->children);
+		dest = &node->next;
+	}
+	return dest_nodes;
+}
+
+struct mailbox_tree_context *mailbox_tree_dup(struct mailbox_tree_context *src)
+{
+	struct mailbox_tree_context *dest;
+
+	/* for now we don't need to support extra data */
+	i_assert(src->node_size == sizeof(struct mailbox_node));
+
+	dest = mailbox_tree_init_size(src->separator, src->node_size);
+	dest->nodes = mailbox_tree_dup_branch(dest, NULL, src->nodes);
+	return dest;
+}
+
+static int mailbox_node_name_cmp(struct mailbox_node *const *node1,
+				 struct mailbox_node *const *node2)
+{
+	return strcmp((*node1)->name, (*node2)->name);
+}
+
+static void mailbox_tree_sort_branch(struct mailbox_node **nodes,
+				     ARRAY_TYPE(mailbox_node) *tmparr)
+{
+	struct mailbox_node *node, *const *nodep, **dest;
+
+	if (*nodes == NULL)
+		return;
+
+	/* first put the nodes into an array and sort it */
+	array_clear(tmparr);
+	for (node = *nodes; node != NULL; node = node->next)
+		array_append(tmparr, &node, 1);
+	array_sort(tmparr, mailbox_node_name_cmp);
+
+	/* update the node pointers */
+	dest = nodes;
+	array_foreach(tmparr, nodep) {
+		*dest = *nodep;
+		dest = &(*dest)->next;
+	}
+	*dest = NULL;
+
+	/* sort the children */
+	for (node = *nodes; node != NULL; node = node->next)
+		mailbox_tree_sort_branch(&node->children, tmparr);
+}
+
+void mailbox_tree_sort(struct mailbox_tree_context *tree)
+{
+	if (tree->sorted)
+		return;
+	tree->sorted = TRUE;
+
+	T_BEGIN {
+		ARRAY_TYPE(mailbox_node) tmparr;
+
+		t_array_init(&tmparr, 32);
+		mailbox_tree_sort_branch(&tree->nodes, &tmparr);
+	} T_END;
 }

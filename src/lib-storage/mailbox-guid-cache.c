@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "hash.h"
@@ -15,15 +15,16 @@ int mailbox_guid_cache_find(struct mailbox_list *list,
 			    const guid_128_t guid, const char **vname_r)
 {
 	const struct mailbox_guid_cache_rec *rec;
+	const uint8_t *guid_p = guid;
 
-	if (list->guid_cache == NULL) {
+	if (!hash_table_is_created(list->guid_cache)) {
 		mailbox_guid_cache_refresh(list);
-		rec = hash_table_lookup(list->guid_cache, guid);
+		rec = hash_table_lookup(list->guid_cache, guid_p);
 	} else {
-		rec = hash_table_lookup(list->guid_cache, guid);
+		rec = hash_table_lookup(list->guid_cache, guid_p);
 		if (rec == NULL) {
 			mailbox_guid_cache_refresh(list);
-			rec = hash_table_lookup(list->guid_cache, guid);
+			rec = hash_table_lookup(list->guid_cache, guid_p);
 		}
 	}
 	if (rec == NULL) {
@@ -41,14 +42,13 @@ void mailbox_guid_cache_refresh(struct mailbox_list *list)
 	struct mailbox *box;
 	struct mailbox_metadata metadata;
 	struct mailbox_guid_cache_rec *rec;
+	uint8_t *guid_p;
 
-	if (list->guid_cache == NULL) {
+	if (!hash_table_is_created(list->guid_cache)) {
 		list->guid_cache_pool =
 			pool_alloconly_create("guid cache", 1024*16);
-		list->guid_cache = hash_table_create(default_pool,
-						     list->guid_cache_pool, 0,
-						     guid_128_hash,
-						     guid_128_cmp);
+		hash_table_create(&list->guid_cache, list->guid_cache_pool, 0,
+				  guid_128_hash, guid_128_cmp);
 	} else {
 		hash_table_clear(list->guid_cache, TRUE);
 		p_clear(list->guid_cache_pool);
@@ -63,18 +63,19 @@ void mailbox_guid_cache_refresh(struct mailbox_list *list)
 		     (MAILBOX_NOSELECT | MAILBOX_NONEXISTENT)) != 0)
 			continue;
 
-		box = mailbox_alloc(list, info->name, 0);
+		box = mailbox_alloc(list, info->vname, 0);
 		if (mailbox_get_metadata(box, MAILBOX_METADATA_GUID,
 					 &metadata) < 0) {
 			i_error("Couldn't get mailbox %s GUID: %s",
-				info->name, mailbox_get_last_error(box, NULL));
+				info->vname, mailbox_get_last_error(box, NULL));
 			list->guid_cache_errors = TRUE;
 		} else {
 			rec = p_new(list->guid_cache_pool,
 				    struct mailbox_guid_cache_rec, 1);
 			memcpy(rec->guid, metadata.guid, sizeof(rec->guid));
-			rec->vname = p_strdup(list->guid_cache_pool, info->name);
-			hash_table_insert(list->guid_cache, rec->guid, rec);
+			rec->vname = p_strdup(list->guid_cache_pool, info->vname);
+			guid_p = rec->guid;
+			hash_table_insert(list->guid_cache, guid_p, rec);
 		}
 		mailbox_free(&box);
 	}

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "llist.h"
@@ -43,7 +43,7 @@ static void notify_sync_callback(bool success, void *context)
 {
 	struct notify_sync_request *request = context;
 
-	o_stream_send_str(request->conn->output, t_strdup_printf(
+	o_stream_nsend_str(request->conn->output, t_strdup_printf(
 		"%c\t%u\n", success ? '+' : '-', request->id));
 
 	notify_connection_unref(&request->conn);
@@ -73,7 +73,7 @@ notify_connection_input_line(struct notify_connection *conn, const char *line)
 		return -1;
 	}
 	if (priority != REPLICATION_PRIORITY_SYNC)
-		replicator_queue_add(conn->queue, args[1], priority);
+		(void)replicator_queue_add(conn->queue, args[1], priority);
 	else if (args[3] == NULL || str_to_uint(args[3], &id) < 0) {
 		i_error("notify client sent invalid sync id: %s", line);
 		return -1;
@@ -141,6 +141,7 @@ notify_connection_create(int fd, struct replicator_queue *queue)
 	conn->fd = fd;
 	conn->input = i_stream_create_fd(fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	conn->io = io_add(fd, IO_READ, notify_connection_input, conn);
 	conn->queue = queue;
 

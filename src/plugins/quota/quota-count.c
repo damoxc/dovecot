@@ -1,10 +1,11 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "mail-search-build.h"
 #include "mail-storage.h"
 #include "mail-namespace.h"
+#include "mailbox-list-iter.h"
 #include "quota-private.h"
 
 static int
@@ -76,7 +77,7 @@ quota_count_namespace(struct quota_root *root, struct mail_namespace *ns,
 	while ((info = mailbox_list_iter_next(ctx)) != NULL) {
 		if ((info->flags & (MAILBOX_NONEXISTENT |
 				    MAILBOX_NOSELECT)) == 0) {
-			ret = quota_count_mailbox(root, ns, info->name,
+			ret = quota_count_mailbox(root, ns, info->vname,
 						  bytes, count);
 			if (ret < 0)
 				break;

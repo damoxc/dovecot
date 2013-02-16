@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "array.h"
@@ -6,7 +6,6 @@
 #include "istream.h"
 #include "ostream.h"
 #include "str.h"
-#include "message-send.h"
 #include "message-size.h"
 #include "imap-date.h"
 #include "imap-utf7.h"
@@ -24,7 +23,7 @@
 #define ENVELOPE_NIL_REPLY \
 	"(NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL)"
 
-static ARRAY_DEFINE(fetch_handlers, struct imap_fetch_handler);
+static ARRAY(struct imap_fetch_handler) fetch_handlers;
 
 static int imap_fetch_handler_cmp(const struct imap_fetch_handler *h1,
 				  const struct imap_fetch_handler *h2)
@@ -45,74 +44,101 @@ imap_fetch_handler_bsearch(const char *name, const struct imap_fetch_handler *h)
 	return strcmp(name, h->name);
 }
 
-bool imap_fetch_init_handler(struct imap_fetch_context *ctx, const char *name,
-			     const struct imap_arg **args)
+bool imap_fetch_init_handler(struct imap_fetch_init_context *init_ctx)
 {
 	const struct imap_fetch_handler *handler;
 	const char *lookup_name, *p;
 
-	for (p = name; i_isalnum(*p) || *p == '-'; p++) ;
-	lookup_name = t_strdup_until(name, p);
+	for (p = init_ctx->name; i_isalnum(*p) || *p == '-'; p++) ;
+	lookup_name = t_strdup_until(init_ctx->name, p);
 
 	handler = array_bsearch(&fetch_handlers, lookup_name,
 				imap_fetch_handler_bsearch);
 	if (handler == NULL) {
-		client_send_command_error(ctx->cmd,
-			t_strconcat("Unknown parameter ", name, NULL));
+		init_ctx->error = t_strdup_printf("Unknown parameter: %s",
+						  init_ctx->name);
 		return FALSE;
 	}
+	if (!handler->init(init_ctx)) {
+		i_assert(init_ctx->error != NULL);
+		return FALSE;
+	}
+	return TRUE;
+}
 
-	return handler->init(ctx, name, args);
+void imap_fetch_init_nofail_handler(struct imap_fetch_context *ctx,
+				    bool (*init)(struct imap_fetch_init_context *))
+{
+	struct imap_fetch_init_context init_ctx;
+
+	memset(&init_ctx, 0, sizeof(init_ctx));
+	init_ctx.fetch_ctx = ctx;
+	init_ctx.pool = ctx->ctx_pool;
+
+	if (!init(&init_ctx))
+		i_unreached();
+}
+
+int imap_fetch_att_list_parse(struct client *client, pool_t pool,
+			      const struct imap_arg *list,
+			      struct imap_fetch_context **fetch_ctx_r,
+			      const char **error_r)
+{
+	struct imap_fetch_init_context init_ctx;
+	const char *str;
+
+	memset(&init_ctx, 0, sizeof(init_ctx));
+	init_ctx.fetch_ctx = imap_fetch_alloc(client, pool);
+	init_ctx.pool = pool;
+	init_ctx.args = list;
+
+	while (imap_arg_get_atom(init_ctx.args, &str)) {
+		init_ctx.name = t_str_ucase(str);
+		init_ctx.args++;
+		if (!imap_fetch_init_handler(&init_ctx)) {
+			*error_r = t_strconcat("Invalid fetch-att list: ",
+					       init_ctx.error, NULL);
+			imap_fetch_free(&init_ctx.fetch_ctx);
+			return -1;
+		}
+	}
+	if (!IMAP_ARG_IS_EOL(init_ctx.args)) {
+		*error_r = "fetch-att list contains non-atoms.";
+		imap_fetch_free(&init_ctx.fetch_ctx);
+		return -1;
+	}
+	*fetch_ctx_r = init_ctx.fetch_ctx;
+	return 0;
 }
 
 struct imap_fetch_context *
-imap_fetch_init(struct client_command_context *cmd, struct mailbox *box)
+imap_fetch_alloc(struct client *client, pool_t pool)
 {
-	struct client *client = cmd->client;
 	struct imap_fetch_context *ctx;
 
-	ctx = p_new(cmd->pool, struct imap_fetch_context, 1);
+	ctx = p_new(pool, struct imap_fetch_context, 1);
 	ctx->client = client;
-	ctx->cmd = cmd;
-	ctx->box = box;
+	ctx->ctx_pool = pool;
+	pool_ref(pool);
 
-	ctx->cur_str = str_new(default_pool, 8192);
-	p_array_init(&ctx->all_headers, cmd->pool, 64);
-	p_array_init(&ctx->handlers, cmd->pool, 16);
-	p_array_init(&ctx->tmp_keywords, cmd->pool,
+	p_array_init(&ctx->all_headers, pool, 64);
+	p_array_init(&ctx->handlers, pool, 16);
+	p_array_init(&ctx->tmp_keywords, pool,
 		     client->keywords.announce_count + 8);
-	ctx->line_finished = TRUE;
 	return ctx;
 }
 
-bool imap_fetch_add_changed_since(struct imap_fetch_context *ctx,
-				  uint64_t modseq)
-{
-	struct mail_search_arg *search_arg;
-
-	search_arg = p_new(ctx->search_args->pool, struct mail_search_arg, 1);
-	search_arg->type = SEARCH_MODSEQ;
-	search_arg->value.modseq =
-		p_new(ctx->cmd->pool, struct mail_search_modseq, 1);
-	search_arg->value.modseq->modseq = modseq + 1;
-
-	search_arg->next = ctx->search_args->args->next;
-	ctx->search_args->args->next = search_arg;
-
-	return imap_fetch_init_handler(ctx, "MODSEQ", NULL);
-}
-
 #undef imap_fetch_add_handler
-void imap_fetch_add_handler(struct imap_fetch_context *ctx,
-			    bool buffered, bool want_deinit,
-			    const char *name, const char *nil_reply,
+void imap_fetch_add_handler(struct imap_fetch_init_context *ctx,
+			    enum imap_fetch_handler_flags flags,
+			    const char *nil_reply,
 			    imap_fetch_handler_t *handler, void *context)
 {
 	/* partially because of broken clients, but also partially because
 	   it potentially can make client implementations faster, we have a
 	   buffered parameter which basically means that the handler promises
-	   to write the output in ctx->cur_str. The cur_str is then sent to
-	   client before calling any non-buffered handlers.
+	   to write the output in fetch_ctx->state.cur_str. The cur_str is then
+	   sent to client before calling any non-buffered handlers.
 
 	   We try to keep the handler registration order the same as the
 	   client requested them. This is especially useful to get UID
@@ -123,7 +149,7 @@ void imap_fetch_add_handler(struct imap_fetch_context *ctx,
 
 	if (context == NULL) {
 		/* don't allow duplicate handlers */
-		array_foreach(&ctx->handlers, ctx_handler) {
+		array_foreach(&ctx->fetch_ctx->handlers, ctx_handler) {
 			if (ctx_handler->handler == handler &&
 			    ctx_handler->context == NULL)
 				return;
@@ -133,22 +159,23 @@ void imap_fetch_add_handler(struct imap_fetch_context *ctx,
 	memset(&h, 0, sizeof(h));
 	h.handler = handler;
 	h.context = context;
-	h.buffered = buffered;
-	h.want_deinit = want_deinit;
-	h.name = p_strdup(ctx->cmd->pool, name);
-	h.nil_reply = p_strdup(ctx->cmd->pool, nil_reply);
+	h.buffered = (flags & IMAP_FETCH_HANDLER_FLAG_BUFFERED) != 0;
+	h.want_deinit = (flags & IMAP_FETCH_HANDLER_FLAG_WANT_DEINIT) != 0;
+	h.name = p_strdup(ctx->pool, ctx->name);
+	h.nil_reply = p_strdup(ctx->pool, nil_reply);
 
-	if (!buffered)
-		array_append(&ctx->handlers, &h, 1);
+	if (!h.buffered)
+		array_append(&ctx->fetch_ctx->handlers, &h, 1);
 	else {
-		array_insert(&ctx->handlers, ctx->buffered_handlers_count,
-			     &h, 1);
-                ctx->buffered_handlers_count++;
+		array_insert(&ctx->fetch_ctx->handlers,
+			     ctx->fetch_ctx->buffered_handlers_count, &h, 1);
+                ctx->fetch_ctx->buffered_handlers_count++;
 	}
 }
 
 static void
-expunges_drop_known(struct imap_fetch_context *ctx,
+expunges_drop_known(struct mailbox *box,
+		    const struct imap_fetch_qresync_args *qresync_args,
 		    struct mailbox_transaction_context *trans,
 		    ARRAY_TYPE(seq_range) *expunged_uids)
 {
@@ -157,12 +184,12 @@ expunges_drop_known(struct imap_fetch_context *ctx,
 	const uint32_t *seqs, *uids;
 	unsigned int i, count;
 
-	seqs = array_get(ctx->qresync_sample_seqset, &count);
-	uids = array_idx(ctx->qresync_sample_uidset, 0);
-	i_assert(array_count(ctx->qresync_sample_uidset) == count);
+	seqs = array_get(qresync_args->qresync_sample_seqset, &count);
+	uids = array_idx(qresync_args->qresync_sample_uidset, 0);
+	i_assert(array_count(qresync_args->qresync_sample_uidset) == count);
 	i_assert(count > 0);
 
-	mailbox_get_open_status(ctx->box, STATUS_MESSAGES, &status);
+	mailbox_get_open_status(box, STATUS_MESSAGES, &status);
 	mail = mail_alloc(trans, 0, NULL);
 
 	/* FIXME: we could do removals from the middle as well */
@@ -176,9 +203,11 @@ expunges_drop_known(struct imap_fetch_context *ctx,
 	mail_free(&mail);
 }
 
-static int get_expunges_fallback(struct imap_fetch_context *ctx,
-				 const ARRAY_TYPE(seq_range) *uid_filter_arr,
-				 ARRAY_TYPE(seq_range) *expunged_uids)
+static int
+get_expunges_fallback(struct mailbox *box,
+		      const struct imap_fetch_qresync_args *qresync_args,
+		      const ARRAY_TYPE(seq_range) *uid_filter_arr,
+		      ARRAY_TYPE(seq_range) *expunged_uids)
 {
 	struct mailbox_transaction_context *trans;
 	struct mail_search_args *search_args;
@@ -202,7 +231,7 @@ static int get_expunges_fallback(struct imap_fetch_context *ctx,
 	i_array_init(&search_args->args->value.seqset, count);
 	array_append_array(&search_args->args->value.seqset, uid_filter_arr);
 
-	trans = mailbox_transaction_begin(ctx->box, 0);
+	trans = mailbox_transaction_begin(box, 0);
 	search_ctx = mailbox_search_init(trans, search_args, NULL, 0, NULL);
 	mail_search_args_unref(&search_args);
 
@@ -249,36 +278,43 @@ static int get_expunges_fallback(struct imap_fetch_context *ctx,
 					  uid_filter[i].seq2);
 	}
 
-	mailbox_get_open_status(ctx->box, STATUS_UIDNEXT, &status);
+	mailbox_get_open_status(box, STATUS_UIDNEXT, &status);
 	seq_range_array_remove_range(expunged_uids, status.uidnext,
 				     (uint32_t)-1);
 
 	if (mailbox_search_deinit(&search_ctx) < 0)
 		ret = -1;
 
-	if (ret == 0 && ctx->qresync_sample_seqset != NULL &&
-	    array_is_created(ctx->qresync_sample_seqset))
-		expunges_drop_known(ctx, trans, expunged_uids);
+	if (ret == 0 && qresync_args->qresync_sample_seqset != NULL &&
+	    array_is_created(qresync_args->qresync_sample_seqset))
+		expunges_drop_known(box, qresync_args, trans, expunged_uids);
 
 	(void)mailbox_transaction_commit(&trans);
 	return ret;
 }
 
-static int
-imap_fetch_send_vanished(struct imap_fetch_context *ctx)
+int imap_fetch_send_vanished(struct client *client, struct mailbox *box,
+			     const struct mail_search_args *search_args,
+			     const struct imap_fetch_qresync_args *qresync_args)
 {
-	const struct mail_search_arg *uidarg = ctx->search_args->args;
+	const struct mail_search_arg *uidarg = search_args->args;
 	const struct mail_search_arg *modseqarg = uidarg->next;
-	const ARRAY_TYPE(seq_range) *uid_filter = &uidarg->value.seqset;
-	uint64_t modseq = modseqarg->value.modseq->modseq - 1;
+	const ARRAY_TYPE(seq_range) *uid_filter;
+	uint64_t modseq;
 	ARRAY_TYPE(seq_range) expunged_uids_range;
 	string_t *str;
 	int ret = 0;
 
+	i_assert(uidarg->type == SEARCH_UIDSET);
+	i_assert(modseqarg->type == SEARCH_MODSEQ);
+
+	uid_filter = &uidarg->value.seqset;
+	modseq = modseqarg->value.modseq->modseq - 1;
+
 	i_array_init(&expunged_uids_range, array_count(uid_filter));
-	if (!mailbox_get_expunged_uids(ctx->box, modseq, uid_filter, &expunged_uids_range)) {
+	if (!mailbox_get_expunged_uids(box, modseq, uid_filter, &expunged_uids_range)) {
 		/* return all expunged UIDs */
-		if (get_expunges_fallback(ctx, uid_filter,
+		if (get_expunges_fallback(box, qresync_args, uid_filter,
 					  &expunged_uids_range) < 0) {
 			array_clear(&expunged_uids_range);
 			ret = -1;
@@ -289,59 +325,65 @@ imap_fetch_send_vanished(struct imap_fetch_context *ctx)
 		str_append(str, "* VANISHED (EARLIER) ");
 		imap_write_seq_range(str, &expunged_uids_range);
 		str_append(str, "\r\n");
-		o_stream_send(ctx->client->output, str_data(str), str_len(str));
+		o_stream_nsend(client->output, str_data(str), str_len(str));
 		str_free(&str);
 	}
 	array_free(&expunged_uids_range);
 	return ret;
 }
 
-int imap_fetch_begin(struct imap_fetch_context *ctx)
+static void imap_fetch_init(struct imap_fetch_context *ctx)
 {
-	const void *data;
+	if (ctx->initialized)
+		return;
+	ctx->initialized = TRUE;
 
-	if (ctx->send_vanished) {
-		if (imap_fetch_send_vanished(ctx) < 0) {
-			ctx->failed = TRUE;
-			return -1;
-		}
+	if (ctx->flags_update_seen && !ctx->flags_have_handler) {
+		ctx->flags_show_only_seen_changes = TRUE;
+		imap_fetch_init_nofail_handler(ctx, imap_fetch_flags_init);
 	}
+	if ((ctx->fetch_data &
+	     (MAIL_FETCH_STREAM_HEADER | MAIL_FETCH_STREAM_BODY)) != 0)
+		ctx->fetch_data |= MAIL_FETCH_NUL_STATE;
+}
 
-	if (ctx->flags_update_seen) {
-		if (mailbox_is_readonly(ctx->box))
-			ctx->flags_update_seen = FALSE;
-		else if (!ctx->flags_have_handler) {
-			ctx->flags_show_only_seen_changes = TRUE;
-			(void)imap_fetch_init_handler(ctx, "FLAGS", NULL);
-		}
-	}
+void imap_fetch_begin(struct imap_fetch_context *ctx, struct mailbox *box,
+		      struct mail_search_args *search_args)
+{
+	struct mailbox_header_lookup_ctx *wanted_headers = NULL;
+	const char *const *headers;
+
+	i_assert(!ctx->state.fetching);
+
+        imap_fetch_init(ctx);
+        memset(&ctx->state, 0, sizeof(ctx->state));
 
 	if (array_count(&ctx->all_headers) > 0 &&
 	    ((ctx->fetch_data & (MAIL_FETCH_STREAM_HEADER |
 				 MAIL_FETCH_STREAM_BODY)) == 0)) {
-		(void)array_append_space(&ctx->all_headers);
+		array_append_zero(&ctx->all_headers);
 
-		data = array_idx(&ctx->all_headers, 0);
-		ctx->all_headers_ctx =
-			mailbox_header_lookup_init(ctx->box, data);
+		headers = array_idx(&ctx->all_headers, 0);
+		wanted_headers = mailbox_header_lookup_init(box, headers);
+		array_delete(&ctx->all_headers,
+			     array_count(&ctx->all_headers)-1, 1);
 	}
 
-	if ((ctx->fetch_data &
-	     (MAIL_FETCH_STREAM_HEADER | MAIL_FETCH_STREAM_BODY)) != 0)
-		ctx->fetch_data |= MAIL_FETCH_NUL_STATE;
-
-	ctx->trans = mailbox_transaction_begin(ctx->box,
+	ctx->state.trans = mailbox_transaction_begin(box,
 		MAILBOX_TRANSACTION_FLAG_HIDE |
 		MAILBOX_TRANSACTION_FLAG_REFRESH);
-	ctx->select_counter = ctx->client->select_counter;
 
-	/* Delayed uidset -> seqset conversion. VANISHED needs the uidset. */
-	mail_search_args_init(ctx->search_args, ctx->box, TRUE,
-			      &ctx->cmd->client->search_saved_uidset);
-	ctx->search_ctx =
-		mailbox_search_init(ctx->trans, ctx->search_args, NULL,
-				    ctx->fetch_data, ctx->all_headers_ctx);
-	return 0;
+	mail_search_args_init(search_args, box, TRUE,
+			      &ctx->client->search_saved_uidset);
+	ctx->state.search_ctx =
+		mailbox_search_init(ctx->state.trans, search_args, NULL,
+				    ctx->fetch_data, wanted_headers);
+	ctx->state.cur_str = str_new(default_pool, 8192);
+	ctx->state.fetching = TRUE;
+	ctx->state.line_finished = TRUE;
+
+	if (wanted_headers != NULL)
+		mailbox_header_lookup_unref(&wanted_headers);
 }
 
 static int imap_fetch_flush_buffer(struct imap_fetch_context *ctx)
@@ -349,8 +391,8 @@ static int imap_fetch_flush_buffer(struct imap_fetch_context *ctx)
 	const unsigned char *data;
 	size_t len;
 
-	data = str_data(ctx->cur_str);
-	len = str_len(ctx->cur_str);
+	data = str_data(ctx->state.cur_str);
+	len = str_len(ctx->state.cur_str);
 
 	if (len == 0)
 		return 0;
@@ -359,13 +401,13 @@ static int imap_fetch_flush_buffer(struct imap_fetch_context *ctx)
 	   to buffer */
 	if (data[len-1] == ' ') {
 		len--;
-		ctx->first = FALSE;
+		ctx->state.cur_first = FALSE;
 	}
 
 	if (o_stream_send(ctx->client->output, data, len) < 0)
 		return -1;
 
-	str_truncate(ctx->cur_str, 0);
+	str_truncate(ctx->state.cur_str, 0);
 	return 0;
 }
 
@@ -373,11 +415,11 @@ static int imap_fetch_send_nil_reply(struct imap_fetch_context *ctx)
 {
 	const struct imap_fetch_context_handler *handler;
 
-	if (!ctx->first)
-		str_append_c(ctx->cur_str, ' ');
+	if (!ctx->state.cur_first)
+		str_append_c(ctx->state.cur_str, ' ');
 
-	handler = array_idx(&ctx->handlers, ctx->cur_handler);
-	str_printfa(ctx->cur_str, "%s %s ",
+	handler = array_idx(&ctx->handlers, ctx->state.cur_handler);
+	str_printfa(ctx->state.cur_str, "%s %s ",
 		    handler->name, handler->nil_reply);
 
 	if (!handler->buffered) {
@@ -387,15 +429,16 @@ static int imap_fetch_send_nil_reply(struct imap_fetch_context *ctx)
 	return 0;
 }
 
-static int imap_fetch_more_int(struct imap_fetch_context *ctx)
+static int imap_fetch_more_int(struct imap_fetch_context *ctx, bool cancel)
 {
+	struct imap_fetch_state *state = &ctx->state;
 	struct client *client = ctx->client;
 	const struct imap_fetch_context_handler *handlers;
 	unsigned int count;
 	int ret;
 
-	if (ctx->cont_handler != NULL) {
-		ret = ctx->cont_handler(ctx);
+	if (state->cont_handler != NULL) {
+		ret = state->cont_handler(ctx);
 		if (ret == 0)
 			return 0;
 
@@ -403,9 +446,9 @@ static int imap_fetch_more_int(struct imap_fetch_context *ctx)
 			if (client->output->closed)
 				return -1;
 
-			if (ctx->cur_mail->expunged) {
+			if (state->cur_mail->expunged) {
 				/* not an error, just lost it. */
-				ctx->partial_fetch = TRUE;
+				state->skipped_expunged_msgs = TRUE;
 				if (imap_fetch_send_nil_reply(ctx) < 0)
 					return -1;
 			} else {
@@ -413,11 +456,11 @@ static int imap_fetch_more_int(struct imap_fetch_context *ctx)
 			}
 		}
 
-		ctx->cont_handler = NULL;
-		ctx->cur_offset = 0;
-                ctx->cur_handler++;
-		if (ctx->cur_input != NULL)
-			i_stream_unref(&ctx->cur_input);
+		state->cont_handler = NULL;
+		state->cur_offset = 0;
+                state->cur_handler++;
+		if (state->cur_input != NULL)
+			i_stream_unref(&state->cur_input);
 	}
 
 	handlers = array_get(&ctx->handlers, &count);
@@ -429,36 +472,36 @@ static int imap_fetch_more_int(struct imap_fetch_context *ctx)
 				return ret;
 		}
 
-		if (ctx->cur_mail == NULL) {
-			if (ctx->cmd->cancel)
+		if (state->cur_mail == NULL) {
+			if (cancel)
 				return 1;
 
-			if (!mailbox_search_next(ctx->search_ctx,
-						 &ctx->cur_mail))
+			if (!mailbox_search_next(state->search_ctx,
+						 &state->cur_mail))
 				break;
 
-			str_printfa(ctx->cur_str, "* %u FETCH (",
-				    ctx->cur_mail->seq);
-			ctx->first = TRUE;
-			ctx->line_finished = FALSE;
+			str_printfa(state->cur_str, "* %u FETCH (",
+				    state->cur_mail->seq);
+			state->cur_first = TRUE;
+			state->line_finished = FALSE;
 		}
 
-		for (; ctx->cur_handler < count; ctx->cur_handler++) {
-			if (str_len(ctx->cur_str) > 0 &&
-			    !handlers[ctx->cur_handler].buffered) {
+		for (; state->cur_handler < count; state->cur_handler++) {
+			if (str_len(state->cur_str) > 0 &&
+			    !handlers[state->cur_handler].buffered) {
 				/* first non-buffered handler.
 				   flush the buffer. */
-				ctx->line_partial = TRUE;
+				state->line_partial = TRUE;
 				if (imap_fetch_flush_buffer(ctx) < 0)
 					return -1;
 			}
 
-			i_assert(ctx->cur_input == NULL);
+			i_assert(state->cur_input == NULL);
 			T_BEGIN {
 				const struct imap_fetch_context_handler *h =
-					&handlers[ctx->cur_handler];
+					&handlers[state->cur_handler];
 
-				ret = h->handler(ctx, ctx->cur_mail,
+				ret = h->handler(ctx, state->cur_mail,
 						 h->context);
 			} T_END;
 
@@ -466,96 +509,132 @@ static int imap_fetch_more_int(struct imap_fetch_context *ctx)
 				return 0;
 
 			if (ret < 0) {
-				if (ctx->cur_mail->expunged) {
+				if (state->cur_mail->expunged) {
 					/* not an error, just lost it. */
-					ctx->partial_fetch = TRUE;
+					state->skipped_expunged_msgs = TRUE;
 					if (imap_fetch_send_nil_reply(ctx) < 0)
 						return -1;
 				} else {
 					i_assert(ret < 0 ||
-						 ctx->cont_handler != NULL);
+						 state->cont_handler != NULL);
 					return -1;
 				}
 			}
 
-			ctx->cont_handler = NULL;
-			ctx->cur_offset = 0;
-			if (ctx->cur_input != NULL)
-				i_stream_unref(&ctx->cur_input);
+			state->cont_handler = NULL;
+			state->cur_offset = 0;
+			if (state->cur_input != NULL)
+				i_stream_unref(&state->cur_input);
 		}
 
-		if (str_len(ctx->cur_str) > 0) {
+		if (str_len(state->cur_str) > 0) {
 			/* no non-buffered handlers */
 			if (imap_fetch_flush_buffer(ctx) < 0)
 				return -1;
 		}
 
-		ctx->line_finished = TRUE;
-		ctx->line_partial = FALSE;
-		if (o_stream_send(client->output, ")\r\n", 3) < 0)
-			return -1;
+		state->line_finished = TRUE;
+		state->line_partial = FALSE;
+		o_stream_nsend(client->output, ")\r\n", 3);
 		client->last_output = ioloop_time;
 
-		ctx->cur_mail = NULL;
-		ctx->cur_handler = 0;
+		state->cur_mail = NULL;
+		state->cur_handler = 0;
 	}
 
 	return 1;
 }
 
-int imap_fetch_more(struct imap_fetch_context *ctx)
+int imap_fetch_more(struct imap_fetch_context *ctx,
+		    struct client_command_context *cmd)
 {
 	int ret;
 
-	i_assert(ctx->client->output_lock == NULL ||
-		 ctx->client->output_lock == ctx->cmd);
+	i_assert(ctx->client->output_cmd_lock == NULL ||
+		 ctx->client->output_cmd_lock == cmd);
 
-	ret = imap_fetch_more_int(ctx);
+	ret = imap_fetch_more_int(ctx, cmd->cancel);
 	if (ret < 0)
-		ctx->failed = TRUE;
-	if (ctx->line_partial) {
+		ctx->state.failed = TRUE;
+	if (ctx->state.line_partial) {
 		/* nothing can be sent until FETCH is finished */
-		ctx->client->output_lock = ctx->cmd;
+		ctx->client->output_cmd_lock = cmd;
+	}
+	if (cmd->cancel && ctx->client->output_cmd_lock != NULL) {
+		/* canceling didn't really work. we must not output
+		   anything anymore. */
+		if (!ctx->client->destroyed)
+			client_disconnect(ctx->client, "Failed to cancel FETCH");
+		ctx->client->output_cmd_lock = NULL;
 	}
 	return ret;
 }
 
-int imap_fetch_deinit(struct imap_fetch_context *ctx)
+int imap_fetch_more_no_lock_update(struct imap_fetch_context *ctx)
 {
+	int ret;
+
+	ret = imap_fetch_more_int(ctx, FALSE);
+	if (ret < 0) {
+		ctx->state.failed = TRUE;
+		if (!ctx->state.line_finished) {
+			client_disconnect(ctx->client,
+				"NOTIFY failed in the middle of FETCH reply");
+		}
+	}
+	return ret;
+}
+
+int imap_fetch_end(struct imap_fetch_context *ctx)
+{
+	struct imap_fetch_state *state = &ctx->state;
+
+	if (ctx->state.fetching) {
+		ctx->state.fetching = FALSE;
+		if (!state->line_finished) {
+			if (imap_fetch_flush_buffer(ctx) < 0)
+				state->failed = TRUE;
+			if (o_stream_send(ctx->client->output, ")\r\n", 3) < 0)
+				state->failed = TRUE;
+		}
+	}
+	ctx->client->output_cmd_lock = NULL;
+
+	if (state->cur_str != NULL)
+		str_free(&state->cur_str);
+
+	if (state->cur_input != NULL)
+		i_stream_unref(&state->cur_input);
+
+	if (state->search_ctx != NULL) {
+		if (mailbox_search_deinit(&state->search_ctx) < 0)
+			state->failed = TRUE;
+	}
+
+	if (state->trans != NULL) {
+		/* even if something failed, we want to commit changes to
+		   cache, as well as possible \Seen flag changes for FETCH
+		   replies we returned so far. */
+		if (mailbox_transaction_commit(&state->trans) < 0)
+			state->failed = TRUE;
+	}
+	return state->failed ? -1 : 0;
+}
+
+void imap_fetch_free(struct imap_fetch_context **_ctx)
+{
+	struct imap_fetch_context *ctx = *_ctx;
 	const struct imap_fetch_context_handler *handler;
+
+	*_ctx = NULL;
+
+	(void)imap_fetch_end(ctx);
 
 	array_foreach(&ctx->handlers, handler) {
 		if (handler->want_deinit)
 			handler->handler(ctx, NULL, handler->context);
 	}
-
-	if (!ctx->line_finished) {
-		if (imap_fetch_flush_buffer(ctx) < 0)
-			ctx->failed = TRUE;
-		if (o_stream_send(ctx->client->output, ")\r\n", 3) < 0)
-			ctx->failed = TRUE;
-	}
-	str_free(&ctx->cur_str);
-
-	if (ctx->cur_input != NULL)
-		i_stream_unref(&ctx->cur_input);
-
-	mail_search_args_unref(&ctx->search_args);
-	if (ctx->search_ctx != NULL) {
-		if (mailbox_search_deinit(&ctx->search_ctx) < 0)
-			ctx->failed = TRUE;
-	}
-	if (ctx->all_headers_ctx != NULL)
-		mailbox_header_lookup_unref(&ctx->all_headers_ctx);
-
-	if (ctx->trans != NULL) {
-		/* even if something failed, we want to commit changes to
-		   cache, as well as possible \Seen flag changes for FETCH
-		   replies we returned so far. */
-		if (mailbox_transaction_commit(&ctx->trans) < 0)
-			ctx->failed = TRUE;
-	}
-	return ctx->failed ? -1 : 0;
+	pool_unref(&ctx->ctx_pool);
 }
 
 static int fetch_body(struct imap_fetch_context *ctx, struct mail *mail,
@@ -566,8 +645,8 @@ static int fetch_body(struct imap_fetch_context *ctx, struct mail *mail,
 	if (mail_get_special(mail, MAIL_FETCH_IMAP_BODY, &body) < 0)
 		return -1;
 
-	if (ctx->first)
-		ctx->first = FALSE;
+	if (ctx->state.cur_first)
+		ctx->state.cur_first = FALSE;
 	else {
 		if (o_stream_send(ctx->client->output, " ", 1) < 0)
 			return -1;
@@ -580,16 +659,15 @@ static int fetch_body(struct imap_fetch_context *ctx, struct mail *mail,
 	return 1;
 }
 
-static bool fetch_body_init(struct imap_fetch_context *ctx, const char *name,
-			    const struct imap_arg **args)
+static bool fetch_body_init(struct imap_fetch_init_context *ctx)
 {
-	if (name[4] == '\0') {
-		ctx->fetch_data |= MAIL_FETCH_IMAP_BODY;
-		imap_fetch_add_handler(ctx, FALSE, FALSE, name,
-				       "("BODY_NIL_REPLY")", fetch_body, NULL);
+	if (ctx->name[4] == '\0') {
+		ctx->fetch_ctx->fetch_data |= MAIL_FETCH_IMAP_BODY;
+		imap_fetch_add_handler(ctx, 0, "("BODY_NIL_REPLY")",
+				       fetch_body, NULL);
 		return TRUE;
 	}
-	return fetch_body_section_init(ctx, name, args);
+	return imap_fetch_body_section_init(ctx);
 }
 
 static int fetch_bodystructure(struct imap_fetch_context *ctx,
@@ -601,8 +679,8 @@ static int fetch_bodystructure(struct imap_fetch_context *ctx,
 			     &bodystructure) < 0)
 		return -1;
 
-	if (ctx->first)
-		ctx->first = FALSE;
+	if (ctx->state.cur_first)
+		ctx->state.cur_first = FALSE;
 	else {
 		if (o_stream_send(ctx->client->output, " ", 1) < 0)
 			return -1;
@@ -616,13 +694,10 @@ static int fetch_bodystructure(struct imap_fetch_context *ctx,
 	return 1;
 }
 
-static bool
-fetch_bodystructure_init(struct imap_fetch_context *ctx, const char *name,
-			 const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_bodystructure_init(struct imap_fetch_init_context *ctx)
 {
-	ctx->fetch_data |= MAIL_FETCH_IMAP_BODYSTRUCTURE;
-	imap_fetch_add_handler(ctx, FALSE, FALSE, name,
-			       "("BODY_NIL_REPLY" NIL NIL NIL NIL)",
+	ctx->fetch_ctx->fetch_data |= MAIL_FETCH_IMAP_BODYSTRUCTURE;
+	imap_fetch_add_handler(ctx, 0, "("BODY_NIL_REPLY" NIL NIL NIL NIL)",
 			       fetch_bodystructure, NULL);
 	return TRUE;
 }
@@ -635,8 +710,8 @@ static int fetch_envelope(struct imap_fetch_context *ctx, struct mail *mail,
 	if (mail_get_special(mail, MAIL_FETCH_IMAP_ENVELOPE, &envelope) < 0)
 		return -1;
 
-	if (ctx->first)
-		ctx->first = FALSE;
+	if (ctx->state.cur_first)
+		ctx->state.cur_first = FALSE;
 	else {
 		if (o_stream_send(ctx->client->output, " ", 1) < 0)
 			return -1;
@@ -649,12 +724,10 @@ static int fetch_envelope(struct imap_fetch_context *ctx, struct mail *mail,
 	return 1;
 }
 
-static bool
-fetch_envelope_init(struct imap_fetch_context *ctx, const char *name,
-		    const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_envelope_init(struct imap_fetch_init_context *ctx)
 {
-	ctx->fetch_data |= MAIL_FETCH_IMAP_ENVELOPE;
-	imap_fetch_add_handler(ctx, FALSE, FALSE, name, ENVELOPE_NIL_REPLY,
+	ctx->fetch_ctx->fetch_data |= MAIL_FETCH_IMAP_ENVELOPE;
+	imap_fetch_add_handler(ctx, 0, ENVELOPE_NIL_REPLY,
 			       fetch_envelope, NULL);
 	return TRUE;
 }
@@ -666,9 +739,10 @@ static int fetch_flags(struct imap_fetch_context *ctx, struct mail *mail,
 	const char *const *keywords;
 
 	flags = mail_get_flags(mail);
-	if (ctx->flags_update_seen && (flags & MAIL_SEEN) == 0) {
+	if (ctx->flags_update_seen && (flags & MAIL_SEEN) == 0 &&
+	    !mailbox_is_readonly(mail->box)) {
 		/* Add \Seen flag */
-		ctx->seen_flags_changed = TRUE;
+		ctx->state.seen_flags_changed = TRUE;
 		flags |= MAIL_SEEN;
 		mail_update_flags(mail, MODIFY_ADD, MAIL_SEEN);
 	} else if (ctx->flags_show_only_seen_changes) {
@@ -678,19 +752,18 @@ static int fetch_flags(struct imap_fetch_context *ctx, struct mail *mail,
 	keywords = client_get_keyword_names(ctx->client, &ctx->tmp_keywords,
 			mail_get_keyword_indexes(mail));
 
-	str_append(ctx->cur_str, "FLAGS (");
-	imap_write_flags(ctx->cur_str, flags, keywords);
-	str_append(ctx->cur_str, ") ");
+	str_append(ctx->state.cur_str, "FLAGS (");
+	imap_write_flags(ctx->state.cur_str, flags, keywords);
+	str_append(ctx->state.cur_str, ") ");
 	return 1;
 }
 
-static bool
-fetch_flags_init(struct imap_fetch_context *ctx, const char *name,
-		 const struct imap_arg **args ATTR_UNUSED)
+bool imap_fetch_flags_init(struct imap_fetch_init_context *ctx)
 {
-	ctx->flags_have_handler = TRUE;
-	ctx->fetch_data |= MAIL_FETCH_FLAGS;
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name, "()", fetch_flags, NULL);
+	ctx->fetch_ctx->flags_have_handler = TRUE;
+	ctx->fetch_ctx->fetch_data |= MAIL_FETCH_FLAGS;
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
+			       "()", fetch_flags, NULL);
 	return TRUE;
 }
 
@@ -702,17 +775,15 @@ static int fetch_internaldate(struct imap_fetch_context *ctx, struct mail *mail,
 	if (mail_get_received_date(mail, &date) < 0)
 		return -1;
 
-	str_printfa(ctx->cur_str, "INTERNALDATE \"%s\" ",
+	str_printfa(ctx->state.cur_str, "INTERNALDATE \"%s\" ",
 		    imap_to_datetime(date));
 	return 1;
 }
 
-static bool
-fetch_internaldate_init(struct imap_fetch_context *ctx, const char *name,
-			const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_internaldate_init(struct imap_fetch_init_context *ctx)
 {
-	ctx->fetch_data |= MAIL_FETCH_RECEIVED_DATE;
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name,
+	ctx->fetch_ctx->fetch_data |= MAIL_FETCH_RECEIVED_DATE;
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
 			       "\"01-Jan-1970 00:00:00 +0000\"",
 			       fetch_internaldate, NULL);
 	return TRUE;
@@ -726,33 +797,30 @@ static int fetch_modseq(struct imap_fetch_context *ctx, struct mail *mail,
 	modseq = mail_get_modseq(mail);
 	if (ctx->client->highest_fetch_modseq < modseq)
 		ctx->client->highest_fetch_modseq = modseq;
-	str_printfa(ctx->cur_str, "MODSEQ (%llu) ",
+	str_printfa(ctx->state.cur_str, "MODSEQ (%llu) ",
 		    (unsigned long long)modseq);
 	return 1;
 }
 
-static bool
-fetch_modseq_init(struct imap_fetch_context *ctx, const char *name,
-		  const struct imap_arg **args ATTR_UNUSED)
+bool imap_fetch_modseq_init(struct imap_fetch_init_context *ctx)
 {
-	(void)client_enable(ctx->client, MAILBOX_FEATURE_CONDSTORE);
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name, NULL,
-			       fetch_modseq, NULL);
+	(void)client_enable(ctx->fetch_ctx->client, MAILBOX_FEATURE_CONDSTORE);
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
+			       NULL, fetch_modseq, NULL);
 	return TRUE;
 }
 
 static int fetch_uid(struct imap_fetch_context *ctx, struct mail *mail,
 		     void *context ATTR_UNUSED)
 {
-	str_printfa(ctx->cur_str, "UID %u ", mail->uid);
+	str_printfa(ctx->state.cur_str, "UID %u ", mail->uid);
 	return 1;
 }
 
-static bool
-fetch_uid_init(struct imap_fetch_context *ctx ATTR_UNUSED, const char *name,
-	       const struct imap_arg **args ATTR_UNUSED)
+bool imap_fetch_uid_init(struct imap_fetch_init_context *ctx)
 {
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name, NULL, fetch_uid, NULL);
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
+			       NULL, fetch_uid, NULL);
 	return TRUE;
 }
 
@@ -764,18 +832,17 @@ static int fetch_guid(struct imap_fetch_context *ctx, struct mail *mail,
 	if (mail_get_special(mail, MAIL_FETCH_GUID, &value) < 0)
 		return -1;
 
-	str_append(ctx->cur_str, "X-GUID ");
-	imap_quote_append_string(ctx->cur_str, value, FALSE);
-	str_append_c(ctx->cur_str, ' ');
+	str_append(ctx->state.cur_str, "X-GUID ");
+	imap_append_astring(ctx->state.cur_str, value);
+	str_append_c(ctx->state.cur_str, ' ');
 	return 1;
 }
 
-static bool
-fetch_guid_init(struct imap_fetch_context *ctx ATTR_UNUSED, const char *name,
-		const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_guid_init(struct imap_fetch_init_context *ctx)
 {
-	ctx->fetch_data |= MAIL_FETCH_GUID;
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name, "", fetch_guid, NULL);
+	ctx->fetch_ctx->fetch_data |= MAIL_FETCH_GUID;
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
+			       "", fetch_guid, NULL);
 	return TRUE;
 }
 
@@ -792,37 +859,31 @@ static int fetch_x_mailbox(struct imap_fetch_context *ctx, struct mail *mail,
 	if (imap_utf8_to_utf7(name, mutf7_name) < 0)
 		i_panic("FETCH: Mailbox name not UTF-8: %s", name);
 
-	str_append(ctx->cur_str, "X-MAILBOX ");
-	imap_quote_append_string(ctx->cur_str, str_c(mutf7_name), FALSE);
-	str_append_c(ctx->cur_str, ' ');
+	str_append(ctx->state.cur_str, "X-MAILBOX ");
+	imap_append_astring(ctx->state.cur_str, str_c(mutf7_name));
+	str_append_c(ctx->state.cur_str, ' ');
 	return 1;
 }
 
-static bool
-fetch_x_mailbox_init(struct imap_fetch_context *ctx ATTR_UNUSED,
-		     const char *name,
-		     const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_x_mailbox_init(struct imap_fetch_init_context *ctx)
 {
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name, NULL,
-			       fetch_x_mailbox, NULL);
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
+			       NULL, fetch_x_mailbox, NULL);
 	return TRUE;
 }
 
 static int fetch_x_real_uid(struct imap_fetch_context *ctx, struct mail *mail,
 			    void *context ATTR_UNUSED)
 {
-	str_printfa(ctx->cur_str, "X-REAL-UID %u ",
+	str_printfa(ctx->state.cur_str, "X-REAL-UID %u ",
 		    mail_get_real_mail(mail)->uid);
 	return 1;
 }
 
-static bool
-fetch_x_real_uid_init(struct imap_fetch_context *ctx ATTR_UNUSED,
-		      const char *name,
-		      const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_x_real_uid_init(struct imap_fetch_init_context *ctx)
 {
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name, NULL,
-			       fetch_x_real_uid, NULL);
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
+			       NULL, fetch_x_real_uid, NULL);
 	return TRUE;
 }
 
@@ -834,17 +895,15 @@ static int fetch_x_savedate(struct imap_fetch_context *ctx, struct mail *mail,
 	if (mail_get_save_date(mail, &date) < 0)
 		return -1;
 
-	str_printfa(ctx->cur_str, "X-SAVEDATE \"%s\" ",
+	str_printfa(ctx->state.cur_str, "X-SAVEDATE \"%s\" ",
 		    imap_to_datetime(date));
 	return 1;
 }
 
-static bool
-fetch_x_savedate_init(struct imap_fetch_context *ctx, const char *name,
-		      const struct imap_arg **args ATTR_UNUSED)
+static bool fetch_x_savedate_init(struct imap_fetch_init_context *ctx)
 {
-	ctx->fetch_data |= MAIL_FETCH_SAVE_DATE;
-	imap_fetch_add_handler(ctx, TRUE, FALSE, name,
+	ctx->fetch_ctx->fetch_data |= MAIL_FETCH_SAVE_DATE;
+	imap_fetch_add_handler(ctx, IMAP_FETCH_HANDLER_FLAG_BUFFERED,
 			       "\"01-Jan-1970 00:00:00 +0000\"",
 			       fetch_x_savedate, NULL);
 	return TRUE;
@@ -852,14 +911,15 @@ fetch_x_savedate_init(struct imap_fetch_context *ctx, const char *name,
 
 static const struct imap_fetch_handler
 imap_fetch_default_handlers[] = {
+	{ "BINARY", imap_fetch_binary_init },
 	{ "BODY", fetch_body_init },
 	{ "BODYSTRUCTURE", fetch_bodystructure_init },
 	{ "ENVELOPE", fetch_envelope_init },
-	{ "FLAGS", fetch_flags_init },
+	{ "FLAGS", imap_fetch_flags_init },
 	{ "INTERNALDATE", fetch_internaldate_init },
-	{ "MODSEQ", fetch_modseq_init },
-	{ "RFC822", fetch_rfc822_init },
-	{ "UID", fetch_uid_init },
+	{ "MODSEQ", imap_fetch_modseq_init },
+	{ "RFC822", imap_fetch_rfc822_init },
+	{ "UID", imap_fetch_uid_init },
 	{ "X-GUID", fetch_guid_init },
 	{ "X-MAILBOX", fetch_x_mailbox_init },
 	{ "X-REAL-UID", fetch_x_real_uid_init },

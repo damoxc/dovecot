@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -183,15 +183,12 @@ static int fstat_cached(struct mmap_istream *mstream)
 	return 0;
 }
 
-static const struct stat *
+static int
 i_stream_mmap_stat(struct istream_private *stream, bool exact ATTR_UNUSED)
 {
 	struct mmap_istream *mstream = (struct mmap_istream *) stream;
 
-	if (fstat_cached(mstream) < 0)
-		return NULL;
-
-	return &stream->statbuf;
+	return fstat_cached(mstream);
 }
 
 struct istream *i_stream_create_mmap(int fd, size_t block_size,

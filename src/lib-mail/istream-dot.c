@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream-private.h"
@@ -24,10 +24,10 @@ struct dot_istream {
 static int i_stream_dot_read_some(struct dot_istream *dstream)
 {
 	struct istream_private *stream = &dstream->istream;
-	size_t size;
+	size_t size, avail;
 	ssize_t ret;
 
-	(void)i_stream_get_data(stream->parent, &size);
+	size = i_stream_get_data_size(stream->parent);
 	if (size == 0) {
 		ret = i_stream_read(stream->parent);
 		if (ret <= 0 && (ret != -2 || stream->skip == 0)) {
@@ -40,11 +40,11 @@ static int i_stream_dot_read_some(struct dot_istream *dstream)
 			}
 			return ret;
 		}
-		(void)i_stream_get_data(stream->parent, &size);
+		size = i_stream_get_data_size(stream->parent);
 		i_assert(size != 0);
 	}
 
-	if (!i_stream_get_buffer_space(stream, size, NULL))
+	if (!i_stream_try_alloc(stream, size, &avail))
 		return -2;
 	return 1;
 }
@@ -109,11 +109,11 @@ static ssize_t i_stream_dot_read(struct istream_private *stream)
 	/* @UNSAFE */
 	struct dot_istream *dstream = (struct dot_istream *)stream;
 	const unsigned char *data;
-	size_t i, dest, size;
+	size_t i, dest, size, avail;
 	ssize_t ret, ret1;
 
 	if (dstream->pending[0] != '\0') {
-		if (!i_stream_get_buffer_space(stream, 1, NULL))
+		if (!i_stream_try_alloc(stream, 1, &avail))
 			return -2;
 		dest = stream->pos;
 		(void)flush_pending(dstream, &dest);
@@ -211,21 +211,13 @@ end:
 	return ret;
 }
 
-static const struct stat *
-i_stream_dot_stat(struct istream_private *stream, bool exact)
-{
-	return i_stream_stat(stream->parent, exact);
-}
-
 struct istream *i_stream_create_dot(struct istream *input, bool send_last_lf)
 {
 	struct dot_istream *dstream;
 
 	dstream = i_new(struct dot_istream, 1);
 	dstream->istream.max_buffer_size = input->real_stream->max_buffer_size;
-
 	dstream->istream.read = i_stream_dot_read;
-	dstream->istream.stat = i_stream_dot_stat;
 
 	dstream->istream.istream.readable_fd = FALSE;
 	dstream->istream.istream.blocking = input->blocking;

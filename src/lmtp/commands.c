@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -12,6 +12,7 @@
 #include "istream-dot.h"
 #include "safe-mkstemp.h"
 #include "restrict-access.h"
+#include "settings-parser.h"
 #include "master-service.h"
 #include "rfc822-parser.h"
 #include "message-date.h"
@@ -68,6 +69,8 @@ int cmd_lhlo(struct client *client, const char *args)
 
 	client_state_reset(client);
 	client_send_line(client, "250-%s", client->my_domain);
+	if (client_is_trusted(client))
+		client_send_line(client, "250-XCLIENT ADDR PORT TTL TIMEOUT");
 	client_send_line(client, "250-8BITMIME");
 	client_send_line(client, "250-ENHANCEDSTATUSCODES");
 	client_send_line(client, "250 PIPELINING");
@@ -148,7 +151,7 @@ int cmd_mail(struct client *client, const char *args)
 }
 
 static bool
-client_proxy_rcpt_parse_fields(struct lmtp_proxy_settings *set,
+client_proxy_rcpt_parse_fields(struct lmtp_proxy_rcpt_settings *set,
 			       const char *const *args, const char **address)
 {
 	const char *p, *key, *value;
@@ -201,7 +204,7 @@ client_proxy_rcpt_parse_fields(struct lmtp_proxy_settings *set,
 
 static bool
 client_proxy_is_ourself(const struct client *client,
-			const struct lmtp_proxy_settings *set)
+			const struct lmtp_proxy_rcpt_settings *set)
 {
 	struct ip_addr ip;
 
@@ -235,7 +238,7 @@ static bool client_proxy_rcpt(struct client *client, const char *address,
 			      const char *username, const char *detail)
 {
 	struct auth_master_connection *auth_conn;
-	struct lmtp_proxy_settings set;
+	struct lmtp_proxy_rcpt_settings set;
 	struct auth_user_info info;
 	struct mail_storage_service_input input;
 	const char *args, *const *fields, *errstr, *orig_username = username;
@@ -294,6 +297,15 @@ static bool client_proxy_rcpt(struct client *client, const char *address,
 		return TRUE;
 	}
 
+	if (client->proxy_ttl == 0) {
+		i_error("Proxying to <%s> appears to be looping (TTL=0)",
+			username);
+		client_send_line(client, "554 5.4.6 <%s> "
+				 "Proxying appears to be looping (TTL=0)",
+				 username);
+		pool_unref(&pool);
+		return TRUE;
+	}
 	if (array_count(&client->state.rcpt_to) != 0) {
 		client_send_line(client, "451 4.3.0 <%s> "
 			"Can't handle mixed proxy/non-proxy destinations",
@@ -302,10 +314,17 @@ static bool client_proxy_rcpt(struct client *client, const char *address,
 		return TRUE;
 	}
 	if (client->proxy == NULL) {
-		client->proxy = lmtp_proxy_init(client->set->hostname,
-						dns_client_socket_path,
-						client->state.session_id,
-						client->output);
+		struct lmtp_proxy_settings proxy_set;
+
+		memset(&proxy_set, 0, sizeof(proxy_set));
+		proxy_set.my_hostname = client->set->hostname;
+		proxy_set.dns_client_socket_path = dns_client_socket_path;
+		proxy_set.session_id = client->state.session_id;
+		proxy_set.source_ip = client->remote_ip;
+		proxy_set.source_port = client->remote_port;
+		proxy_set.proxy_ttl = client->proxy_ttl-1;
+
+		client->proxy = lmtp_proxy_init(&proxy_set, client->output);
 		if (client->state.mail_body_8bitmime)
 			args = " BODY=8BITMIME";
 		else if (client->state.mail_body_7bit)
@@ -596,17 +615,34 @@ client_deliver(struct client *client, const struct mail_recipient *rcpt,
 	struct mail_deliver_context dctx;
 	struct mail_storage *storage;
 	const struct mail_storage_service_input *input;
+	const struct mail_storage_settings *mail_set;
 	struct mail_namespace *ns;
+	struct setting_parser_context *set_parser;
 	void **sets;
-	const char *error, *username;
+	const char *line, *error, *username;
 	enum mail_error mail_error;
 	int ret;
 
 	input = mail_storage_service_user_get_input(rcpt->service_user);
 	username = t_strdup(input->username);
 
-	i_set_failure_prefix(t_strdup_printf("lmtp(%s, %s): ",
-					     my_pid, username));
+	mail_set = mail_storage_service_user_get_mail_set(rcpt->service_user);
+	set_parser = mail_storage_service_user_get_settings_parser(rcpt->service_user);
+	if (client->proxy_timeout_secs > 0 &&
+	    (mail_set->mail_max_lock_timeout == 0 ||
+	     mail_set->mail_max_lock_timeout > client->proxy_timeout_secs)) {
+		/* set lock timeout waits to be less than when proxy has
+		   advertised that it's going to timeout the connection.
+		   this avoids duplicate deliveries in case the delivery
+		   succeeds after the proxy has already disconnected from us. */
+		line = t_strdup_printf("mail_max_lock_timeout=%u",
+				       client->proxy_timeout_secs <= 1 ? 1 :
+				       client->proxy_timeout_secs-1);
+		if (settings_parse_line(set_parser, line) < 0)
+			i_unreached();
+	}
+
+	i_set_failure_prefix("lmtp(%s, %s): ", my_pid, username);
 	if (mail_storage_service_next(storage_service, rcpt->service_user,
 				      &client->state.dest_user) < 0) {
 		client_send_line(client, ERRSTR_TEMP_MAILBOX_FAIL,
@@ -683,7 +719,7 @@ static bool client_deliver_next(struct client *client, struct mail *src_mail,
 	while (client->state.rcpt_idx < count) {
 		ret = client_deliver(client, &rcpts[client->state.rcpt_idx],
 				     src_mail, session);
-		i_set_failure_prefix(t_strdup_printf("lmtp(%s): ", my_pid));
+		i_set_failure_prefix("lmtp(%s): ", my_pid);
 
 		client->state.rcpt_idx++;
 		if (ret == 0)
@@ -925,7 +961,7 @@ static int client_input_add_file(struct client *client,
 	if (unlink(str_c(path)) < 0) {
 		/* shouldn't happen.. */
 		i_error("unlink(%s) failed: %m", str_c(path));
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 
@@ -1018,4 +1054,51 @@ int cmd_data(struct client *client, const char *args ATTR_UNUSED)
 	client->io = io_add(client->fd_in, IO_READ, client_input_data, client);
 	client_input_data_handle(client);
 	return -1;
+}
+
+int cmd_xclient(struct client *client, const char *args)
+{
+	const char *const *tmp;
+	struct ip_addr remote_ip;
+	unsigned int remote_port = 0, ttl = -1U, timeout_secs = 0;
+	bool args_ok = TRUE;
+
+	if (!client_is_trusted(client)) {
+		client_send_line(client, "550 You are not from trusted IP");
+		return 0;
+	}
+	remote_ip.family = 0;
+	for (tmp = t_strsplit(args, " "); *tmp != NULL; tmp++) {
+		if (strncasecmp(*tmp, "ADDR=", 5) == 0) {
+			if (net_addr2ip(*tmp + 5, &remote_ip) < 0)
+				args_ok = FALSE;
+		} else if (strncasecmp(*tmp, "PORT=", 5) == 0) {
+			if (str_to_uint(*tmp + 5, &remote_port) < 0 ||
+			    remote_port == 0 || remote_port > 65535)
+				args_ok = FALSE;
+		} else if (strncasecmp(*tmp, "TTL=", 4) == 0) {
+			if (str_to_uint(*tmp + 4, &ttl) < 0)
+				args_ok = FALSE;
+		} else if (strncasecmp(*tmp, "TIMEOUT=", 8) == 0) {
+			if (str_to_uint(*tmp + 8, &timeout_secs) < 0)
+				args_ok = FALSE;
+		}
+	}
+	if (!args_ok) {
+		client_send_line(client, "501 Invalid parameters");
+		return 0;
+	}
+
+	/* args ok, set them and reset the state */
+	client_state_reset(client);
+	if (remote_ip.family != 0)
+		client->remote_ip = remote_ip;
+	if (remote_port != 0)
+		client->remote_port = remote_port;
+	if (ttl != -1U)
+		client->proxy_ttl = ttl;
+	client->proxy_timeout_secs = timeout_secs;
+	client_send_line(client, "220 %s %s", client->my_domain,
+			 client->lmtp_set->login_greeting);
+	return 0;
 }

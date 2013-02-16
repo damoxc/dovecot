@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -16,7 +16,7 @@
 struct priorityq {
 	priorityq_cmp_callback_t *cmp_callback;
 
-	ARRAY_DEFINE(items, struct priorityq_item *);
+	ARRAY(struct priorityq_item *) items;
 };
 
 struct priorityq *

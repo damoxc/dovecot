@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "str.h"
@@ -8,7 +8,7 @@
 #include "mail-namespace.h"
 
 static void list_namespaces(struct mail_namespace *ns,
-			    enum namespace_type type, string_t *str)
+			    enum mail_namespace_type type, string_t *str)
 {
 	string_t *mutf7_prefix = t_str_new(64);
 	char ns_sep;
@@ -30,7 +30,7 @@ static void list_namespaces(struct mail_namespace *ns,
 					ns->prefix);
 			}
 
-			imap_quote_append_string(str, str_c(mutf7_prefix), FALSE);
+			imap_append_string(str, str_c(mutf7_prefix));
 			str_append(str, " \"");
 			if (ns_sep == '\\')
 				str_append_c(str, '\\');
@@ -55,11 +55,14 @@ bool cmd_namespace(struct client_command_context *cmd)
 	str = t_str_new(256);
 	str_append(str, "* NAMESPACE ");
 
-        list_namespaces(client->user->namespaces, NAMESPACE_PRIVATE, str);
+	list_namespaces(client->user->namespaces,
+			MAIL_NAMESPACE_TYPE_PRIVATE, str);
 	str_append_c(str, ' ');
-	list_namespaces(client->user->namespaces, NAMESPACE_SHARED, str);
+	list_namespaces(client->user->namespaces,
+			MAIL_NAMESPACE_TYPE_SHARED, str);
 	str_append_c(str, ' ');
-        list_namespaces(client->user->namespaces, NAMESPACE_PUBLIC, str);
+	list_namespaces(client->user->namespaces,
+			MAIL_NAMESPACE_TYPE_PUBLIC, str);
 
 	client_send_line(client, str_c(str));
 	client_send_tagline(cmd, "OK Namespace completed.");

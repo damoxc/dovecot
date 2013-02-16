@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "ioloop.h"
@@ -19,7 +19,7 @@
 #define SERVICE_DIE_TIMEOUT_MSECS (1000*60)
 #define SERVICE_LOGIN_NOTIFY_MIN_INTERVAL_SECS 2
 
-struct hash_table *service_pids;
+HASH_TABLE_TYPE(pid_process) service_pids;
 
 void service_error(struct service *service, const char *format, ...)
 {
@@ -240,11 +240,6 @@ service_create(pool_t pool, const struct service_settings *set,
 		service->process_limit = set->process_limit;
 	}
 
-	if (set->executable == NULL) {
-		*error_r = "executable not given";
-		return NULL;
-	}
-
 	/* default gid to user's primary group */
 	if (get_uidgid(set->user, &service->uid, &service->gid, error_r) < 0) {
 		switch (set->user_default) {
@@ -290,13 +285,6 @@ service_create(pool_t pool, const struct service_settings *set,
 		}
 	}
 
-	if (*set->executable == '/')
-		service->executable = set->executable;
-	else {
-		service->executable =
-			p_strconcat(pool, set->master_set->libexec_dir, "/",
-				    set->executable, NULL);
-	}
 	/* set these later, so if something fails we don't have to worry about
 	   closing them */
 	service->log_fd[0] = -1;
@@ -368,27 +356,13 @@ service_create(pool_t pool, const struct service_settings *set,
 			return NULL;
 	}
 
+	service->executable = set->executable;
 	if (access(t_strcut(service->executable, ' '), X_OK) < 0) {
 		*error_r = t_strdup_printf("access(%s) failed: %m",
 					   t_strcut(service->executable, ' '));
 		return NULL;
 	}
 	return service;
-}
-
-static unsigned int pid_hash(const void *p)
-{
-	const pid_t *pid = p;
-
-	return (unsigned int)*pid;
-}
-
-static int pid_hash_cmp(const void *p1, const void *p2)
-{
-	const pid_t *pid1 = p1, *pid2 = p2;
-
-	return *pid1 < *pid2 ? -1 :
-		*pid1 > *pid2 ? 1 : 0;
 }
 
 struct service *
@@ -422,6 +396,13 @@ service_lookup_type(struct service_list *service_list, enum service_type type)
 static bool service_want(struct service_settings *set)
 {
 	char *const *proto;
+
+	if (*set->executable == '\0') {
+		/* silently allow service {} blocks for disabled extensions
+		   (e.g. service managesieve {} block without pigeonhole
+		   installed) */
+		return FALSE;
+	}
 
 	if (*set->protocol == '\0')
 		return TRUE;
@@ -690,7 +671,7 @@ static void service_drop_listener_connections(struct service *service)
 			}
 			while ((fd = net_accept((*listenerp)->fd,
 						NULL, NULL)) >= 0)
-				(void)close(fd);
+				i_close_fd(&fd);
 			break;
 		case SERVICE_LISTENER_FIFO:
 			break;
@@ -726,19 +707,19 @@ void services_throttle_time_sensitives(struct service_list *list,
 
 void service_pids_init(void)
 {
-	service_pids = hash_table_create(default_pool, default_pool, 0,
-					 pid_hash, pid_hash_cmp);
+	hash_table_create_direct(&service_pids, default_pool, 0);
 }
 
 void service_pids_deinit(void)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct service_process *process;
 
 	/* free all child process information */
 	iter = hash_table_iterate_init(service_pids);
-	while (hash_table_iterate(iter, &key, &value))
-		service_process_destroy(value);
+	while (hash_table_iterate(iter, service_pids, &key, &process))
+		service_process_destroy(process);
 	hash_table_iterate_deinit(&iter);
 	hash_table_destroy(&service_pids);
 }

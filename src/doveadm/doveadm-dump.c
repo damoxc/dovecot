@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-static ARRAY_DEFINE(dumps, const struct doveadm_cmd_dump *);
+static ARRAY(const struct doveadm_cmd_dump *) dumps;
 
 void doveadm_dump_register(const struct doveadm_cmd_dump *dump)
 {
@@ -86,7 +86,8 @@ static const struct doveadm_cmd_dump *dumps_builtin[] = {
 	&doveadm_cmd_dump_index,
 	&doveadm_cmd_dump_log,
 	&doveadm_cmd_dump_mailboxlog,
-	&doveadm_cmd_dump_thread
+	&doveadm_cmd_dump_thread,
+	&doveadm_cmd_dump_zlib
 };
 
 void print_dump_types(void)

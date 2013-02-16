@@ -1,7 +1,7 @@
 #ifndef AUTH_REQUEST_H
 #define AUTH_REQUEST_H
 
-#include "network.h"
+#include "net.h"
 #include "var-expand.h"
 #include "mech.h"
 #include "userdb.h"
@@ -48,15 +48,13 @@ struct auth_request {
 	char *mech_password; /* set if verify_plain() is called */
 	char *passdb_password; /* set after password lookup if successful */
         /* extra_fields are returned in authentication reply. Fields prefixed
-           with "userdb_" are skipped. If prefetch userdb is used, it uses
-           the "userdb_" prefixed fields. */
-        struct auth_stream_reply *extra_fields;
-	/* extra_fields that aren't supposed to be sent to the client, but
-	   are supposed to be stored to auth cache. */
-	struct auth_stream_reply *extra_cache_fields;
+           with "userdb_" are automatically placed to userdb_reply instead. */
+        struct auth_fields *extra_fields;
 	/* the whole userdb result reply */
-	struct auth_stream_reply *userdb_reply;
-	/* Result of passdb lookup */
+	struct auth_fields *userdb_reply;
+	struct auth_request_proxy_dns_lookup_ctx *dns_lookup_ctx;
+	/* The final result of passdb lookup (delayed due to asynchronous
+	   proxy DNS lookups) */
 	enum passdb_result passdb_result;
 
 	const struct mech_module *mech;
@@ -72,6 +70,7 @@ struct auth_request {
 	unsigned int client_pid;
 	unsigned int id;
 	time_t last_access;
+	pid_t session_pid;
 
 	const char *service, *mech_name, *session_id;
 	struct ip_addr local_ip, remote_ip;
@@ -92,32 +91,45 @@ struct auth_request {
 
 	void *context;
 
-	unsigned int successful:1;
-	unsigned int passdb_failure:1;
-	unsigned int internal_failure:1;
-	unsigned int passdb_user_unknown:1;
-	unsigned int passdb_internal_failure:1;
-	unsigned int userdb_internal_failure:1;
-	unsigned int delayed_failure:1;
-	unsigned int domain_is_realm:1;
-	unsigned int accept_input:1;
-	unsigned int no_failure_delay:1;
-	unsigned int no_login:1;
-	unsigned int no_password:1;
-	unsigned int skip_password_check:1;
-	unsigned int prefer_plain_credentials:1;
-	unsigned int proxy:1;
-	unsigned int proxy_maybe:1;
-	unsigned int proxy_always:1;
-	unsigned int proxy_host_is_self:1;
-	unsigned int valid_client_cert:1;
-	unsigned int no_penalty:1;
-	unsigned int cert_username:1;
+	/* this is a lookup on auth socket (not login socket).
+	   skip any proxying stuff if enabled. */
+	unsigned int auth_only:1;
+	/* we're doing a userdb lookup now (we may have done passdb lookup
+	   earlier) */
 	unsigned int userdb_lookup:1;
-	unsigned int userdb_lookup_failed:1;
+	/* DIGEST-MD5 kludge */
+	unsigned int domain_is_realm:1;
+
+	/* flags received from auth client: */
 	unsigned int secured:1;
 	unsigned int final_resp_ok:1;
+	unsigned int no_penalty:1;
+	unsigned int valid_client_cert:1;
+	unsigned int cert_username:1;
+
+	/* success/failure states: */
+	unsigned int successful:1;
+	unsigned int failed:1; /* overrides any other success */
+	unsigned int internal_failure:1;
+	unsigned int passdbs_seen_user_unknown:1;
+	unsigned int passdbs_seen_internal_failure:1;
+	unsigned int userdbs_seen_internal_failure:1;
+
+	/* current state: */
+	unsigned int accept_cont_input:1;
+	unsigned int skip_password_check:1;
+	unsigned int prefer_plain_credentials:1;
+	unsigned int in_delayed_failure_queue:1;
 	unsigned int removed_from_handler:1;
+	/* each passdb lookup can update the current success-status using the
+	   result_* rules. the authentication succeeds only if this is TRUE
+	   at the end. mechanisms that don't require passdb, but do a passdb
+	   lookup anyway (e.g. GSSAPI) need to set this to TRUE by default. */
+	unsigned int passdb_success:1;
+	/* the last userdb lookup failed either due to "tempfail" extra field
+	   or because one of the returned uid/gid fields couldn't be translated
+	   to a number */
+	unsigned int userdb_lookup_failed:1;
 
 	/* ... mechanism specific data ... */
 };
@@ -148,14 +160,15 @@ void auth_request_success(struct auth_request *request,
 void auth_request_fail(struct auth_request *request);
 void auth_request_internal_failure(struct auth_request *request);
 
-void auth_request_export(struct auth_request *request,
-			 struct auth_stream_reply *reply);
+void auth_request_export(struct auth_request *request, string_t *dest);
 bool auth_request_import(struct auth_request *request,
 			 const char *key, const char *value);
 bool auth_request_import_info(struct auth_request *request,
 			      const char *key, const char *value);
 bool auth_request_import_auth(struct auth_request *request,
 			      const char *key, const char *value);
+bool auth_request_import_master(struct auth_request *request,
+				const char *key, const char *value);
 
 void auth_request_initial(struct auth_request *request);
 void auth_request_continue(struct auth_request *request,
@@ -178,13 +191,13 @@ bool auth_request_set_login_username(struct auth_request *request,
 
 void auth_request_set_field(struct auth_request *request,
 			    const char *name, const char *value,
-			    const char *default_scheme);
+			    const char *default_scheme) ATTR_NULL(4);
 void auth_request_set_field_keyvalue(struct auth_request *request,
 				     const char *field,
-				     const char *default_scheme);
+				     const char *default_scheme) ATTR_NULL(3);
 void auth_request_set_fields(struct auth_request *request,
 			     const char *const *fields,
-			     const char *default_scheme);
+			     const char *default_scheme) ATTR_NULL(3);
 
 void auth_request_init_userdb_reply(struct auth_request *request);
 void auth_request_set_userdb_field(struct auth_request *request,
@@ -206,11 +219,12 @@ int auth_request_password_verify(struct auth_request *request,
 
 const struct var_expand_table *
 auth_request_get_var_expand_table(const struct auth_request *auth_request,
-				  auth_request_escape_func_t *escape_func);
+				  auth_request_escape_func_t *escape_func)
+	ATTR_NULL(2);
 struct var_expand_table *
 auth_request_get_var_expand_table_full(const struct auth_request *auth_request,
 				       auth_request_escape_func_t *escape_func,
-				       unsigned int *count);
+				       unsigned int *count) ATTR_NULL(2);
 const char *auth_request_str_escape(const char *string,
 				    const struct auth_request *request);
 
@@ -240,5 +254,6 @@ void auth_request_userdb_callback(enum userdb_result result,
 				  struct auth_request *request);
 
 void auth_request_refresh_last_access(struct auth_request *request);
+void auth_str_append(string_t *dest, const char *key, const char *value);
 
 #endif

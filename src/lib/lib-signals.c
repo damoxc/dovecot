@@ -1,4 +1,4 @@
-/* Copyright (c) 2001-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2001-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -151,7 +151,8 @@ static void sig_ignore(int signo ATTR_UNUSED)
 	   the system call might be restarted */
 }
 
-static void signal_read(void *context ATTR_UNUSED)
+static void ATTR_NULL(1)
+signal_read(void *context ATTR_UNUSED)
 {
 	siginfo_t signals[MAX_SIGNAL_VALUE+1];
 	sigset_t fullset, oldset;
@@ -240,7 +241,7 @@ void lib_signals_set_handler(int signo, enum libsig_flags flags,
 		fd_close_on_exec(sig_pipe_fd[1], TRUE);
 		if (signals_initialized) {
 			io_sig = io_add(sig_pipe_fd[0], IO_READ,
-					signal_read, NULL);
+					signal_read, (void *)NULL);
 		}
 	}
 
@@ -306,7 +307,8 @@ void lib_signals_reset_ioloop(void)
 {
 	if (io_sig != NULL) {
 		io_remove(&io_sig);
-		io_sig = io_add(sig_pipe_fd[0], IO_READ, signal_read, NULL);
+		io_sig = io_add(sig_pipe_fd[0], IO_READ,
+				signal_read, (void *)NULL);
 	}
 }
 
@@ -322,8 +324,10 @@ void lib_signals_init(void)
 			lib_signals_set(i, signal_handlers[i]->flags);
 	}
 
-	if (sig_pipe_fd[0] != -1)
-		io_sig = io_add(sig_pipe_fd[0], IO_READ, signal_read, NULL);
+	if (sig_pipe_fd[0] != -1) {
+		io_sig = io_add(sig_pipe_fd[0], IO_READ,
+				signal_read, (void *)NULL);
+	}
 }
 
 void lib_signals_deinit(void)

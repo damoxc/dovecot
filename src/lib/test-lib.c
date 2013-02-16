@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 
@@ -13,14 +13,18 @@ int main(void)
 		test_crc32,
 		test_hash_format,
 		test_hex_binary,
+		test_iso8601_date,
+		test_istream_base64_decoder,
 		test_istream_base64_encoder,
 		test_istream_concat,
 		test_istream_crlf,
 		test_istream_seekable,
 		test_istream_tee,
+		test_json_parser,
 		test_llist,
 		test_mempool_alloconly,
 		test_network,
+		test_numpack,
 		test_ostream_file,
 		test_primes,
 		test_priorityq,

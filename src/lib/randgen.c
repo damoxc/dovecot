@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "randgen.h"
@@ -63,8 +63,7 @@ void random_deinit(void)
 	if (--init_refcount > 0)
 		return;
 
-	(void)close(urandom_fd);
-	urandom_fd = -1;
+	i_close_fd(&urandom_fd);
 }
 
 #elif defined(HAVE_OPENSSL_RAND_H)

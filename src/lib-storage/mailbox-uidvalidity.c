@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -37,31 +37,32 @@ static void mailbox_uidvalidity_write(struct mailbox_list *list,
 {
 	char buf[8+1];
 	int fd;
-	mode_t file_mode, dir_mode, old_mask;
-	gid_t gid;
-	const char *gid_origin;
+	struct mailbox_permissions perm;
+	mode_t old_mask;
 
-	mailbox_list_get_root_permissions(list, &file_mode, &dir_mode,
-					  &gid, &gid_origin);
+	mailbox_list_get_root_permissions(list, &perm);
 
-	old_mask = umask(0666 & ~file_mode);
+	old_mask = umask(0666 & ~perm.file_create_mode);
 	fd = open(path, O_RDWR | O_CREAT, 0666);
 	umask(old_mask);
 	if (fd == -1) {
 		i_error("open(%s) failed: %m", path);
 		return;
 	}
-	if (gid != (gid_t)-1 && fchown(fd, (uid_t)-1, gid) < 0) {
+	if (perm.file_create_gid != (gid_t)-1 &&
+	    fchown(fd, (uid_t)-1, perm.file_create_gid) < 0) {
 		if (errno == EPERM) {
 			i_error("%s", eperm_error_get_chgrp("fchown", path,
-							    gid, gid_origin));
+						perm.file_create_gid,
+						perm.file_create_gid_origin));
 		} else {
 			i_error("fchown(%s, -1, %ld) failed: %m",
-				path, (long)gid);
+				path, (long)perm.file_create_gid);
 		}
 	}
 
-	i_snprintf(buf, sizeof(buf), "%08x", uid_validity);
+	if (i_snprintf(buf, sizeof(buf), "%08x", uid_validity) < 0)
+		i_unreached();
 	if (pwrite_full(fd, buf, strlen(buf), 0) < 0)
 		i_error("write(%s) failed: %m", path);
 	if (close(fd) < 0)
@@ -167,7 +168,7 @@ mailbox_uidvalidity_next_rescan(struct mailbox_list *list, const char *path)
 			i_error("creat(%s) failed: %m", tmp);
 			return cur_value;
 		}
-		(void)close(fd);
+		i_close_fd(&fd);
 		mailbox_uidvalidity_write(list, path, cur_value);
 		return cur_value;
 	}
@@ -200,14 +201,14 @@ uint32_t mailbox_uidvalidity_next(struct mailbox_list *list, const char *path)
 	ret = read_full(fd, buf, sizeof(buf)-1);
 	if (ret < 0) {
 		i_error("read(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return mailbox_uidvalidity_next_rescan(list, path);
 	}
 	buf[sizeof(buf)-1] = 0;
 	cur_value = strtoul(buf, &endp, 16);
 	if (ret == 0 || endp != buf+sizeof(buf)-1) {
 		/* broken value */
-		(void)close(fd);
+		i_close_fd(&fd);
 		return mailbox_uidvalidity_next_rescan(list, path);
 	}
 
@@ -217,7 +218,8 @@ uint32_t mailbox_uidvalidity_next(struct mailbox_list *list, const char *path)
 
 	/* fast path succeeded. write the current value to the main
 	   uidvalidity file. */
-	i_snprintf(buf, sizeof(buf), "%08x", cur_value);
+	if (i_snprintf(buf, sizeof(buf), "%08x", cur_value) < 0)
+		i_unreached();
 	if (pwrite_full(fd, buf, strlen(buf), 0) < 0)
 		i_error("write(%s) failed: %m", path);
 	if (close(fd) < 0)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -34,7 +34,7 @@ void auth_client_deinit(struct auth_client **_client)
 void auth_client_connect(struct auth_client *client)
 {
 	if (client->conn->fd == -1)
-		auth_server_connection_connect(client->conn);
+		(void)auth_server_connection_connect(client->conn);
 }
 
 void auth_client_disconnect(struct auth_client *client, const char *reason)

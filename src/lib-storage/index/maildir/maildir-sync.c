@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 /*
    Here's a description of how we handle Maildir synchronization and
@@ -569,7 +569,7 @@ static void maildir_sync_get_header(struct maildir_mailbox *mbox)
 int maildir_sync_header_refresh(struct maildir_mailbox *mbox)
 {
 	if (mail_index_refresh(mbox->box.index) < 0) {
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 		return -1;
 	}
 	maildir_sync_get_header(mbox);
@@ -744,13 +744,14 @@ static int maildir_sync_get_changes(struct maildir_sync_context *ctx,
 	if (mbox->synced) {
 		/* refresh index only after the first sync, i.e. avoid wasting
 		   time on refreshing it immediately after it was just opened */
-		(void)mail_index_refresh(mbox->box.index);
+		mail_index_refresh(mbox->box.index);
 	}
 	return mail_index_sync_have_any(mbox->box.index, flags) ? 1 : 0;
 }
 
-static int maildir_sync_context(struct maildir_sync_context *ctx, bool forced,
-				uint32_t *find_uid, bool *lost_files_r)
+static int ATTR_NULL(3)
+maildir_sync_context(struct maildir_sync_context *ctx, bool forced,
+		     uint32_t *find_uid, bool *lost_files_r)
 {
 	enum maildir_uidlist_sync_flags sync_flags;
 	enum maildir_uidlist_rec_flag flags;
@@ -998,14 +999,14 @@ int maildir_sync_refresh_flags_view(struct maildir_mailbox *mbox)
 	struct mail_index_view_sync_ctx *sync_ctx;
 	bool delayed_expunges;
 
-	(void)mail_index_refresh(mbox->box.index);
+	mail_index_refresh(mbox->box.index);
 	if (mbox->flags_view == NULL)
 		mbox->flags_view = mail_index_view_open(mbox->box.index);
 
 	sync_ctx = mail_index_view_sync_begin(mbox->flags_view,
 			MAIL_INDEX_VIEW_SYNC_FLAG_FIX_INCONSISTENT);
 	if (mail_index_view_sync_commit(&sync_ctx, &delayed_expunges) < 0) {
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 		return -1;
 	}
 	/* make sure the map stays in private memory */

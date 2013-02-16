@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 /*
    This program accepts incoming unauthenticated IMAP connections from
@@ -89,9 +89,9 @@ struct admin_connection {
 
 static struct imap_client *imap_clients;
 static struct director_connection *director_connections;
-static struct hash_table *users;
-static struct hash_table *hosts;
-static ARRAY_DEFINE(hosts_array, struct host *);
+static HASH_TABLE(char *, struct user *) users;
+static HASH_TABLE(struct ip_addr *, struct host *) hosts;
+static ARRAY(struct host *) hosts_array;
 static struct admin_connection *admin;
 static struct timeout *to_disconnect;
 
@@ -194,22 +194,22 @@ static int imap_client_parse_input(struct imap_client *client)
 		if (!imap_arg_get_astring(args, &str))
 			return -1;
 
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			t_strconcat(tag, " OK Logged in.\r\n", NULL));
 		client->username = i_strdup(str);
 		client_username_check(client);
 	} else if (strcasecmp(cmd, "logout") == 0) {
-		o_stream_send_str(client->output, t_strconcat(
+		o_stream_nsend_str(client->output, t_strconcat(
 			"* BYE Out.\r\n",
 			tag, " OK Logged out.\r\n", NULL));
 		imap_client_destroy(&client);
 		return 0;
 	} else if (strcasecmp(cmd, "capability") == 0) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			t_strconcat("* CAPABILITY IMAP4rev1\r\n",
 				    tag, " OK Done.\r\n", NULL));
 	} else {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			t_strconcat(tag, " BAD Not supported.\r\n", NULL));
 	}
 
@@ -249,10 +249,11 @@ static void imap_client_create(int fd)
 	client->fd = fd;
 	client->input = i_stream_create_fd(fd, 4096, FALSE);
 	client->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	client->io = io_add(fd, IO_READ, imap_client_input, client);
 	client->parser =
 		imap_parser_create(client->input, client->output, 4096);
-	o_stream_send_str(client->output,
+	o_stream_nsend_str(client->output,
 		"* OK [CAPABILITY IMAP4rev1] director-test ready.\r\n");
 	DLLIST_PREPEND(&imap_clients, client);
 }
@@ -277,8 +278,8 @@ static void imap_client_destroy(struct imap_client **_client)
 	DLLIST_REMOVE(&imap_clients, client);
 	imap_parser_unref(&client->parser);
 	io_remove(&client->io);
-	i_stream_unref(&client->input);
-	o_stream_unref(&client->output);
+	i_stream_destroy(&client->input);
+	o_stream_destroy(&client->output);
 	net_disconnect(client->fd);
 	i_free(client->username);
 	i_free(client);
@@ -298,7 +299,7 @@ director_connection_input(struct director_connection *conn,
 		return;
 	}
 
-	o_stream_send(output, data, size);
+	o_stream_nsend(output, data, size);
 	i_stream_skip(input, size);
 
 	if (rand() % 3 == 0 && conn->to_delay == NULL) {
@@ -337,7 +338,7 @@ director_connection_create(int in_fd, const struct ip_addr *local_ip)
 
 	out_fd = net_connect_ip(local_ip, DIRECTOR_OUT_PORT, NULL);
 	if (out_fd == -1) {
-		(void)close(in_fd);
+		i_close_fd(&in_fd);
 		return;
 	}
 
@@ -345,12 +346,14 @@ director_connection_create(int in_fd, const struct ip_addr *local_ip)
 	conn->in_fd = in_fd;
 	conn->in_input = i_stream_create_fd(conn->in_fd, (size_t)-1, FALSE);
 	conn->in_output = o_stream_create_fd(conn->in_fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->in_output, TRUE);
 	conn->in_io = io_add(conn->in_fd, IO_READ,
 			     director_connection_in_input, conn);
 
 	conn->out_fd = out_fd;
 	conn->out_input = i_stream_create_fd(conn->out_fd, (size_t)-1, FALSE);
 	conn->out_output = o_stream_create_fd(conn->out_fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->out_output, TRUE);
 	conn->out_io = io_add(conn->out_fd, IO_READ,
 			      director_connection_out_input, conn);
 
@@ -450,8 +453,8 @@ static struct admin_connection *admin_connect(const char *path)
 	if (conn->fd == -1)
 		i_fatal("net_connect_unix(%s) failed: %m", path);
 	conn->io = io_add(conn->fd, IO_READ, admin_input, conn);
-	conn->to_random = timeout_add(ADMIN_RANDOM_TIMEOUT_MSECS,
-				      admin_random_action, conn);
+	conn->to_random = timeout_add_short(ADMIN_RANDOM_TIMEOUT_MSECS,
+					    admin_random_action, conn);
 
 	net_set_nonblock(conn->fd, FALSE);
 	conn->input = i_stream_create_fd(conn->fd, (size_t)-1, TRUE);
@@ -508,7 +511,7 @@ static void admin_read_hosts(struct admin_connection *conn)
 	net_set_nonblock(admin->fd, TRUE);
 }
 
-static void
+static void ATTR_NULL(1)
 director_connection_disconnect_timeout(void *context ATTR_UNUSED)
 {
 	struct director_connection *conn;
@@ -523,17 +526,15 @@ director_connection_disconnect_timeout(void *context ATTR_UNUSED)
 			i_assert(conn != NULL);
 			i++;
 		}
+		i_assert(conn != NULL);
 		director_connection_destroy(&conn);
 	}
 }
 
 static void main_init(const char *admin_path)
 {
-	users = hash_table_create(default_pool, default_pool, 0,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
-	hosts = hash_table_create(default_pool, default_pool, 0,
-				  (hash_callback_t *)net_ip_hash,
-				  (hash_cmp_callback_t *)net_ip_cmp);
+	hash_table_create(&users, default_pool, 0, str_hash, strcmp);
+	hash_table_create(&hosts, default_pool, 0, net_ip_hash, net_ip_cmp);
 	i_array_init(&hosts_array, 256);
 
 	admin = admin_connect(admin_path);
@@ -542,13 +543,16 @@ static void main_init(const char *admin_path)
 
 	to_disconnect =
 		timeout_add(1000*(1 + rand()%DIRECTOR_DISCONNECT_TIMEOUT_SECS),
-			    director_connection_disconnect_timeout, NULL);
+			    director_connection_disconnect_timeout, (void *)NULL);
 }
 
 static void main_deinit(void)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	char *username;
+	struct ip_addr *ip;
+	struct user *user;
+	struct host *host;
 
 	while (imap_clients != NULL) {
 		struct imap_client *client = imap_clients;
@@ -562,18 +566,14 @@ static void main_deinit(void)
 	}
 
 	iter = hash_table_iterate_init(users);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct user *user = value;
+	while (hash_table_iterate(iter, users, &username, &user))
 		user_free(user);
-	}
 	hash_table_iterate_deinit(&iter);
 	hash_table_destroy(&users);
 
 	iter = hash_table_iterate_init(hosts);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct host *host = value;
+	while (hash_table_iterate(iter, hosts, &ip, &host))
 		host_unref(&host);
-	}
 	hash_table_iterate_deinit(&iter);
 	hash_table_destroy(&hosts);
 	array_free(&hosts_array);
@@ -586,7 +586,7 @@ int main(int argc, char *argv[])
 	const char *admin_path;
 
 	master_service = master_service_init("director-test", 0,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 	admin_path = argv[optind];

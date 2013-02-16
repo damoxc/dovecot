@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -21,9 +21,8 @@ int mdbox_mail_lookup(struct mdbox_mailbox *mbox, struct mail_index_view *view,
 	struct mdbox_index_header hdr;
 	const void *data;
 	uint32_t uid, cur_map_uid_validity;
-	bool expunged;
 
-	mail_index_lookup_ext(view, seq, mbox->ext_id, &data, &expunged);
+	mail_index_lookup_ext(view, seq, mbox->ext_id, &data, NULL);
 	dbox_rec = data;
 	if (dbox_rec == NULL || dbox_rec->map_uid == 0) {
 		mail_index_lookup_uid(view, seq, &uid);
@@ -60,7 +59,7 @@ static void dbox_mail_set_expunged(struct dbox_mail *mail, uint32_t map_uid)
 	struct mail *_mail = &mail->imail.mail.mail;
 	struct mdbox_mailbox *mbox = (struct mdbox_mailbox *)_mail->box;
 
-	(void)mail_index_refresh(_mail->box->index);
+	mail_index_refresh(_mail->box->index);
 	if (mail_index_is_expunged(_mail->transaction->view, _mail->seq)) {
 		mail_set_expunged(_mail);
 		return;
@@ -156,10 +155,9 @@ static int mdbox_mail_get_save_date(struct mail *mail, time_t *date_r)
 		(struct mdbox_mailbox *)mail->transaction->box;
 	const struct mdbox_mail_index_record *dbox_rec;
 	const void *data;
-	bool expunged;
 
 	mail_index_lookup_ext(mail->transaction->view, mail->seq,
-			      mbox->ext_id, &data, &expunged);
+			      mbox->ext_id, &data, NULL);
 	dbox_rec = data;
 	if (dbox_rec == NULL || dbox_rec->map_uid == 0) {
 		/* lost for some reason, use fallback */
@@ -198,6 +196,7 @@ struct mail_vfuncs mdbox_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	dbox_mail_get_received_date,
@@ -208,11 +207,13 @@ struct mail_vfuncs mdbox_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	dbox_mail_get_stream,
+	index_mail_get_binary_stream,
 	dbox_mail_get_special,
 	index_mail_get_real_mail,
 	mdbox_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
 	index_mail_set_cache_corrupted,

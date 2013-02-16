@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "passdb.h"
@@ -79,7 +79,7 @@ ldap_lookup_finish(struct auth_request *auth_request,
 			"pass_filter matched multiple objects, aborting");
 		passdb_result = PASSDB_RESULT_INTERNAL_FAILURE;
 	} else if (auth_request->passdb_password == NULL &&
-		   !auth_request->no_password) {
+		   !auth_fields_exists(auth_request->extra_fields, "nopassword")) {
 		auth_request_log_info(auth_request, "ldap",
 			"No password returned (and no nopassword)");
 		passdb_result = PASSDB_RESULT_PASSWORD_MISMATCH;

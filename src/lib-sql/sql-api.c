@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -369,7 +369,7 @@ void sql_transaction_rollback(struct sql_transaction_context **_ctx)
 
 void sql_update(struct sql_transaction_context *ctx, const char *query)
 {
-	sql_update_get_rows(ctx, query, NULL);
+	ctx->db->v.update(ctx, query, NULL);
 }
 
 void sql_update_get_rows(struct sql_transaction_context *ctx, const char *query,

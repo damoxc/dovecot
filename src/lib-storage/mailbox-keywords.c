@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "imap-arg.h"
@@ -11,7 +11,7 @@ mailbox_keywords_create_skip(struct mailbox *box,
 	struct mail_keywords *kw;
 
 	T_BEGIN {
-		ARRAY_DEFINE(valid_keywords, const char *);
+		ARRAY(const char *) valid_keywords;
 		const char *error;
 
 		t_array_init(&valid_keywords, 32);
@@ -19,7 +19,7 @@ mailbox_keywords_create_skip(struct mailbox *box,
 			if (mailbox_keyword_is_valid(box, *keywords, &error))
 				array_append(&valid_keywords, keywords, 1);
 		}
-		(void)array_append_space(&valid_keywords); /* NULL-terminate */
+		array_append_zero(&valid_keywords); /* NULL-terminate */
 		kw = mail_index_keywords_create(box->index, keywords);
 	} T_END;
 	return kw;
@@ -117,12 +117,11 @@ bool mailbox_keyword_is_valid(struct mailbox *box, const char *keyword,
 	/* these are IMAP-specific restrictions, but for now IMAP is all we
 	   care about */
 	for (i = 0; keyword[i] != '\0'; i++) {
-		if (IS_ATOM_SPECIAL((unsigned char)keyword[i])) {
-			*error_r = "Invalid characters in keyword";
-			return FALSE;
-		}
-		if ((unsigned char)keyword[i] >= 0x80) {
-			*error_r = "8bit characters in keyword";
+		if (!IS_ATOM_CHAR(keyword[i])) {
+			if ((unsigned char)keyword[i] < 0x80)
+				*error_r = "Invalid characters in keyword";
+			else
+				*error_r = "8bit characters in keyword";
 			return FALSE;
 		}
 	}

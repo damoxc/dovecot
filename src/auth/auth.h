@@ -5,11 +5,31 @@
 
 #define PASSWORD_HIDDEN_STR "<hidden>"
 
+enum auth_passdb_skip {
+	AUTH_PASSDB_SKIP_NEVER,
+	AUTH_PASSDB_SKIP_AUTHENTICATED,
+	AUTH_PASSDB_SKIP_UNAUTHENTICATED
+};
+
+enum auth_passdb_rule {
+	AUTH_PASSDB_RULE_RETURN,
+	AUTH_PASSDB_RULE_RETURN_OK,
+	AUTH_PASSDB_RULE_RETURN_FAIL,
+	AUTH_PASSDB_RULE_CONTINUE,
+	AUTH_PASSDB_RULE_CONTINUE_OK,
+	AUTH_PASSDB_RULE_CONTINUE_FAIL
+};
+
 struct auth_passdb {
 	struct auth_passdb *next;
 
 	const struct auth_passdb_settings *set;
 	struct passdb_module *passdb;
+
+	enum auth_passdb_skip skip;
+	enum auth_passdb_rule result_success;
+	enum auth_passdb_rule result_failure;
+	enum auth_passdb_rule result_internalfail;
 };
 
 struct auth_userdb {
@@ -33,6 +53,7 @@ struct auth {
 extern struct auth_penalty *auth_penalty;
 
 struct auth *auth_find_service(const char *name);
+struct auth *auth_default_service(void);
 
 void auths_preinit(const struct auth_settings *set, pool_t pool,
 		   const struct mechanisms_register *reg,

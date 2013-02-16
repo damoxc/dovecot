@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -6,22 +6,21 @@
 #include "message-size.h"
 
 int message_get_header_size(struct istream *input, struct message_size *hdr,
-			    bool *has_nuls)
+			    bool *has_nuls_r)
 {
 	const unsigned char *msg;
 	size_t i, size, startpos, missing_cr_count;
 	int ret;
 
 	memset(hdr, 0, sizeof(struct message_size));
-	if (has_nuls != NULL)
-		*has_nuls = FALSE;
+	*has_nuls_r = FALSE;
 
 	missing_cr_count = 0; startpos = 0;
 	while (i_stream_read_data(input, &msg, &size, startpos) > 0) {
 		for (i = startpos; i < size; i++) {
 			if (msg[i] != '\n') {
-				if (msg[i] == '\0' && has_nuls != NULL)
-					*has_nuls = TRUE;
+				if (msg[i] == '\0')
+					*has_nuls_r = TRUE;
 				continue;
 			}
 
@@ -65,15 +64,14 @@ int message_get_header_size(struct istream *input, struct message_size *hdr,
 }
 
 int message_get_body_size(struct istream *input, struct message_size *body,
-			  bool *has_nuls)
+			  bool *has_nuls_r)
 {
 	const unsigned char *msg;
 	size_t i, size, missing_cr_count;
 	int ret;
 
 	memset(body, 0, sizeof(struct message_size));
-	if (has_nuls != NULL)
-		*has_nuls = FALSE;
+	*has_nuls_r = FALSE;
 
 	missing_cr_count = 0;
 	if ((ret = i_stream_read_data(input, &msg, &size, 0)) <= 0)
@@ -97,8 +95,7 @@ int message_get_body_size(struct istream *input, struct message_size *body,
 				   at virtual \r */
 				body->lines++;
 			} else if (msg[i] == '\0') {
-				if (has_nuls != NULL)
-					*has_nuls = TRUE;
+				*has_nuls_r = TRUE;
 			}
 		}
 
@@ -123,4 +120,49 @@ void message_size_add(struct message_size *dest,
 	dest->virtual_size += src->virtual_size;
 	dest->physical_size += src->physical_size;
 	dest->lines += src->lines;
+}
+
+int message_skip_virtual(struct istream *input, uoff_t virtual_skip,
+			 bool *last_cr_r)
+{
+	const unsigned char *msg;
+	size_t i, size;
+	bool cr_skipped = FALSE;
+	int ret;
+
+	*last_cr_r = FALSE;
+	if (virtual_skip == 0)
+		return 0;
+
+	while ((ret = i_stream_read_data(input, &msg, &size, 0)) > 0) {
+		for (i = 0; i < size && virtual_skip > 0; i++) {
+			virtual_skip--;
+
+			if (msg[i] == '\r') {
+				/* CR */
+				if (virtual_skip == 0)
+					*last_cr_r = TRUE;
+			} else if (msg[i] == '\n') {
+				/* LF */
+				if ((i == 0 && !cr_skipped) ||
+				    (i > 0 && msg[i-1] != '\r')) {
+					if (virtual_skip == 0) {
+						/* CR/LF boundary */
+						*last_cr_r = TRUE;
+						break;
+					}
+
+					virtual_skip--;
+				}
+			}
+		}
+		i_stream_skip(input, i);
+
+		if (i < size)
+			return 0;
+
+		cr_skipped = msg[i-1] == '\r';
+	}
+	i_assert(ret == -1);
+	return input->stream_errno == 0 ? 0 : -1;
 }

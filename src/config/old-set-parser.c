@@ -1,10 +1,12 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
 #include "settings-parser.h"
 #include "config-parser-private.h"
 #include "old-set-parser.h"
+
+#define config_apply_line (void)config_apply_line
 
 struct socket_set {
 	const char *path, *mode, *user, *group;

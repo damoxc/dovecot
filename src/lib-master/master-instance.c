@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "abspath.h"
@@ -17,7 +17,7 @@ struct master_instance_list {
 	pool_t pool;
 	const char *path;
 
-	ARRAY_DEFINE(instances, struct master_instance);
+	ARRAY(struct master_instance) instances;
 
 	unsigned int locked:1;
 	unsigned int config_paths_changed:1;
@@ -130,29 +130,28 @@ master_instance_list_write(struct master_instance_list *list,
 	struct ostream *output;
 	const struct master_instance *inst;
 	string_t *str = t_str_new(128);
+	int ret = 0;
 
 	output = o_stream_create_fd(fd, 0, FALSE);
 	o_stream_cork(output);
 	array_foreach(&list->instances, inst) {
 		str_truncate(str, 0);
 		str_printfa(str, "%ld\t", (long)inst->last_used);
-		str_tabescape_write(str, inst->name);
+		str_append_tabescaped(str, inst->name);
 		str_append_c(str, '\t');
-		str_tabescape_write(str, inst->base_dir);
+		str_append_tabescaped(str, inst->base_dir);
 		str_append_c(str, '\t');
 		if (inst->config_path != NULL)
-			str_tabescape_write(str, inst->config_path);
+			str_append_tabescaped(str, inst->config_path);
 		str_append_c(str, '\n');
-		(void)o_stream_send(output, str_data(str), str_len(str));
+		o_stream_nsend(output, str_data(str), str_len(str));
 	}
-	o_stream_uncork(output);
-	(void)o_stream_flush(output);
-	if (output->last_failed_errno != 0) {
-		errno = output->last_failed_errno;
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", path);
-		return -1;
+		ret = -1;
 	}
-	return 0;
+	o_stream_destroy(&output);
+	return ret;
 }
 
 static int master_instance_write_init(struct master_instance_list *list,
@@ -171,7 +170,7 @@ static int master_instance_write_init(struct master_instance_list *list,
 		return -1;
 	}
 	if (master_instance_list_refresh(list) < 0) {
-		(void)file_dotlock_delete(dotlock_r);
+		file_dotlock_delete(dotlock_r);
 		return -1;
 	}
 	list->locked = TRUE;
@@ -192,12 +191,12 @@ static int master_instance_write_finish(struct master_instance_list *list,
 
 	list->locked = FALSE;
 	if (ret < 0) {
-		(void)file_dotlock_delete(dotlock);
+		file_dotlock_delete(dotlock);
 		return -1;
 	}
 	if (fdatasync(fd) < 0) {
 		i_error("fdatasync(%s) failed: %m", lock_path);
-		(void)file_dotlock_delete(dotlock);
+		file_dotlock_delete(dotlock);
 		return -1;
 	}
 	list->config_paths_changed = FALSE;
@@ -256,7 +255,7 @@ int master_instance_list_set_name(struct master_instance_list *list,
 	if (orig_inst != NULL &&
 	    strcmp(orig_inst->base_dir, base_dir) != 0) {
 		/* name already used */
-		(void)file_dotlock_delete(&dotlock);
+		file_dotlock_delete(&dotlock);
 		list->locked = FALSE;
 		return 0;
 	}
@@ -292,7 +291,7 @@ int master_instance_list_remove(struct master_instance_list *list,
 	}
 
 	if (i == count) {
-		(void)file_dotlock_delete(&dotlock);
+		file_dotlock_delete(&dotlock);
 		list->locked = FALSE;
 		return 0;
 	}

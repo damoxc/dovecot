@@ -1,8 +1,8 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "array.h"
@@ -24,7 +24,7 @@ struct anvil_client {
 	struct timeout *to_reconnect;
 	time_t last_reconnect;
 
-	ARRAY_DEFINE(queries_arr, struct anvil_query);
+	ARRAY(struct anvil_query) queries_arr;
 	struct aqueue *queries;
 
 	bool (*reconnect_callback)(void);
@@ -140,8 +140,9 @@ int anvil_client_connect(struct anvil_client *client, bool retry)
 	client->fd = fd;
 	client->input = i_stream_create_fd(fd, ANVIL_INBUF_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	client->io = io_add(fd, IO_READ, anvil_input, client);
-	o_stream_send_str(client->output, ANVIL_HANDSHAKE);
+	o_stream_nsend_str(client->output, ANVIL_HANDSHAKE);
 	return 0;
 }
 
@@ -185,7 +186,7 @@ static int anvil_client_send(struct anvil_client *client, const char *cmd)
 	iov[0].iov_len = strlen(cmd);
 	iov[1].iov_base = "\n";
 	iov[1].iov_len = 1;
-	o_stream_sendv(client->output, iov, 2);
+	o_stream_nsendv(client->output, iov, 2);
 	return 0;
 }
 

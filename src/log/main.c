@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "lib-signals.h"
@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
 {
 	const char *error;
 
-	master_service = master_service_init("log", 0, &argc, &argv, NULL);
+	master_service = master_service_init("log", 0, &argc, &argv, "");
 
 	/* use log prefix and log to stderr until we've configured the real
 	   logging */

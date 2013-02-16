@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -13,10 +13,12 @@
 
 /* <settings checks> */
 static struct file_listener_settings ssl_params_unix_listeners_array[] = {
+	{ "ssl-params", 0666, "", "" },
 	{ "login/ssl-params", 0666, "", "" }
 };
 static struct file_listener_settings *ssl_params_unix_listeners[] = {
-	&ssl_params_unix_listeners_array[0]
+	&ssl_params_unix_listeners_array[0],
+	&ssl_params_unix_listeners_array[1]
 };
 static buffer_t ssl_params_unix_listeners_buf = {
 	ssl_params_unix_listeners, sizeof(ssl_params_unix_listeners), { 0, }

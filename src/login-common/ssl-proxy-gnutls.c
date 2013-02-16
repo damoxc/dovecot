@@ -1,8 +1,8 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "hash.h"
 #include "ssl-proxy.h"
 
@@ -149,8 +149,8 @@ static int ssl_proxy_destroy(struct ssl_proxy *proxy)
 	if (proxy->io_plain != NULL)
 		io_remove(proxy->io_plain);
 
-	(void)net_disconnect(proxy->fd_ssl);
-	(void)net_disconnect(proxy->fd_plain);
+	net_disconnect(proxy->fd_ssl);
+	net_disconnect(proxy->fd_plain);
 
 	i_free(proxy);
 
@@ -463,7 +463,7 @@ static void read_parameters(const char *fname)
 	read_dh_parameters(fd, fname);
 	read_rsa_parameters(fd, fname);
 
-	(void)close(fd);
+	i_close_fd(&fd);
 }
 
 static void gcrypt_log_handler(void *context ATTR_UNUSED, int level,
@@ -519,8 +519,7 @@ void ssl_proxy_init(void)
         gnutls_certificate_set_dh_params(x509_cred, dh_params);
         gnutls_certificate_set_rsa_export_params(x509_cred, rsa_params);
 
-	ssl_proxies = hash_table_create(system_pool, system_pool, 0,
-					NULL, NULL);
+	ssl_proxies = hash_table_create(default_pool, 0, NULL, NULL);
 	ssl_initialized = TRUE;
 }
 

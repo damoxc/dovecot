@@ -109,6 +109,16 @@
 #  define ATTR_CONST
 #  define ATTR_PURE
 #endif
+#ifdef HAVE_ATTR_NULL
+#  define ATTR_NULL(...) __attribute__((null(__VA_ARGS__)))
+#else
+#  define ATTR_NULL(...)
+#endif
+#ifdef HAVE_ATTR_NOWARN_UNUSED_RESULT
+#  define ATTR_NOWARN_UNUSED_RESULT __attribute__((nowarn_unused_result))
+#else
+#  define ATTR_NOWARN_UNUSED_RESULT
+#endif
 #if __GNUC__ > 2
 #  define ATTR_MALLOC __attribute__((malloc))
 #else
@@ -133,32 +143,28 @@
 
 /* Macros to provide type safety for callback functions' context parameters */
 #ifdef __GNUC__
-#  define CONTEXT_TYPE_SAFETY
-#endif
-#ifdef CONTEXT_TYPE_SAFETY
-#  define CONTEXT_CALLBACK(name, callback_type, callback, context, ...) \
-	({(void)(1 ? 0 : callback(context)); \
-	name(__VA_ARGS__, (callback_type *)callback, context); })
-#  define CONTEXT_CALLBACK2(name, callback_type, callback, arg1_type, context, ...) \
-	({(void)(1 ? 0 : callback((arg1_type)0, context)); \
-	name(__VA_ARGS__, (callback_type *)callback, context); })
+#  define CALLBACK_TYPECHECK(callback, type) \
+	(COMPILE_ERROR_IF_TRUE(!__builtin_types_compatible_p( \
+		typeof(&callback), type)) ? 1 : 0)
 #else
-#  define CONTEXT_CALLBACK(name, callback_type, callback, context, ...) \
-	name(__VA_ARGS__, (callback_type *)callback, context)
-#  define CONTEXT_CALLBACK2(name, callback_type, callback, arg1_type, context, ...) \
-	name(__VA_ARGS__, (callback_type *)callback, context)
+#  define CALLBACK_TYPECHECK(callback, type) 0
 #endif
 
-#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 0)
+#if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ > 0)) && !defined(__cplusplus)
 #  define HAVE_TYPEOF
 #  define COMPILE_ERROR_IF_TRUE(condition) \
 	(sizeof(char[1 - 2 * !!(condition)]) - 1)
 #  define COMPILE_ERROR_IF_TYPES_NOT_COMPATIBLE(_a, _b) \
 	COMPILE_ERROR_IF_TRUE( \
 		!__builtin_types_compatible_p(typeof(_a), typeof(_b)))
+#define COMPILE_ERROR_IF_TYPES2_NOT_COMPATIBLE(_a1, _a2, _b) \
+	COMPILE_ERROR_IF_TRUE( \
+		!__builtin_types_compatible_p(typeof(_a1), typeof(_b)) && \
+		!__builtin_types_compatible_p(typeof(_a2), typeof(_b)))
 #else
 #  define COMPILE_ERROR_IF_TRUE(condition) 0
 #  define COMPILE_ERROR_IF_TYPES_NOT_COMPATIBLE(_a, _b) 0
+#  define COMPILE_ERROR_IF_TYPES2_NOT_COMPATIBLE(_a1, _a2, _b) 0
 #endif
 
 #if __GNUC__ > 2
@@ -192,6 +198,12 @@
 	      #expr);			}STMT_END
 
 #endif
+
+#define i_close_fd(fd) STMT_START {  \
+	if (unlikely(close_keep_errno(fd)) < 0) \
+		i_error("close(%d[%s:%d]) failed: %m", \
+			*(fd), __FILE__, __LINE__); \
+	} STMT_END
 
 #define i_unreached() \
 	i_panic("file %s: line %d: unreached", __FILE__, __LINE__)

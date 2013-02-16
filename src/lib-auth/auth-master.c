@@ -1,11 +1,11 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "lib-signals.h"
 #include "array.h"
 #include "ioloop.h"
 #include "eacces-error.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "str.h"
@@ -192,7 +192,7 @@ static const char *const *args_hide_passwords(const char *const *args)
 			array_append(&new_args, &args[i], 1);
 		}
 	}
-	(void)array_append_space(&new_args);
+	array_append_zero(&new_args);
 	return array_idx(&new_args, 0);
 }
 
@@ -403,15 +403,14 @@ static int auth_master_run_cmd(struct auth_master_connection *conn,
 	if (!conn->sent_handshake) {
 		str = t_strdup_printf("VERSION\t%d\t%d\n",
 				      AUTH_PROTOCOL_MAJOR, AUTH_PROTOCOL_MINOR);
-		o_stream_send_str(conn->output, str);
+		o_stream_nsend_str(conn->output, str);
 		conn->sent_handshake = TRUE;
 	}
 
-	o_stream_send_str(conn->output, cmd);
+	o_stream_nsend_str(conn->output, cmd);
 	o_stream_uncork(conn->output);
 
-	if (conn->output->stream_errno != 0) {
-		errno = conn->output->stream_errno;
+	if (o_stream_nfinish(conn->output) < 0) {
 		i_error("write(auth socket) failed: %m");
 		conn->aborted = TRUE;
 	} else {
@@ -524,6 +523,8 @@ void auth_user_fields_parse(const char *const *fields, pool_t pool,
 			reply_r->home = p_strdup(pool, *fields + 5);
 		else if (strncmp(*fields, "chroot=", 7) == 0)
 			reply_r->chroot = p_strdup(pool, *fields + 7);
+		else if (strcmp(*fields, "anonymous") == 0)
+			reply_r->anonymous = TRUE;
 		else {
 			const char *field = p_strdup(pool, *fields);
 			array_append(&reply_r->extra_fields, &field, 1);
@@ -599,7 +600,7 @@ int auth_master_cache_flush(struct auth_master_connection *conn,
 	if (users != NULL) {
 		for (; *users != NULL; users++) {
 			str_append_c(str, '\t');
-			str_tabescape_write(str, *users);
+			str_append_tabescaped(str, *users);
 		}
 	}
 	str_append_c(str, '\n');
@@ -661,7 +662,7 @@ auth_master_user_list_init(struct auth_master_connection *conn,
 	str = t_str_new(128);
 	str_printfa(str, "LIST\t%u",
 		    auth_master_next_request_id(conn));
-	if (user_mask != NULL && *user_mask != '\0')
+	if (*user_mask != '\0')
 		str_printfa(str, "\tuser=%s", user_mask);
 	if (info != NULL)
 		auth_user_info_export(str, info);

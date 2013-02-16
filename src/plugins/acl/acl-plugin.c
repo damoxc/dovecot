@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "mailbox-list-private.h"
@@ -7,7 +7,7 @@
 
 #include <stdlib.h>
 
-const char *acl_plugin_version = DOVECOT_VERSION;
+const char *acl_plugin_version = DOVECOT_ABI_VERSION;
 
 static struct mail_storage_hooks acl_mail_storage_hooks = {
 	.mail_user_created = acl_mail_user_created,

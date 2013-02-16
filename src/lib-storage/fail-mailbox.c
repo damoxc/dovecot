@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -70,8 +70,7 @@ static int fail_mailbox_delete(struct mailbox *box)
 }
 
 static int fail_mailbox_rename(struct mailbox *src,
-			       struct mailbox *dest ATTR_UNUSED,
-			       bool rename_children ATTR_UNUSED)
+			       struct mailbox *dest ATTR_UNUSED)
 {
 	mail_storage_set_error(src->storage, MAIL_ERROR_NOTPOSSIBLE,
 			       "Mailbox can't be renamed");
@@ -82,7 +81,6 @@ static int fail_mailbox_get_status(struct mailbox *box ATTR_UNUSED,
 				   enum mailbox_status_items items ATTR_UNUSED,
 				   struct mailbox_status *status_r)
 {
-	memset(status_r, 0, sizeof(*status_r));
 	status_r->uidvalidity = TEST_UID_VALIDITY;
 	status_r->uidnext = 1;
 	mail_storage_set_error(box->storage, MAIL_ERROR_NOTFOUND,
@@ -118,12 +116,10 @@ fail_mailbox_sync_next(struct mailbox_sync_context *ctx ATTR_UNUSED,
 
 static int
 fail_mailbox_sync_deinit(struct mailbox_sync_context *ctx,
-			 struct mailbox_sync_status *status_r)
+			 struct mailbox_sync_status *status_r ATTR_UNUSED)
 {
 	mail_storage_set_error(ctx->box->storage, MAIL_ERROR_NOTFOUND,
 			       T_MAIL_ERR_MAILBOX_NOT_FOUND(ctx->box->vname));
-	if (status_r != NULL)
-		memset(status_r, 0, sizeof(*status_r));
 	i_free(ctx);
 	return -1;
 }
@@ -263,6 +259,11 @@ struct mailbox fail_mailbox = {
 		fail_mailbox_get_status,
 		NULL,
 		fail_mailbox_set_subscribed,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
 		NULL,
 		NULL,
 		fail_mailbox_sync_init,

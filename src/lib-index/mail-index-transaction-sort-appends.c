@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -51,9 +51,9 @@ mail_index_transaction_sort_appends_ext(ARRAY_TYPE(seq_array_array) *updates,
 
 			seq = *ext_rec < first_new_seq ? *ext_rec :
 				old_to_newseq_map[*ext_rec - first_new_seq];
-			mail_index_seq_array_add(&new_array, seq, ext_rec+1,
-						 old_array->arr.element_size -
-						 sizeof(*ext_rec), NULL);
+			(void)mail_index_seq_array_add(&new_array, seq, ext_rec+1,
+						       old_array->arr.element_size -
+						       sizeof(*ext_rec), NULL);
 		}
 		array_free(old_array);
 		ext_rec_arrays[j] = new_array;
@@ -95,7 +95,7 @@ sort_appends_seq_range(ARRAY_TYPE(seq_range) *array, uint32_t first_new_seq,
 		idx1 = range[i].seq1 - first_new_seq;
 		idx2 = range[i].seq2 - first_new_seq;
 		for (idx = idx1; idx <= idx2; idx++)
-			seq_range_array_add(array, 0, old_to_newseq_map[idx]);
+			seq_range_array_add(array, old_to_newseq_map[idx]);
 	}
 	array_free(&old_seqs);
 }
@@ -106,24 +106,20 @@ mail_index_transaction_sort_appends_keywords(struct mail_index_transaction *t,
 {
 	struct mail_index_transaction_keyword_update *update;
 
-	if (array_is_created(&t->keyword_updates)) {
-		array_foreach_modifiable(&t->keyword_updates, update) {
-			if (array_is_created(&update->add_seq)) {
-				sort_appends_seq_range(&update->add_seq,
-						       t->first_new_seq,
-						       old_to_newseq_map);
-			}
-			if (array_is_created(&update->remove_seq)) {
-				sort_appends_seq_range(&update->remove_seq,
-						       t->first_new_seq,
-						       old_to_newseq_map);
-			}
-		}
-	}
+	if (!array_is_created(&t->keyword_updates))
+		return;
 
-	if (array_is_created(&t->keyword_resets)) {
-		sort_appends_seq_range(&t->keyword_resets, t->first_new_seq,
-				       old_to_newseq_map);
+	array_foreach_modifiable(&t->keyword_updates, update) {
+		if (array_is_created(&update->add_seq)) {
+			sort_appends_seq_range(&update->add_seq,
+					       t->first_new_seq,
+					       old_to_newseq_map);
+		}
+		if (array_is_created(&update->remove_seq)) {
+			sort_appends_seq_range(&update->remove_seq,
+					       t->first_new_seq,
+					       old_to_newseq_map);
+		}
 	}
 }
 
@@ -134,8 +130,17 @@ void mail_index_transaction_sort_appends(struct mail_index_transaction *t)
 	uint32_t *old_to_newseq_map;
 	unsigned int i, count;
 
-	if (!t->appends_nonsorted || !array_is_created(&t->appends))
+	if (!array_is_created(&t->appends))
 		return;
+	if (!t->appends_nonsorted) {
+#ifdef DEBUG
+		recs = array_get_modifiable(&t->appends, &count);
+		i_assert(count > 0);
+		for (i = 1; i < count; i++)
+			i_assert(recs[i-1].uid < recs[i].uid);
+#endif
+		return;
+	}
 
 	/* first make a copy of the UIDs and map them to sequences */
 	recs = array_get_modifiable(&t->appends, &count);

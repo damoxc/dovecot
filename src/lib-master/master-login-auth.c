@@ -1,8 +1,9 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
-#include "network.h"
+#include "net.h"
 #include "ioloop.h"
+#include "hostpid.h"
 #include "istream.h"
 #include "ostream.h"
 #include "llist.h"
@@ -47,12 +48,13 @@ struct master_login_auth {
 	struct timeout *to;
 
 	unsigned int id_counter;
-	struct hash_table *requests;
+	HASH_TABLE(void *, struct master_login_auth_request *) requests;
 	/* linked list of requests, ordered by create_stamp */
 	struct master_login_auth_request *request_head, *request_tail;
 
 	pid_t auth_server_pid;
 
+	unsigned int request_auth_token:1;
 	unsigned int version_received:1;
 	unsigned int spid_received:1;
 };
@@ -60,7 +62,8 @@ struct master_login_auth {
 static void master_login_auth_set_timeout(struct master_login_auth *auth);
 static void master_login_auth_check_spids(struct master_login_auth *auth);
 
-struct master_login_auth *master_login_auth_init(const char *auth_socket_path)
+struct master_login_auth *
+master_login_auth_init(const char *auth_socket_path, bool request_auth_token)
 {
 	struct master_login_auth *auth;
 	pool_t pool;
@@ -69,9 +72,10 @@ struct master_login_auth *master_login_auth_init(const char *auth_socket_path)
 	auth = p_new(pool, struct master_login_auth, 1);
 	auth->pool = pool;
 	auth->auth_socket_path = p_strdup(pool, auth_socket_path);
+	auth->request_auth_token = request_auth_token;
 	auth->refcount = 1;
 	auth->fd = -1;
-	auth->requests = hash_table_create(default_pool, pool, 0, NULL, NULL);
+	hash_table_create_direct(&auth->requests, pool, 0);
 	auth->id_counter = (rand() % 32767) * 131072U;
 	return auth;
 }
@@ -388,6 +392,7 @@ master_login_auth_connect(struct master_login_auth *auth)
 	auth->fd = fd;
 	auth->input = i_stream_create_fd(fd, AUTH_MAX_INBUF_SIZE, FALSE);
 	auth->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(auth->output, TRUE);
 	auth->io = io_add(fd, IO_READ, master_login_auth_input, auth);
 	return 0;
 }
@@ -435,8 +440,10 @@ master_login_auth_send_request(struct master_login_auth *auth,
 	str_printfa(str, "REQUEST\t%u\t%u\t%u\t", req->id,
 		    req->client_pid, req->auth_id);
 	binary_to_hex_append(str, req->cookie, sizeof(req->cookie));
+	if (auth->request_auth_token)
+		str_printfa(str, "\tsession_pid=%s", my_pid);
 	str_append_c(str, '\n');
-	o_stream_send(auth->output, str_data(str), str_len(str));
+	o_stream_nsend(auth->output, str_data(str), str_len(str));
 }
 
 void master_login_auth_request(struct master_login_auth *auth,
@@ -456,7 +463,7 @@ void master_login_auth_request(struct master_login_auth *auth,
 				 context);
 			return;
 		}
-		o_stream_send_str(auth->output,
+		o_stream_nsend_str(auth->output,
 			t_strdup_printf("VERSION\t%u\t%u\n",
 					AUTH_MASTER_PROTOCOL_MAJOR_VERSION,
 					AUTH_MASTER_PROTOCOL_MINOR_VERSION));

@@ -9,7 +9,8 @@ struct dict;
 enum dict_iterate_flags {
 	DICT_ITERATE_FLAG_RECURSE             = 0x01,
 	DICT_ITERATE_FLAG_SORT_BY_KEY         = 0x02,
-	DICT_ITERATE_FLAG_SORT_BY_VALUE       = 0x04
+	DICT_ITERATE_FLAG_SORT_BY_VALUE       = 0x04,
+	DICT_ITERATE_FLAG_NO_VALUE            = 0x08
 };
 
 enum dict_data_type {
@@ -29,9 +30,10 @@ void dict_drivers_register_all(void);
 void dict_drivers_unregister_all(void);
 
 /* Open dictionary with given URI (type:data).
-   If URI is invalid, returns NULL. */
-struct dict *dict_init(const char *uri, enum dict_data_type value_type,
-		       const char *username, const char *base_dir);
+   Returns 0 if ok, -1 if URI is invalid. */
+int dict_init(const char *uri, enum dict_data_type value_type,
+	      const char *username, const char *base_dir, struct dict **dict_r,
+	      const char **error_r);
 /* Close dictionary. */
 void dict_deinit(struct dict **dict);
 /* Wait for all pending asynchronous transaction commits to finish.
@@ -67,7 +69,7 @@ int dict_transaction_commit(struct dict_transaction_context **ctx);
    result. */
 void dict_transaction_commit_async(struct dict_transaction_context **ctx,
 				   dict_transaction_commit_callback_t *callback,
-				   void *context);
+				   void *context) ATTR_NULL(2, 3);
 /* Rollback all changes made in transaction. */
 void dict_transaction_rollback(struct dict_transaction_context **ctx);
 
@@ -77,6 +79,9 @@ void dict_set(struct dict_transaction_context *ctx,
 /* Unset a record in dictionary, identified by key*/
 void dict_unset(struct dict_transaction_context *ctx,
 		const char *key);
+/* Append to an existing key in dictionary. Preferably an atomic operation. */
+void dict_append(struct dict_transaction_context *ctx,
+		 const char *key, const char *value);
 /* Increase/decrease a numeric value in dictionary. Note that the value is
    changed when transaction is being committed, so you can't know beforehand
    what the value will become. The value is updated only if it already exists,

@@ -11,7 +11,8 @@
 #include "compat.h"
 #include "safe-memset.h"
 #include "md4.h"
-#include "hmac-md5.h"
+#include "md5.h"
+#include "hmac.h"
 #include "ntlm.h"
 #include "ntlm-des.h"
 
@@ -32,8 +33,7 @@ t_unicode_str(const char *src, bool ucase, size_t *size)
 	return buffer_free_without_data(&wstr);
 }
 
-const unsigned char *
-lm_hash(const char *passwd, unsigned char hash[LM_HASH_SIZE])
+void lm_hash(const char *passwd, unsigned char hash[LM_HASH_SIZE])
 {
 	static const unsigned char lm_magic[8] = "KGS!@#$%";
 	unsigned char buffer[14];
@@ -48,12 +48,9 @@ lm_hash(const char *passwd, unsigned char hash[LM_HASH_SIZE])
 	deshash(hash + 8, buffer + 7, lm_magic);
 
 	safe_memset(buffer, 0, sizeof(buffer));
-
-	return hash;
 }
 
-const unsigned char *
-ntlm_v1_hash(const char *passwd, unsigned char hash[NTLMSSP_HASH_SIZE])
+void ntlm_v1_hash(const char *passwd, unsigned char hash[NTLMSSP_HASH_SIZE])
 {
 	size_t len;
 	void *wpwd = t_unicode_str(passwd, 0, &len);
@@ -61,31 +58,29 @@ ntlm_v1_hash(const char *passwd, unsigned char hash[NTLMSSP_HASH_SIZE])
 	md4_get_digest(wpwd, len, hash);
 
 	safe_memset(wpwd, 0, len);
-
-	return hash;
 }
 
 static void
-hmac_md5_ucs2le_string_ucase(struct hmac_md5_context *ctx, const char *str)
+hmac_md5_ucs2le_string_ucase(struct hmac_context *ctx, const char *str)
 {
 	size_t len;
 	unsigned char *wstr = t_unicode_str(str, 1, &len);
 
-	hmac_md5_update(ctx, wstr, len);
+	hmac_update(ctx, wstr, len);
 }
 
-static void
+static void ATTR_NULL(2)
 ntlm_v2_hash(const char *user, const char *target,
 	     const unsigned char *hash_v1,
 	     unsigned char hash[NTLMSSP_V2_HASH_SIZE])
 {
-	struct hmac_md5_context ctx;
+	struct hmac_context ctx;
 
-	hmac_md5_init(&ctx, hash_v1, NTLMSSP_HASH_SIZE);
+	hmac_init(&ctx, hash_v1, NTLMSSP_HASH_SIZE, &hash_method_md5);
 	hmac_md5_ucs2le_string_ucase(&ctx, user);
-	if (target)
+	if (target != NULL)
 		hmac_md5_ucs2le_string_ucase(&ctx, target);
-	hmac_md5_final(&ctx, hash);
+	hmac_final(&ctx, hash);
 }
 
 void
@@ -130,15 +125,15 @@ ntlmssp_v2_response(const char *user, const char *target,
 		    const unsigned char *blob, size_t blob_size,
 		    unsigned char response[NTLMSSP_V2_RESPONSE_SIZE])
 {
-	struct hmac_md5_context ctx;
+	struct hmac_context ctx;
 	unsigned char hash[NTLMSSP_V2_HASH_SIZE];
 
 	ntlm_v2_hash(user, target, hash_v1, hash);
 
-	hmac_md5_init(&ctx, hash, NTLMSSP_V2_HASH_SIZE);
-	hmac_md5_update(&ctx, challenge, NTLMSSP_CHALLENGE_SIZE);
-	hmac_md5_update(&ctx, blob, blob_size);
-	hmac_md5_final(&ctx, response);
+	hmac_init(&ctx, hash, NTLMSSP_V2_HASH_SIZE, &hash_method_md5);
+	hmac_update(&ctx, challenge, NTLMSSP_CHALLENGE_SIZE);
+	hmac_update(&ctx, blob, blob_size);
+	hmac_final(&ctx, response);
 
 	safe_memset(hash, 0, sizeof(hash));
 }

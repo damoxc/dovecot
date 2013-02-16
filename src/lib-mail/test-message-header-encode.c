@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "base64.h"
@@ -80,7 +80,7 @@ static bool verify_b(const char *str, unsigned int i, bool starts_with_a)
 	char bufdata[1000];
 	buffer_t buf;
 
-	buffer_create_data(&buf, bufdata, sizeof(bufdata));
+	buffer_create_from_data(&buf, bufdata, sizeof(bufdata));
 	if (strncmp(str+i, "\n\t", 2) == 0) {
 		i += 2;
 		line_start = i - 1;

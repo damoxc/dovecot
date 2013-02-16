@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream-private.h"
@@ -31,14 +31,14 @@ static ssize_t i_stream_limit_read(struct istream_private *stream)
 	ssize_t ret;
 	size_t pos;
 
+	i_stream_seek(stream->parent, lstream->istream.parent_start_offset +
+		      stream->istream.v_offset);
+
 	if (stream->istream.v_offset +
 	    (stream->pos - stream->skip) >= lstream->v_size) {
 		stream->istream.eof = TRUE;
 		return -1;
 	}
-
-	i_stream_seek(stream->parent, lstream->istream.parent_start_offset +
-		      stream->istream.v_offset);
 
 	stream->pos -= stream->skip;
 	stream->skip = 0;
@@ -71,27 +71,19 @@ static ssize_t i_stream_limit_read(struct istream_private *stream)
 	return ret;
 }
 
-static void i_stream_limit_seek(struct istream_private *stream, uoff_t v_offset,
-				bool mark ATTR_UNUSED)
-{
-	stream->istream.v_offset = v_offset;
-	stream->skip = stream->pos = 0;
-}
-
-static const struct stat *
+static int
 i_stream_limit_stat(struct istream_private *stream, bool exact)
 {
 	struct limit_istream *lstream = (struct limit_istream *) stream;
 	const struct stat *st;
 
-	st = i_stream_stat(stream->parent, exact);
-	if (st == NULL)
-		return NULL;
+	if (i_stream_stat(stream->parent, exact, &st) < 0)
+		return -1;
 
 	stream->statbuf = *st;
 	if (lstream->v_size != (uoff_t)-1)
 		stream->statbuf.st_size = lstream->v_size;
-	return &stream->statbuf;
+	return 0;
 }
 
 static int i_stream_limit_get_size(struct istream_private *stream,
@@ -105,8 +97,7 @@ static int i_stream_limit_get_size(struct istream_private *stream,
 		return 1;
 	}
 
-	st = i_stream_stat(&stream->istream, exact);
-	if (st == NULL)
+	if (i_stream_stat(&stream->istream, exact, &st) < 0)
 		return -1;
 	if (st->st_size == -1)
 		return 0;
@@ -124,9 +115,7 @@ struct istream *i_stream_create_limit(struct istream *input, uoff_t v_size)
 	lstream->istream.max_buffer_size = input->real_stream->max_buffer_size;
 
 	lstream->istream.iostream.destroy = i_stream_limit_destroy;
-	lstream->istream.parent = input;
 	lstream->istream.read = i_stream_limit_read;
-	lstream->istream.seek = i_stream_limit_seek;
 	lstream->istream.stat = i_stream_limit_stat;
 	lstream->istream.get_size = i_stream_limit_get_size;
 
@@ -135,4 +124,16 @@ struct istream *i_stream_create_limit(struct istream *input, uoff_t v_size)
 	lstream->istream.istream.seekable = input->seekable;
 	return i_stream_create(&lstream->istream, input,
 			       i_stream_get_fd(input));
+}
+
+struct istream *i_stream_create_range(struct istream *input,
+				      uoff_t v_offset, uoff_t v_size)
+{
+	uoff_t orig_offset = input->v_offset;
+	struct istream *ret;
+
+	input->v_offset = v_offset;
+	ret = i_stream_create_limit(input, v_size);
+	input->v_offset = orig_offset;
+	return ret;
 }

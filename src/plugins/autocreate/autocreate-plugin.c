@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 /* FIXME: this plugin is only for backwards compatibility. log a warning in
    v2.2 about this and in later versions remove completely */
@@ -28,6 +28,7 @@ add_autobox(struct mail_user *user, const char *vname, bool subscriptions)
 {
 	struct mail_namespace *ns;
 	struct mailbox_settings *set;
+	struct mail_namespace_settings tmp_ns_set;
 
 	if (!uni_utf8_str_is_valid(vname)) {
 		i_error("autocreate: Mailbox name isn't valid UTF-8: %s",
@@ -36,14 +37,21 @@ add_autobox(struct mail_user *user, const char *vname, bool subscriptions)
 	}
 
 	ns = mail_namespace_find(user->namespaces, vname);
-	if (ns == NULL) {
+	if ((ns->flags & NAMESPACE_FLAG_UNUSABLE) != 0) {
 		i_error("autocreate: No namespace found for mailbox: %s",
 			vname);
 		return;
 	}
 
-	if (!array_is_created(&ns->set->mailboxes))
-		p_array_init(&ns->set->mailboxes, user->pool, 16);
+	if (array_is_created(&ns->set->mailboxes))
+		tmp_ns_set.mailboxes = ns->set->mailboxes;
+	else {
+		p_array_init(&tmp_ns_set.mailboxes, user->pool, 16);
+		/* work around ns->set being a const pointer. pretty ugly, but
+		   this plugin is deprecated anyway. */
+		memcpy((void *)&ns->set->mailboxes.arr, &tmp_ns_set.mailboxes.arr,
+		       sizeof(ns->set->mailboxes.arr));
+	}
 
 	if (strncmp(vname, ns->prefix, ns->prefix_len) == 0)
 		vname += ns->prefix_len;
@@ -53,7 +61,7 @@ add_autobox(struct mail_user *user, const char *vname, bool subscriptions)
 		set->name = p_strdup(user->pool, vname);
 		set->autocreate = MAILBOX_SET_AUTO_NO;
 		set->special_use = "";
-		array_append(&ns->set->mailboxes, &set, 1);
+		array_append(&tmp_ns_set.mailboxes, &set, 1);
 	}
 	if (subscriptions)
 		set->autocreate = MAILBOX_SET_AUTO_SUBSCRIBE;
@@ -66,15 +74,16 @@ read_autobox_settings(struct mail_user *user, const char *env_name_base,
 		      bool subscriptions)
 {
 	const char *value;
-	char env_name[20];
+	char env_name[13+MAX_INT_STRLEN+1];
 	unsigned int i = 1;
 
 	value = mail_user_plugin_getenv(user, env_name_base);
 	while (value != NULL) {
 		add_autobox(user, value, subscriptions);
 
-		i_snprintf(env_name, sizeof(env_name), "%s%d",
-			   env_name_base, ++i);
+		if (i_snprintf(env_name, sizeof(env_name), "%s%u",
+			       env_name_base, ++i) < 0)
+			i_unreached();
 		value = mail_user_plugin_getenv(user, env_name);
 	}
 }
@@ -92,6 +101,7 @@ static struct mail_storage_hooks autocreate_mail_storage_hooks = {
 
 void autocreate_plugin_init(struct module *module)
 {
+	i_warning("autocreate plugin is deprecated, use mailbox { auto } setting instead");
 	mail_storage_hooks_add(module, &autocreate_mail_storage_hooks);
 }
 

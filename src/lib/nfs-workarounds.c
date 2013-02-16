@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 /*
    These tests were done with various Linux 2.6 kernels, FreeBSD 6.2 and
@@ -259,7 +259,7 @@ void nfs_flush_attr_cache_unlocked(const char *path)
 	/* Try to flush the attribute cache the nice way first. */
 	fd = open(path, O_RDONLY);
 	if (fd != -1)
-		(void)close(fd);
+		i_close_fd(&fd);
 	else if (errno == ESTALE) {
 		/* this already flushed the cache */
 	} else {
@@ -274,16 +274,15 @@ void nfs_flush_attr_cache_maybe_locked(const char *path)
 	nfs_flush_chown_uid(path);
 }
 
-bool nfs_flush_attr_cache_fd_locked(const char *path ATTR_UNUSED,
+void nfs_flush_attr_cache_fd_locked(const char *path ATTR_UNUSED,
 				    int fd ATTR_UNUSED)
 {
 #ifdef __FreeBSD__
 	/* FreeBSD doesn't flush attribute cache with fcntl(), so we have
 	   to do it ourself. */
-	return nfs_flush_fchown_uid(path, fd);
+	(void)nfs_flush_fchown_uid(path, fd);
 #else
 	/* Linux and Solaris are fine. */
-	return TRUE;
 #endif
 }
 
@@ -327,7 +326,7 @@ nfs_flush_file_handle_cache_dir(const char *path, bool try_parent ATTR_UNUSED)
 		if (t_get_current_dir(&cur_path) < 0) {
 			i_error("nfs_flush_file_handle_cache_dir: "
 				"getcwd() failed");
-			(void)close(cur_dir_fd);
+			i_close_fd(&cur_dir_fd);
 			return TRUE;
 		}
 		p = strrchr(cur_path, '/');
@@ -342,7 +341,7 @@ nfs_flush_file_handle_cache_dir(const char *path, bool try_parent ATTR_UNUSED)
 		ret = nfs_flush_file_handle_cache_dir(path, FALSE);
 		if (fchdir(cur_dir_fd) < 0)
 			i_error("fchdir() failed: %m");
-		(void)close(cur_dir_fd);
+		i_close_fd(&cur_dir_fd);
 		return ret;
 	} else {
 		i_error("nfs_flush_file_handle_cache_dir: "
@@ -359,10 +358,10 @@ static void nfs_flush_file_handle_cache_parent_dir(const char *path)
 	p = strrchr(path, '/');
 	T_BEGIN {
 		if (p == NULL)
-			nfs_flush_file_handle_cache_dir(".", TRUE);
+			(void)nfs_flush_file_handle_cache_dir(".", TRUE);
 		else
-			nfs_flush_file_handle_cache_dir(t_strdup_until(path, p),
-							TRUE);
+			(void)nfs_flush_file_handle_cache_dir(t_strdup_until(path, p),
+							      TRUE);
 	} T_END;
 }
 

@@ -1,8 +1,8 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "llist.h"
@@ -66,7 +66,6 @@ static void
 user_callback(enum userdb_result result, struct auth_request *auth_request)
 {
 	struct auth_postfix_connection *conn = auth_request->context;
-	struct auth_stream_reply *reply = auth_request->userdb_reply;
 	string_t *str;
 	const char *value;
 
@@ -77,7 +76,7 @@ user_callback(enum userdb_result result, struct auth_request *auth_request)
 	switch (result) {
 	case USERDB_RESULT_INTERNAL_FAILURE:
 		if (auth_request->userdb_lookup_failed)
-			value = auth_stream_reply_find(reply, "reason");
+			value = auth_fields_find(auth_request->userdb_reply, "reason");
 		else
 			value = NULL;
 		str_printfa(str, "400 %s",
@@ -95,7 +94,7 @@ user_callback(enum userdb_result result, struct auth_request *auth_request)
 		i_debug("postfix out: %s", str_c(str));
 
 	str_append_c(str, '\n');
-	(void)o_stream_send(conn->output, str_data(str), str_len(str));
+	o_stream_nsend(conn->output, str_data(str), str_len(str));
 
 	i_assert(conn->io == NULL);
 	if (!conn->destroyed)
@@ -179,6 +178,7 @@ auth_postfix_connection_create(struct auth *auth, int fd)
 	conn->auth = auth;
 	conn->input = i_stream_create_fd(fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	conn->io = io_add(fd, IO_READ, postfix_input, conn);
 	DLLIST_PREPEND(&auth_postfix_connections, conn);
 	return conn;

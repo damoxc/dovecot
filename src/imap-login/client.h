@@ -1,7 +1,7 @@
 #ifndef CLIENT_H
 #define CLIENT_H
 
-#include "network.h"
+#include "net.h"
 #include "client-common.h"
 
 /* Master prefix is: <1|0><imap tag><NUL> */
@@ -27,5 +27,19 @@ struct imap_client {
 };
 
 bool client_skip_line(struct imap_client *client);
+
+enum imap_cmd_reply {
+	IMAP_CMD_REPLY_OK,
+	IMAP_CMD_REPLY_NO,
+	IMAP_CMD_REPLY_BAD,
+	IMAP_CMD_REPLY_BYE
+};
+
+void client_send_reply(struct client *client,
+		       enum imap_cmd_reply reply, const char *text);
+
+void client_send_reply_code(struct client *client,
+			    enum imap_cmd_reply reply, const char *resp_code,
+			    const char *text) ATTR_NULL(3);
 
 #endif

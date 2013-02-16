@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -24,7 +24,7 @@ struct setting_parser_ctx {
 	enum section_type type;
 
 	struct dict_sql_map cur_map;
-	ARRAY_DEFINE(cur_fields, struct dict_sql_map_field);
+	ARRAY(struct dict_sql_map_field) cur_fields;
 };
 
 #define DEF_STR(name) DEF_STRUCT_STR(name, dict_sql_map)
@@ -210,7 +210,8 @@ parse_section(const char *type, const char *name ATTR_UNUSED,
 	return FALSE;
 }
 
-struct dict_sql_settings *dict_sql_settings_read(pool_t pool, const char *path)
+struct dict_sql_settings *
+dict_sql_settings_read(pool_t pool, const char *path, const char **error_r)
 {
 	struct setting_parser_ctx ctx;
 
@@ -220,12 +221,13 @@ struct dict_sql_settings *dict_sql_settings_read(pool_t pool, const char *path)
 	t_array_init(&ctx.cur_fields, 16);
 	p_array_init(&ctx.set->maps, pool, 8);
 
-	if (!settings_read(path, NULL, parse_setting, parse_section, &ctx))
+	if (!settings_read(path, NULL, parse_setting, parse_section,
+			   &ctx, error_r))
 		return NULL;
 
 	if (ctx.set->connect == NULL) {
-		i_error("Error in configuration file %s: "
-			"Missing connect setting", path);
+		*error_r = t_strdup_printf("Error in configuration file %s: "
+					   "Missing connect setting", path);
 		return NULL;
 	}
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -118,7 +118,7 @@ static void prefix_stack_reset_str(ARRAY_TYPE(prefix_stack) *stack)
 }
 
 static struct config_dump_human_context *
-config_dump_human_init(const char *module, enum config_dump_scope scope,
+config_dump_human_init(const char *const *modules, enum config_dump_scope scope,
 		       bool check_settings)
 {
 	struct config_dump_human_context *ctx;
@@ -137,7 +137,7 @@ config_dump_human_init(const char *module, enum config_dump_scope scope,
 	if (check_settings)
 		flags |= CONFIG_DUMP_FLAG_CHECK_SETTINGS;
 
-	ctx->export_ctx = config_export_init(module, scope, flags,
+	ctx->export_ctx = config_export_init(modules, scope, flags,
 					     config_request_get_strings, ctx);
 	return ctx;
 }
@@ -163,7 +163,7 @@ static bool value_need_quote(const char *value)
 	return FALSE;
 }
 
-static int
+static int ATTR_NULL(4)
 config_dump_human_output(struct config_dump_human_context *ctx,
 			 struct ostream *output, unsigned int indent,
 			 const char *setting_name_filter)
@@ -242,8 +242,8 @@ config_dump_human_output(struct config_dump_human_context *ctx,
 				if (prefix.str_pos != -1U)
 					str_truncate(ctx->list_prefix, prefix.str_pos);
 				else {
-					o_stream_send(output, indent_str, indent*2);
-					o_stream_send_str(output, "}\n");
+					o_stream_nsend(output, indent_str, indent*2);
+					o_stream_nsend_str(output, "}\n");
 				}
 				prefix_idx = prefix.prefix_idx;
 			} else {
@@ -285,7 +285,7 @@ config_dump_human_output(struct config_dump_human_context *ctx,
 					goto again;
 			}
 		}
-		o_stream_send(output, str_data(ctx->list_prefix), str_len(ctx->list_prefix));
+		o_stream_nsend(output, str_data(ctx->list_prefix), str_len(ctx->list_prefix));
 		str_truncate(ctx->list_prefix, 0);
 		prefix_stack_reset_str(&prefix_stack);
 		ctx->list_prefix_sent = TRUE;
@@ -293,20 +293,20 @@ config_dump_human_output(struct config_dump_human_context *ctx,
 		skip_len = prefix_idx == -1U ? 0 : strlen(prefixes[prefix_idx]);
 		i_assert(skip_len == 0 ||
 			 strncmp(prefixes[prefix_idx], strings[i], skip_len) == 0);
-		o_stream_send(output, indent_str, indent*2);
+		o_stream_nsend(output, indent_str, indent*2);
 		key = strings[i] + skip_len;
 		if (unique_key) key++;
 		value = strchr(key, '=');
-		o_stream_send(output, key, value-key);
-		o_stream_send_str(output, " = ");
+		o_stream_nsend(output, key, value-key);
+		o_stream_nsend_str(output, " = ");
 		if (!value_need_quote(value+1))
-			o_stream_send_str(output, value+1);
+			o_stream_nsend_str(output, value+1);
 		else {
-			o_stream_send(output, "\"", 1);
-			o_stream_send_str(output, str_escape(value+1));
-			o_stream_send(output, "\"", 1);
+			o_stream_nsend(output, "\"", 1);
+			o_stream_nsend_str(output, str_escape(value+1));
+			o_stream_nsend(output, "\"", 1);
 		}
-		o_stream_send(output, "\n", 1);
+		o_stream_nsend(output, "\n", 1);
 	end: ;
 	} T_END;
 
@@ -316,8 +316,8 @@ config_dump_human_output(struct config_dump_human_context *ctx,
 			break;
 		prefix_idx = prefix.prefix_idx;
 		indent--;
-		o_stream_send(output, indent_str, indent*2);
-		o_stream_send_str(output, "}\n");
+		o_stream_nsend(output, indent_str, indent*2);
+		o_stream_nsend_str(output, "}\n");
 	}
 
 	/* flush output before writing errors */
@@ -382,15 +382,15 @@ config_dump_filter_end(struct ostream *output, unsigned int indent)
 {
 	while (indent > 0) {
 		indent--;
-		o_stream_send(output, indent_str, indent*2);
-		o_stream_send(output, "}\n", 2);
+		o_stream_nsend(output, indent_str, indent*2);
+		o_stream_nsend(output, "}\n", 2);
 	}
 }
 
 static int
 config_dump_human_sections(struct ostream *output,
 			   const struct config_filter *filter,
-			   const char *module)
+			   const char *const *modules)
 {
 	struct config_filter_parser *const *filters;
 	static struct config_dump_human_context *ctx;
@@ -404,7 +404,7 @@ config_dump_human_sections(struct ostream *output,
 	filters++;
 
 	for (; *filters != NULL; filters++) {
-		ctx = config_dump_human_init(module, CONFIG_DUMP_SCOPE_SET,
+		ctx = config_dump_human_init(modules, CONFIG_DUMP_SCOPE_SET,
 					     FALSE);
 		indent = config_dump_filter_begin(ctx->list_prefix,
 						  &(*filters)->filter);
@@ -418,8 +418,8 @@ config_dump_human_sections(struct ostream *output,
 	return ret;
 }
 
-static int
-config_dump_human(const struct config_filter *filter, const char *module,
+static int ATTR_NULL(4)
+config_dump_human(const struct config_filter *filter, const char *const *modules,
 		  enum config_dump_scope scope, const char *setting_name_filter)
 {
 	static struct config_dump_human_context *ctx;
@@ -427,18 +427,19 @@ config_dump_human(const struct config_filter *filter, const char *module,
 	int ret;
 
 	output = o_stream_create_fd(STDOUT_FILENO, 0, FALSE);
+	o_stream_set_no_error_handling(output, TRUE);
 	o_stream_cork(output);
 
-	ctx = config_dump_human_init(module, scope, TRUE);
+	ctx = config_dump_human_init(modules, scope, TRUE);
 	config_export_by_filter(ctx->export_ctx, filter);
 	ret = config_dump_human_output(ctx, output, 0, setting_name_filter);
 	config_dump_human_deinit(ctx);
 
 	if (setting_name_filter == NULL)
-		ret = config_dump_human_sections(output, filter, module);
+		ret = config_dump_human_sections(output, filter, modules);
 
 	o_stream_uncork(output);
-	o_stream_unref(&output);
+	o_stream_destroy(&output);
 	return ret;
 }
 
@@ -451,7 +452,7 @@ config_dump_one(const struct config_filter *filter, bool hide_key,
 	unsigned int len;
 	bool dump_section = FALSE;
 
-	ctx = config_dump_human_init("", scope, FALSE);
+	ctx = config_dump_human_init(NULL, scope, FALSE);
 	config_export_by_filter(ctx->export_ctx, filter);
 	if (config_export_finish(&ctx->export_ctx) < 0)
 		return -1;
@@ -477,7 +478,7 @@ config_dump_one(const struct config_filter *filter, bool hide_key,
 	config_dump_human_deinit(ctx);
 
 	if (dump_section)
-		config_dump_human(filter, "", scope, setting_name_filter);
+		(void)config_dump_human(filter, NULL, scope, setting_name_filter);
 	return 0;
 }
 
@@ -588,9 +589,10 @@ static void failure_exit_callback(int *status)
 int main(int argc, char *argv[])
 {
 	enum config_dump_scope scope = CONFIG_DUMP_SCOPE_ALL;
-	const char *orig_config_path, *config_path, *module = "";
+	const char *orig_config_path, *config_path, *module;
+	ARRAY(const char *) module_names;
 	struct config_filter filter;
-	const char *error;
+	const char *const *wanted_modules, *error;
 	char **exec_args = NULL, **setting_name_filters = NULL;
 	unsigned int i;
 	int c, ret, ret2;
@@ -610,6 +612,7 @@ int main(int argc, char *argv[])
 	orig_config_path = master_service_get_config_path(master_service);
 
 	i_set_failure_prefix("doveconf: ");
+	t_array_init(&module_names, 4);
 	while ((c = master_getopt(master_service)) > 0) {
 		if (c == 'e') {
 			expand_vars = TRUE;
@@ -628,7 +631,8 @@ int main(int argc, char *argv[])
 			hide_key = TRUE;
 			break;
 		case 'm':
-			module = optarg;
+			module = t_strdup(optarg);
+			array_append(&module_names, &module, 1);
 			break;
 		case 'n':
 			scope = CONFIG_DUMP_SCOPE_CHANGED;
@@ -649,6 +653,10 @@ int main(int argc, char *argv[])
 			return FATAL_DEFAULT;
 		}
 	}
+	array_append_zero(&module_names);
+	wanted_modules = array_count(&module_names) == 1 ? NULL :
+		array_idx(&module_names, 0);
+
 	config_path = master_service_get_config_path(master_service);
 	/* use strcmp() instead of !=, because dovecot -n always gives us
 	   -c parameter */
@@ -672,7 +680,7 @@ int main(int argc, char *argv[])
 
 	if ((ret = config_parse_file(dump_defaults ? NULL : config_path,
 				     expand_vars,
-				     parse_full_config ? "" : module,
+				     parse_full_config ? NULL : wanted_modules,
 				     &error)) == 0 &&
 	    access(EXAMPLE_CONFIG_DIR, X_OK) == 0) {
 		i_fatal("%s (copy example configs from "EXAMPLE_CONFIG_DIR"/)",
@@ -685,7 +693,7 @@ int main(int argc, char *argv[])
 	if (simple_output) {
 		struct config_export_context *ctx;
 
-		ctx = config_export_init(module, scope,
+		ctx = config_export_init(wanted_modules, scope,
 					 CONFIG_DUMP_FLAG_CHECK_SETTINGS,
 					 config_request_simple_stdout,
 					 setting_name_filters);
@@ -712,12 +720,12 @@ int main(int argc, char *argv[])
 		if (!config_path_specified)
 			check_wrong_config(config_path);
 		fflush(stdout);
-		ret2 = config_dump_human(&filter, module, scope, NULL);
+		ret2 = config_dump_human(&filter, wanted_modules, scope, NULL);
 	} else {
 		struct config_export_context *ctx;
 
 		env_put("DOVECONF_ENV=1");
-		ctx = config_export_init(module, CONFIG_DUMP_SCOPE_SET,
+		ctx = config_export_init(wanted_modules, CONFIG_DUMP_SCOPE_SET,
 					 CONFIG_DUMP_FLAG_CHECK_SETTINGS,
 					 config_request_putenv, NULL);
 		config_export_by_filter(ctx, &filter);

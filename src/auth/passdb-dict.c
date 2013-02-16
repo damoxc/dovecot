@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "passdb.h"
@@ -73,7 +73,7 @@ passdb_dict_lookup_key(struct auth_request *auth_request,
 			return PASSDB_RESULT_INTERNAL_FAILURE;
 
 		if (auth_request->passdb_password == NULL &&
-		    !auth_request->no_password) {
+		    !auth_fields_exists(auth_request->extra_fields, "nopassword")) {
 			auth_request_log_info(auth_request, "dict",
 				"No password returned (and no nopassword)");
 			return PASSDB_RESULT_PASSWORD_MISMATCH;

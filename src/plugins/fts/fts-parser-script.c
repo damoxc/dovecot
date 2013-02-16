@@ -1,8 +1,8 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "write-full.h"
 #include "module-context.h"
@@ -25,7 +25,7 @@ struct content {
 struct fts_parser_script_user {
 	union mail_user_module_context module_ctx;
 
-	ARRAY_DEFINE(content, struct content);
+	ARRAY(struct content) content;
 };
 
 struct script_fts_parser {
@@ -70,7 +70,7 @@ static int script_contents_read(struct mail_user *user)
 	struct istream *input;
 	struct content *content;
 	bool eof_seen = FALSE;
-	int fd;
+	int fd, ret = 0;
 
 	fd = script_connect(user, &path);
 	if (fd == -1)
@@ -79,7 +79,7 @@ static int script_contents_read(struct mail_user *user)
 	cmd = t_strdup_printf(SCRIPT_HANDSHAKE"\n");
 	if (write_full(fd, cmd, strlen(cmd)) < 0) {
 		i_error("write(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	input = i_stream_create_fd(fd, 1024, TRUE);
@@ -99,14 +99,17 @@ static int script_contents_read(struct mail_user *user)
 		content->content_type = args[0];
 		content->extensions = (const void *)(args+1);
 	}
-	if (!eof_seen) {
+	if (input->stream_errno != 0) {
+		i_error("parser script read() failed: %m");
+		ret = -1;
+	} else if (!eof_seen) {
 		if (input->v_offset == 0)
 			i_error("parser script didn't send any data");
 		else
 			i_error("parser script didn't send empty EOF line");
 	}
 	i_stream_destroy(&input);
-	return 0;
+	return ret;
 }
 
 static bool script_support_content(struct mail_user *user,
@@ -165,14 +168,14 @@ static void parse_content_disposition(const char *content_disposition,
 
 	rfc822_parser_init(&parser, (const unsigned char *)content_disposition,
 			   strlen(content_disposition), NULL);
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 
 	/* type; param; param; .. */
 	str = t_str_new(32);
 	if (rfc822_parse_mime_token(&parser, str) < 0)
 		return;
 
-	(void)rfc2231_parse(&parser, &results);
+	rfc2231_parse(&parser, &results);
 	filename2 = NULL;
 	for (; *results != NULL; results += 2) {
 		if (strcasecmp(results[0], "filename") == 0) {
@@ -208,7 +211,7 @@ fts_parser_script_try_init(struct mail_user *user,
 	cmd = t_strdup_printf(SCRIPT_HANDSHAKE"%s\n\n", content_type);
 	if (write_full(fd, cmd, strlen(cmd)) < 0) {
 		i_error("write(%s) failed: %m", path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return NULL;
 	}
 

@@ -1,10 +1,10 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "array.h"
 #include "fd-set-nonblock.h"
 #include "fd-close-on-exec.h"
-#include "network.h"
+#include "net.h"
 #ifdef HAVE_SYSTEMD
 #include "sd-daemon.h"
 #endif
@@ -86,7 +86,7 @@ static int service_unix_listener_listen(struct service_listener *l)
 		fd = net_connect_unix(set->path);
 		if (fd != -1 || errno != ECONNREFUSED || i >= 3) {
 			if (fd != -1)
-				(void)close(fd);
+				i_close_fd(&fd);
 			service_error(service, "Socket already exists: %s",
 				      set->path);
 			return 0;
@@ -104,7 +104,7 @@ static int service_unix_listener_listen(struct service_listener *l)
 	i_assert(fd != -1);
 
 	if (service_file_chown(l) < 0) {
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	net_set_nonblock(fd, TRUE);
@@ -375,8 +375,8 @@ int services_listen_using(struct service_list *new_service_list,
 			  struct service_list *old_service_list)
 {
 	struct service *const *services, *old_service, *new_service;
-	ARRAY_DEFINE(new_listeners_arr, struct service_listener *);
-	ARRAY_DEFINE(old_listeners_arr, struct service_listener *);
+	ARRAY(struct service_listener *) new_listeners_arr;
+	ARRAY(struct service_listener *) old_listeners_arr;
 	struct service_listener *const *new_listeners, *const *old_listeners;
 	unsigned int i, j, count, new_count, old_count;
 

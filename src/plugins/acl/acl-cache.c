@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -21,7 +21,8 @@ struct acl_object_cache {
 
 struct acl_cache {
 	struct acl_backend *backend;
-	struct hash_table *objects; /* name => struct acl_object_cache* */
+	/* name => object */
+	HASH_TABLE(char *, struct acl_object_cache *) objects;
 
 	size_t validity_rec_size;
 
@@ -30,9 +31,9 @@ struct acl_cache {
 	   rights can be added to the mapping. */
 	pool_t right_names_pool;
 	/* idx => right name. */
-	ARRAY_DEFINE(right_idx_name_map, const char *);
-	/* name => idx */
-	struct hash_table *right_name_idx_map;
+	ARRAY(const char *) right_idx_name_map;
+	/* name => idx+1 */
+	HASH_TABLE(char *, void *) right_name_idx_map;
 };
 
 static struct acl_mask negative_cache_entry;
@@ -47,11 +48,9 @@ struct acl_cache *acl_cache_init(struct acl_backend *backend,
 	cache->validity_rec_size = validity_rec_size;
 	cache->right_names_pool =
 		pool_alloconly_create("ACL right names", 1024);
-	cache->objects = hash_table_create(default_pool, default_pool, 0,
-					   str_hash, (hash_cmp_callback_t *)strcmp);
-	cache->right_name_idx_map =
-		hash_table_create(default_pool, cache->right_names_pool, 0,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&cache->objects, default_pool, 0, str_hash, strcmp);
+	hash_table_create(&cache->right_name_idx_map,
+			  cache->right_names_pool, 0, str_hash, strcmp);
 	i_array_init(&cache->right_idx_name_map, DEFAULT_ACL_RIGHTS_COUNT);
 	return cache;
 }
@@ -178,14 +177,12 @@ void acl_cache_flush(struct acl_cache *cache, const char *objname)
 void acl_cache_flush_all(struct acl_cache *cache)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	char *key;
+	struct acl_object_cache *obj_cache;
 
 	iter = hash_table_iterate_init(cache->objects);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct acl_object_cache *obj_cache = value;
-
+	while (hash_table_iterate(iter, cache->objects, &key, &obj_cache))
 		acl_cache_free_object_cache(obj_cache);
-	}
 	hash_table_iterate_deinit(&iter);
 
 	hash_table_clear(cache->objects, FALSE);

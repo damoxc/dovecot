@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 /* MD5 header summing logic was pretty much copy&pasted from popa3d by
    Solar Designer */
@@ -548,6 +548,7 @@ bool mbox_sync_parse_match_mail(struct mbox_mailbox *mbox,
 	struct header_func *func;
 	struct mbox_md5_context *mbox_md5_ctx;
 	const void *data;
+	bool expunged;
 	uint32_t uid;
 	int ret;
 
@@ -595,7 +596,8 @@ bool mbox_sync_parse_match_mail(struct mbox_mailbox *mbox,
 	/* match by MD5 sum */
 	mbox->mbox_save_md5 = TRUE;
 
-	mail_index_lookup_ext(view, seq, mbox->md5hdr_ext_idx, &data, NULL);
+	mail_index_lookup_ext(view, seq, mbox->md5hdr_ext_idx,
+			      &data, &expunged);
 	return data == NULL ? 0 :
 		memcmp(data, ctx.hdr_md5_sum, 16) == 0;
 }

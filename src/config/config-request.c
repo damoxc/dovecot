@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -15,13 +15,13 @@ struct config_export_context {
 	pool_t pool;
 	string_t *value;
 	string_t *prefix;
-	struct hash_table *keys;
+	HASH_TABLE(char *, char *) keys;
 	enum config_dump_scope scope;
 
 	config_request_callback_t *callback;
 	void *context;
 
-	const char *module;
+	const char *const *modules;
 	enum config_dump_flags flags;
 	const struct config_module_parser *parsers;
 	struct config_module_parser *dup_parsers;
@@ -341,28 +341,25 @@ settings_export(struct config_export_context *ctx,
 }
 
 struct config_export_context *
-config_export_init(const char *module, enum config_dump_scope scope,
+config_export_init(const char *const *modules, enum config_dump_scope scope,
 		   enum config_dump_flags flags,
 		   config_request_callback_t *callback, void *context)
 {
 	struct config_export_context *ctx;
 	pool_t pool;
 
-	i_assert(module != NULL);
-
 	pool = pool_alloconly_create(MEMPOOL_GROWING"config export", 1024*64);
 	ctx = p_new(pool, struct config_export_context, 1);
 	ctx->pool = pool;
 
-	ctx->module = p_strdup(pool, module);
+	ctx->modules = modules == NULL ? NULL : p_strarray_dup(pool, modules);
 	ctx->flags = flags;
 	ctx->callback = callback;
 	ctx->context = context;
 	ctx->scope = scope;
 	ctx->value = t_str_new(256);
 	ctx->prefix = t_str_new(64);
-	ctx->keys = hash_table_create(default_pool, ctx->pool, 0,
-				      str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&ctx->keys, ctx->pool, 0, str_hash, strcmp);
 	return ctx;
 }
 
@@ -372,7 +369,7 @@ void config_export_by_filter(struct config_export_context *ctx,
 	const char *error;
 
 	if (config_filter_parsers_get(config_filter, ctx->pool,
-				      ctx->module, filter,
+				      ctx->modules, filter,
 				      &ctx->dup_parsers, &ctx->output,
 				      &error) < 0) {
 		i_error("%s", error);
@@ -418,9 +415,8 @@ int config_export_finish(struct config_export_context **_ctx)
 
 	for (i = 0; ctx->parsers[i].root != NULL; i++) {
 		parser = &ctx->parsers[i];
-		if (*ctx->module != '\0' &&
-		    !config_module_want_parser(config_module_parsers,
-					       ctx->module, parser->root))
+		if (!config_module_want_parser(config_module_parsers,
+					       ctx->modules, parser->root))
 			continue;
 
 		settings_export(ctx, parser->root, FALSE,

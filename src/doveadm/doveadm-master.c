@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "doveadm.h"
@@ -41,7 +41,7 @@ static bool pid_file_read(const char *path, pid_t *pid_r)
 				  (kill(*pid_r, 0) < 0 && errno == ESRCH));
 		}
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 	return found;
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -10,7 +10,16 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <time.h>
+#ifdef HAVE_ATTR_NULL
+/* ugly way to tell clang that mysql.h is a system header and we don't want
+   to enable nonnull attributes for it by default.. */
+# 4 "driver-mysql.c" 3
+#endif
 #include <mysql.h>
+#ifdef HAVE_ATTR_NULL
+# 4 "driver-mysql.c" 3
+# line 20
+#endif
 #include <errmsg.h>
 
 struct mysql_db {
@@ -500,7 +509,7 @@ driver_mysql_transaction_commit(struct sql_transaction_context *ctx,
 		callback(NULL, context);
 }
 
-static int
+static int ATTR_NULL(3)
 transaction_send_query(struct mysql_transaction_context *ctx, const char *query,
 		       unsigned int *affected_rows_r)
 {
@@ -650,7 +659,7 @@ const struct sql_result driver_mysql_error_result = {
 	.failed_try_retry = TRUE
 };
 
-const char *driver_mysql_version = DOVECOT_VERSION;
+const char *driver_mysql_version = DOVECOT_ABI_VERSION;
 
 void driver_mysql_init(void);
 void driver_mysql_deinit(void);

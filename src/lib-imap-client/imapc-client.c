@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -22,6 +22,7 @@ const struct imapc_capability_name imapc_capability_names[] = {
 	{ "STARTTLS", IMAPC_CAPABILITY_STARTTLS },
 	{ "X-GM-EXT-1", IMAPC_CAPABILITY_X_GM_EXT_1 },
 	{ "CONDSTORE", IMAPC_CAPABILITY_CONDSTORE },
+	{ "NAMESPACE", IMAPC_CAPABILITY_NAMESPACE },
 
 	{ "IMAP4REV1", IMAPC_CAPABILITY_IMAP4REV1 },
 	{ NULL, 0 }
@@ -406,7 +407,7 @@ int imapc_client_create_temp_fd(struct imapc_client *client,
 	if (unlink(str_c(path)) < 0) {
 		/* shouldn't happen.. */
 		i_error("unlink(%s) failed: %m", str_c(path));
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	*path_r = str_c(path);

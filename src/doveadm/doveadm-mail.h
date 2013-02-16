@@ -5,9 +5,9 @@
 #include "doveadm.h"
 #include "doveadm-util.h"
 #include "module-context.h"
+#include "mail-error.h"
 #include "mail-storage-service.h"
 
-enum mail_error;
 struct mailbox;
 struct mail_storage;
 struct mail_user;
@@ -57,7 +57,7 @@ struct doveadm_mail_cmd_context {
 	struct mail_user *cur_mail_user;
 	struct doveadm_mail_cmd_vfuncs v;
 
-	ARRAY_DEFINE(module_contexts, union doveadm_mail_cmd_module_context *);
+	ARRAY(union doveadm_mail_cmd_module_context *) module_contexts;
 
 	/* if non-zero, exit with this code */
 	int exit_code;
@@ -130,20 +130,20 @@ void doveadm_mail_failed_storage(struct doveadm_mail_cmd_context *ctx,
 void doveadm_mail_failed_mailbox(struct doveadm_mail_cmd_context *ctx,
 				 struct mailbox *box);
 
-struct doveadm_mail_cmd cmd_expunge;
-struct doveadm_mail_cmd cmd_search;
-struct doveadm_mail_cmd cmd_fetch;
-struct doveadm_mail_cmd cmd_import;
-struct doveadm_mail_cmd cmd_index;
-struct doveadm_mail_cmd cmd_altmove;
-struct doveadm_mail_cmd cmd_copy;
-struct doveadm_mail_cmd cmd_move;
-struct doveadm_mail_cmd cmd_mailbox_list;
-struct doveadm_mail_cmd cmd_mailbox_create;
-struct doveadm_mail_cmd cmd_mailbox_delete;
-struct doveadm_mail_cmd cmd_mailbox_rename;
-struct doveadm_mail_cmd cmd_mailbox_subscribe;
-struct doveadm_mail_cmd cmd_mailbox_unsubscribe;
-struct doveadm_mail_cmd cmd_mailbox_status;
+extern struct doveadm_mail_cmd cmd_expunge;
+extern struct doveadm_mail_cmd cmd_search;
+extern struct doveadm_mail_cmd cmd_fetch;
+extern struct doveadm_mail_cmd cmd_import;
+extern struct doveadm_mail_cmd cmd_index;
+extern struct doveadm_mail_cmd cmd_altmove;
+extern struct doveadm_mail_cmd cmd_copy;
+extern struct doveadm_mail_cmd cmd_move;
+extern struct doveadm_mail_cmd cmd_mailbox_list;
+extern struct doveadm_mail_cmd cmd_mailbox_create;
+extern struct doveadm_mail_cmd cmd_mailbox_delete;
+extern struct doveadm_mail_cmd cmd_mailbox_rename;
+extern struct doveadm_mail_cmd cmd_mailbox_subscribe;
+extern struct doveadm_mail_cmd cmd_mailbox_unsubscribe;
+extern struct doveadm_mail_cmd cmd_mailbox_status;
 
 #endif

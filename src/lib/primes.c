@@ -1,3 +1,5 @@
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
+
 #include "lib.h"
 #include "primes.h"
 

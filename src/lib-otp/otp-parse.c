@@ -43,7 +43,7 @@ int otp_read_hex(const char *data, const char **endptr, unsigned char *hash)
 		return -1;
 
 	str = t_str_new(18);
-	buffer_create_data(&buf, hash, OTP_HASH_SIZE);
+	buffer_create_from_data(&buf, hash, OTP_HASH_SIZE);
 
 	while (*data) {
 		char c = *data;
@@ -55,15 +55,13 @@ int otp_read_hex(const char *data, const char **endptr, unsigned char *hash)
 				break;
 			}
 		} else if (!IS_LWS(c)) {
-			if (endptr)
-				*endptr = data;
+			*endptr = data;
 			return -1;
 		}
 		data++;
 	}
 
-	if (endptr)
-		*endptr = data;
+	*endptr = data;
 
 	if (i < OTP_HASH_SIZE * 2)
 		return -1;
@@ -92,7 +90,7 @@ int otp_read_words(const char *data, const char **endptr, unsigned char *hash)
 
 	data = otp_skip_lws(data);
 
-	buffer_create_data(&buf, bits, sizeof(bits));
+	buffer_create_from_data(&buf, bits, sizeof(bits));
 
 	for (; *data && (count < OTP_WORDS_NUMBER); data++) {
 		char c = *data;
@@ -246,7 +244,7 @@ int otp_parse_dbentry(const char *text, struct otp_state *state)
 	if (*end++ != ' ')
 		return -1;
 
-	return otp_read_hex(end, NULL, state->hash);
+	return otp_read_hex(end, &end, state->hash);
 }
 
 const char *otp_print_dbentry(const struct otp_state *state)

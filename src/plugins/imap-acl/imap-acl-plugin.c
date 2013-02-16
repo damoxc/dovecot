@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "str.h"
@@ -44,10 +44,10 @@ static const struct imap_acl_letter_map imap_acl_letter_map[] = {
 	{ '\0', NULL }
 };
 
-const char *imap_acl_plugin_version = DOVECOT_VERSION;
+const char *imap_acl_plugin_version = DOVECOT_ABI_VERSION;
 
 static struct module *imap_acl_module;
-static void (*next_hook_client_created)(struct client **client);
+static imap_client_created_func_t *next_hook_client_created;
 
 static struct mailbox *
 acl_mailbox_open_as_admin(struct client_command_context *cmd, const char *name)
@@ -163,7 +163,7 @@ imap_acl_write_right(string_t *dest, string_t *tmp,
 		i_unreached();
 	}
 
-	imap_quote_append(dest, str_data(tmp), str_len(tmp), FALSE);
+	imap_append_astring(dest, str_c(tmp));
 	str_append_c(dest, ' ');
 	imap_acl_write_rights_list(dest, rights);
 }
@@ -288,13 +288,13 @@ static bool cmd_getacl(struct client_command_context *cmd)
 
 	str = t_str_new(128);
 	str_append(str, "* ACL ");
-	imap_quote_append_string(str, mailbox, FALSE);
+	imap_append_astring(str, mailbox);
 
 	ns = mailbox_get_namespace(box);
 	backend = acl_mailbox_list_get_backend(ns->list);
 	ret = imap_acl_write_aclobj(str, backend,
 				    acl_mailbox_get_aclobj(box), TRUE,
-				    ns->type == NAMESPACE_PRIVATE);
+				    ns->type == MAIL_NAMESPACE_TYPE_PRIVATE);
 	if (ret == 0) {
 		client_send_line(cmd->client, str_c(str));
 		client_send_tagline(cmd, "OK Getacl completed.");
@@ -347,7 +347,7 @@ static bool cmd_myrights(struct client_command_context *cmd)
 
 	str = t_str_new(128);
 	str_append(str, "* MYRIGHTS ");
-	imap_quote_append_string(str, orig_mailbox, FALSE);
+	imap_append_astring(str, orig_mailbox);
 	str_append_c(str,' ');
 	imap_acl_write_rights_list(str, rights);
 
@@ -372,9 +372,9 @@ static bool cmd_listrights(struct client_command_context *cmd)
 
 	str = t_str_new(128);
 	str_append(str, "* LISTRIGHTS ");
-	imap_quote_append_string(str, mailbox, FALSE);
+	imap_append_astring(str, mailbox);
 	str_append_c(str, ' ');
-	imap_quote_append_string(str, identifier, FALSE);
+	imap_append_astring(str, identifier);
 	str_append_c(str, ' ');
 	str_append(str, "\"\" l r w s t p i e k x a c d");
 
@@ -423,7 +423,7 @@ imap_acl_letters_parse(const char *letters, const char *const **rights_r,
 			}
 		}
 	}
-	(void)array_append_space(&rights);
+	array_append_zero(&rights);
 	*rights_r = array_idx(&rights, 0);
 	return 0;
 }
@@ -528,7 +528,7 @@ static void imap_acl_update_ensure_keep_admins(struct acl_backend *backend,
 	default:
 		return;
 	}
-	(void)array_append_space(&new_rights);
+	array_append_zero(&new_rights);
 	update->rights.rights = array_idx(&new_rights, 0);
 }
 
@@ -588,7 +588,8 @@ static bool cmd_setacl(struct client_command_context *cmd)
 
 	ns = mailbox_get_namespace(box);
 	backend = acl_mailbox_list_get_backend(ns->list);
-	if (ns->type == NAMESPACE_PUBLIC && r->id_type == ACL_ID_OWNER) {
+	if (ns->type == MAIL_NAMESPACE_TYPE_PUBLIC &&
+	    r->id_type == ACL_ID_OWNER) {
 		client_send_tagline(cmd, "NO Public namespaces have no owner");
 		mailbox_free(&box);
 		return TRUE;
@@ -600,7 +601,8 @@ static bool cmd_setacl(struct client_command_context *cmd)
 		update.modify_mode = ACL_MODIFY_MODE_REMOVE;
 		update.rights.neg_rights = update.rights.rights;
 		update.rights.rights = NULL;
-	} else if (ns->type == NAMESPACE_PRIVATE && r->rights != NULL &&
+	} else if (ns->type == MAIL_NAMESPACE_TYPE_PRIVATE &&
+		   r->rights != NULL &&
 		   ((r->id_type == ACL_ID_USER &&
 		     acl_backend_user_name_equals(backend, r->identifier)) ||
 		    (r->id_type == ACL_ID_OWNER &&

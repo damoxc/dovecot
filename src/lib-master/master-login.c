@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -70,7 +70,8 @@ master_login_init(struct master_service *service,
 	login->service = service;
 	login->callback = set->callback;
 	login->failure_callback = set->failure_callback;
-	login->auth = master_login_auth_init(set->auth_socket_path);
+	login->auth = master_login_auth_init(set->auth_socket_path,
+					     set->request_auth_token);
 	login->postlogin_socket_path = i_strdup(set->postlogin_socket_path);
 	login->postlogin_timeout_secs = set->postlogin_timeout_secs;
 
@@ -181,8 +182,7 @@ static void master_login_client_free(struct master_login_client **_client)
 			i_error("close(fd_read client) failed: %m");
 		/* this client failed (login callback wasn't called).
 		   reset prefix to default. */
-		i_set_failure_prefix(t_strdup_printf("%s: ",
-			client->conn->login->service->name));
+		i_set_failure_prefix("%s: ", client->conn->login->service->name);
 	}
 
 	/* FIXME: currently we create a separate connection for each request,
@@ -318,7 +318,7 @@ static int master_login_postlogin(struct master_login_client *client,
 		    net_ip2addr(&client->auth_req.remote_ip));
 	for (i = 0; auth_args[i] != NULL; i++) {
 		str_append_c(str, '\t');
-		str_tabescape_write(str, auth_args[i]);
+		str_append_tabescaped(str, auth_args[i]);
 	}
 	str_append_c(str, '\n');
 	ret = fd_send(fd, client->fd, str_data(str), str_len(str));
@@ -330,7 +330,7 @@ static int master_login_postlogin(struct master_login_client *client,
 			i_error("write(%s) failed: partial write",
 				login->postlogin_socket_path);
 		}
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	net_set_nonblock(fd, TRUE);
@@ -359,7 +359,7 @@ master_login_auth_callback(const char *const *auth_args, const char *errormsg,
 	reply.status = errormsg == NULL ? MASTER_AUTH_STATUS_OK :
 		MASTER_AUTH_STATUS_INTERNAL_ERROR;
 	reply.mail_pid = getpid();
-	o_stream_send(conn->output, &reply, sizeof(reply));
+	o_stream_nsend(conn->output, &reply, sizeof(reply));
 
 	if (errormsg != NULL || auth_args[0] == NULL) {
 		if (auth_args != NULL) {
@@ -370,8 +370,8 @@ master_login_auth_callback(const char *const *auth_args, const char *errormsg,
 		master_login_client_free(&client);
 		return;
 	}
-	i_set_failure_prefix(t_strdup_printf("%s(%s): ",
-		client->conn->login->service->name, auth_args[0]));
+	i_set_failure_prefix("%s(%s): ", client->conn->login->service->name,
+			     auth_args[0]);
 
 	if (conn->login->postlogin_socket_path == NULL)
 		master_login_auth_finish(client, auth_args);
@@ -447,6 +447,7 @@ void master_login_add(struct master_login *login, int fd)
 	conn->fd = fd;
 	conn->io = io_add(conn->fd, IO_READ, master_login_conn_input, conn);
 	conn->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 
 	DLLIST_PREPEND(&login->conns, conn);
 

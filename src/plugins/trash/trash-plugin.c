@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -37,10 +37,10 @@ struct trash_user {
 	union mail_user_module_context module_ctx;
 
 	/* ordered by priority, highest first */
-	ARRAY_DEFINE(trash_boxes, struct trash_mailbox);
+	ARRAY(struct trash_mailbox) trash_boxes;
 };
 
-const char *trash_plugin_version = DOVECOT_VERSION;
+const char *trash_plugin_version = DOVECOT_ABI_VERSION;
 
 static MODULE_CONTEXT_DEFINE_INIT(trash_user_module,
 				  &mail_user_module_register);
@@ -248,11 +248,11 @@ static bool trash_find_storage(struct mail_user *user,
 	struct mail_namespace *ns;
 
 	ns = mail_namespace_find(user->namespaces, trash->name);
-	if (ns != NULL) {
-		trash->ns = ns;
-		return TRUE;
-	}
-	return FALSE;
+	if ((ns->flags & NAMESPACE_FLAG_UNUSABLE) != 0)
+		return FALSE;
+
+	trash->ns = ns;
+	return TRUE;
 }
 
 static int trash_mailbox_priority_cmp(const struct trash_mailbox *t1,
@@ -311,7 +311,7 @@ static int read_configuration(struct mail_user *user, const char *path)
 		}
 	}
 	i_stream_destroy(&input);
-	(void)close(fd);
+	i_close_fd(&fd);
 
 	array_sort(&tuser->trash_boxes, trash_mailbox_priority_cmp);
 	return ret;

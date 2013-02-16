@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -63,8 +63,7 @@ uint32_t mail_cache_lookup_cur_offset(struct mail_index_view *view,
 	const void *data;
 	uint32_t offset;
 
-	mail_index_lookup_ext_full(view, seq, cache->ext_id,
-				   &map, &data, NULL);
+	mail_index_lookup_ext_full(view, seq, cache->ext_id, &map, &data, NULL);
 	if (data == NULL) {
 		/* no cache offsets */
 		return 0;
@@ -419,7 +418,7 @@ struct header_lookup_line {
 
 struct header_lookup_context {
 	struct mail_cache_view *view;
-	ARRAY_DEFINE(lines, struct header_lookup_line);
+	ARRAY(struct header_lookup_line) lines;
 };
 
 enum {

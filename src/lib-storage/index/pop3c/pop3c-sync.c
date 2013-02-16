@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -63,7 +63,7 @@ int pop3c_sync_get_uidls(struct pop3c_mailbox *mbox)
 	}
 	if (seq == 0) {
 		/* make msg_uidls non-NULL */
-		(void)array_append_space(&uidls);
+		array_append_zero(&uidls);
 	}
 	mbox->msg_uidls = array_idx(&uidls, 0);
 	mbox->msg_count = seq;
@@ -189,10 +189,8 @@ pop3c_sync_messages(struct pop3c_mailbox *mbox,
 		index_mailbox_set_recent_seq(&mbox->box, sync_view, seq1, seq2);
 }
 
-static int uint32_cmp(const void *p1, const void *p2)
+static int uint32_cmp(const uint32_t *u1, const uint32_t *u2)
 {
-	const uint32_t *u1 = p1, *u2 = p2;
-
 	return *u1 < *u2 ? -1 :
 		(*u1 > *u2 ? 1 : 0);
 }
@@ -221,7 +219,7 @@ int pop3c_sync(struct pop3c_mailbox *mbox)
 				    &sync_view, &sync_trans, sync_flags);
 	if (ret <= 0) {
 		if (ret < 0)
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 		return ret;
 	}
 
@@ -257,7 +255,7 @@ int pop3c_sync(struct pop3c_mailbox *mbox)
 	}
 
 	if (mail_index_sync_commit(&index_sync_ctx) < 0) {
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 		return -1;
 	}
 	if (cache_view != NULL) {

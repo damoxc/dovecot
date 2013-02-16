@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -406,21 +406,20 @@ static void i_stream_raw_mbox_sync(struct istream_private *stream)
 	rstream->input_peak_offset = 0;
 }
 
-static const struct stat *
+static int
 i_stream_raw_mbox_stat(struct istream_private *stream, bool exact)
 {
 	const struct stat *st;
 	struct raw_mbox_istream *rstream = (struct raw_mbox_istream *)stream;
 
-	st = i_stream_stat(stream->parent, exact);
-	if (st == NULL)
-		return NULL;
+	if (i_stream_stat(stream->parent, exact, &st) < 0)
+		return -1;
 
 	stream->statbuf = *st;
 	stream->statbuf.st_size =
 		!exact && rstream->seeked && rstream->mail_size != (uoff_t)-1 ?
 		(off_t)rstream->mail_size : -1;
-	return &stream->statbuf;
+	return 0;
 }
 
 struct istream *i_stream_create_raw_mbox(struct istream *input)
@@ -527,7 +526,6 @@ uoff_t istream_raw_mbox_get_body_offset(struct istream *stream)
 	struct raw_mbox_istream *rstream =
 		(struct raw_mbox_istream *)stream->real_stream;
 	uoff_t offset;
-	size_t pos;
 
 	i_assert(rstream->seeked);
 
@@ -537,8 +535,7 @@ uoff_t istream_raw_mbox_get_body_offset(struct istream *stream)
 	offset = stream->v_offset;
 	i_stream_seek(stream, rstream->hdr_offset);
 	while (rstream->body_offset == (uoff_t)-1) {
-		i_stream_get_data(stream, &pos);
-		i_stream_skip(stream, pos);
+		i_stream_skip(stream, i_stream_get_data_size(stream));
 
 		if (i_stream_raw_mbox_read(&rstream->istream) < 0) {
 			if (rstream->corrupted) {

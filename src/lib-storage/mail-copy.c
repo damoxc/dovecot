@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -20,14 +20,45 @@ mail_copy_set_failed(struct mail_save_context *ctx, struct mail *mail,
 			       t_strdup_printf("%s (%s)", errstr, func));
 }
 
+int mail_save_copy_default_metadata(struct mail_save_context *ctx,
+				    struct mail *mail)
+{
+	const char *from_envelope, *guid;
+	time_t received_date;
+
+	if (ctx->data.received_date == (time_t)-1) {
+		if (mail_get_received_date(mail, &received_date) < 0) {
+			mail_copy_set_failed(ctx, mail, "received-date");
+			return -1;
+		}
+		mailbox_save_set_received_date(ctx, received_date, 0);
+	}
+	if (ctx->data.from_envelope == NULL) {
+		if (mail_get_special(mail, MAIL_FETCH_FROM_ENVELOPE,
+				     &from_envelope) < 0) {
+			mail_copy_set_failed(ctx, mail, "from-envelope");
+			return -1;
+		}
+		if (*from_envelope != '\0')
+			mailbox_save_set_from_envelope(ctx, from_envelope);
+	}
+	if (ctx->data.guid == NULL) {
+		if (mail_get_special(mail, MAIL_FETCH_GUID, &guid) < 0) {
+			mail_copy_set_failed(ctx, mail, "guid");
+			return -1;
+		}
+		if (*guid != '\0')
+			mailbox_save_set_guid(ctx, guid);
+	}
+	return 0;
+}
+
 static int
 mail_storage_try_copy(struct mail_save_context **_ctx, struct mail *mail)
 {
 	struct mail_save_context *ctx = *_ctx;
 	struct mail_private *pmail = (struct mail_private *)mail;
 	struct istream *input;
-	const char *from_envelope, *guid;
-	time_t received_date;
 
 	ctx->copying_via_save = TRUE;
 
@@ -39,31 +70,8 @@ mail_storage_try_copy(struct mail_save_context **_ctx, struct mail *mail)
 		mail_copy_set_failed(ctx, mail, "stream");
 		return -1;
 	}
-
-	if (ctx->received_date == (time_t)-1) {
-		if (mail_get_received_date(mail, &received_date) < 0) {
-			mail_copy_set_failed(ctx, mail, "received-date");
-			return -1;
-		}
-		mailbox_save_set_received_date(ctx, received_date, 0);
-	}
-	if (ctx->from_envelope == NULL) {
-		if (mail_get_special(mail, MAIL_FETCH_FROM_ENVELOPE,
-				     &from_envelope) < 0) {
-			mail_copy_set_failed(ctx, mail, "from-envelope");
-			return -1;
-		}
-		if (*from_envelope != '\0')
-			mailbox_save_set_from_envelope(ctx, from_envelope);
-	}
-	if (ctx->guid == NULL) {
-		if (mail_get_special(mail, MAIL_FETCH_GUID, &guid) < 0) {
-			mail_copy_set_failed(ctx, mail, "guid");
-			return -1;
-		}
-		if (*guid != '\0')
-			mailbox_save_set_guid(ctx, guid);
-	}
+	if (mail_save_copy_default_metadata(ctx, mail) < 0)
+		return -1;
 
 	if (mailbox_save_begin(_ctx, input) < 0)
 		return -1;
@@ -83,11 +91,11 @@ mail_storage_try_copy(struct mail_save_context **_ctx, struct mail *mail)
 
 int mail_storage_copy(struct mail_save_context *ctx, struct mail *mail)
 {
-	if (ctx->keywords != NULL) {
+	if (ctx->data.keywords != NULL) {
 		/* keywords gets unreferenced twice: first in
 		   mailbox_save_cancel()/_finish() and second time in
 		   mailbox_copy(). */
-		mailbox_keywords_ref(ctx->keywords);
+		mailbox_keywords_ref(ctx->data.keywords);
 	}
 
 	if (mail_storage_try_copy(&ctx, mail) < 0) {

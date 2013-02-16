@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 Jakob Hirsch */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -444,7 +444,7 @@ const struct sql_result driver_sqlite_error_result = {
 	}
 };
 
-const char *driver_sqlite_version = DOVECOT_VERSION;
+const char *driver_sqlite_version = DOVECOT_ABI_VERSION;
 
 void driver_sqlite_init(void);
 void driver_sqlite_deinit(void);

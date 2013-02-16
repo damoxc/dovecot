@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* Implementated against draft-ietf-imapext-sort-10 and
    draft-ietf-imapext-thread-12 */
@@ -65,8 +65,7 @@ static void remove_subj_trailers(buffer_t *buf, size_t start_pos,
 			size--;
 		else if (size >= 5 &&
 			 memcmp(data + size - 5, "(FWD)", 5) == 0) {
-			if (is_reply_or_forward_r != NULL)
-				*is_reply_or_forward_r = TRUE;
+			*is_reply_or_forward_r = TRUE;
 			size -= 5;
 		} else {
 			break;
@@ -150,8 +149,7 @@ static bool remove_subj_leader(buffer_t *buf, size_t *start_pos,
 
 	data++;
 	*start_pos += (size_t)(data - orig_data);
-	if (is_reply_or_forward_r != NULL)
-		*is_reply_or_forward_r = TRUE;
+	*is_reply_or_forward_r = TRUE;
 	return TRUE;
 }
 
@@ -187,8 +185,7 @@ static bool remove_subj_fwd_hdr(buffer_t *buf, size_t *start_pos,
 	if (data[size-2] != ']')
 		return FALSE;
 
-	if (is_reply_or_forward_r != NULL)
-		*is_reply_or_forward_r = TRUE;
+	*is_reply_or_forward_r = TRUE;
 
 	buffer_set_used_size(buf, size-2);
 	buffer_append_c(buf, '\0');
@@ -204,8 +201,7 @@ const char *imap_get_base_subject_cased(pool_t pool, const char *subject,
 	size_t start_pos, subject_len;
 	bool found;
 
-	if (is_reply_or_forward_r != NULL)
-		*is_reply_or_forward_r = FALSE;
+	*is_reply_or_forward_r = FALSE;
 
 	subject_len = strlen(subject);
 	buf = buffer_create_dynamic(pool, subject_len);
@@ -214,7 +210,7 @@ const char *imap_get_base_subject_cased(pool_t pool, const char *subject,
 	   UTF-8.  Convert all tabs and continuations to space.
 	   Convert all multiple spaces to a single space. */
 	message_header_decode_utf8((const unsigned char *)subject, subject_len,
-				   buf, TRUE);
+				   buf, uni_utf8_to_decomposed_titlecase);
 	buffer_append_c(buf, '\0');
 
 	pack_whitespace(buf);

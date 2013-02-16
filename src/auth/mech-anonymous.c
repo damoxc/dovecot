@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "mech.h"
@@ -20,7 +20,7 @@ mech_anonymous_auth_continue(struct auth_request *request,
 	request->user = p_strdup(request->pool,
 				 request->set->anonymous_username);
 
-	auth_request_success(request, NULL, 0);
+	auth_request_success(request, "", 0);
 }
 
 static struct auth_request *mech_anonymous_auth_new(void)
