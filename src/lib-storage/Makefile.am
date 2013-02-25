@@ -42,7 +42,7 @@ libstorage_la_SOURCES = \
 	mailbox-header.c \
 	mailbox-keywords.c \
 	mailbox-list.c \
-	mailbox-list-iter.c \
+	mailbox-list-notify.c \
 	mailbox-search-result.c \
 	mailbox-tree.c \
 	mailbox-uidvalidity.c
@@ -69,7 +69,9 @@ headers = \
 	mail-user.h \
 	mailbox-guid-cache.h \
 	mailbox-list.h \
+	mailbox-list-iter.h \
 	mailbox-list-private.h \
+	mailbox-list-notify.h \
 	mailbox-search-result-private.h \
 	mailbox-tree.h \
 	mailbox-uidvalidity.h
@@ -82,11 +84,12 @@ shlibs = \
 	index/libstorage_index.la \
 	register/libstorage_register.la \
 	../lib-index/libindex.la \
+	../lib-imap-storage/libimap-storage.la \
 	../lib-dovecot/libdovecot.la
 
 pkglib_LTLIBRARIES = libdovecot-storage.la
 libdovecot_storage_la_SOURCES = 
-libdovecot_storage_la_LIBADD = $(shlibs) $(LINKED_STORAGE_LDADD) $(MODULE_LIBS)
+libdovecot_storage_la_LIBADD = $(shlibs) $(LINKED_STORAGE_LDADD)
 libdovecot_storage_la_DEPENDENCIES = $(shlibs)
 libdovecot_storage_la_LDFLAGS = -export-dynamic
 
@@ -101,7 +104,7 @@ test_libs = \
 
 test_mailbox_get_SOURCES = test-mailbox-get.c
 test_mailbox_get_LDADD = mailbox-get.lo $(test_libs)
-test_mailbox_get_DEPENDENCIES = mailbox-get.lo $(test_libs)
+test_mailbox_get_DEPENDENCIES = $(noinst_LTLIBRARIES) $(test_libs)
 
 check: check-am check-test
 check-test: all-am

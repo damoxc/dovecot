@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "mountpoint.h"
@@ -21,7 +21,7 @@ static bool readfile(const char *path, const char **data_r)
 	if (fd == -1)
 		return FALSE;
 	ret = read(fd, buf, sizeof(buf));
-	(void)close(fd);
+	i_close_fd(&fd);
 	if (ret <= 0)
 		return FALSE;
 

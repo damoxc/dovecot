@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "lib-signals.h"
@@ -15,6 +15,7 @@
 #include "syslog-util.h"
 #include "master-instance.h"
 #include "master-login.h"
+#include "master-service-ssl.h"
 #include "master-service-private.h"
 #include "master-service-settings.h"
 
@@ -133,7 +134,7 @@ master_service_init(const char *name, enum master_service_flags flags,
 	lib_init();
 	/* Set a logging prefix temporarily. This will be ignored once the log
 	   is properly initialized */
-	i_set_failure_prefix(t_strdup_printf("%s(init): ", name));
+	i_set_failure_prefix("%s(init): ", name);
 
 	/* ignore these signals as early as possible */
         lib_signals_ignore(SIGPIPE, TRUE);
@@ -149,12 +150,12 @@ master_service_init(const char *name, enum master_service_flags flags,
 	service->argv = *argv;
 	service->name = i_strdup(name);
 	/* keep getopt_str first in case it contains "+" */
-	service->getopt_str = getopt_str == NULL ?
+	service->getopt_str = *getopt_str == '\0' ?
 		i_strdup(master_service_getopt_string()) :
 		i_strconcat(getopt_str, master_service_getopt_string(), NULL);
 	service->flags = flags;
 	service->ioloop = io_loop_create();
-	service->service_count_left = (unsigned int)-1;
+	service->service_count_left = UINT_MAX;
 	service->config_fd = -1;
 
 	service->config_path = i_strdup(getenv(MASTER_CONFIG_FILE_ENV));
@@ -182,17 +183,17 @@ master_service_init(const char *name, enum master_service_flags flags,
 		service->listener_names_count =
 			str_array_length((void *)service->listener_names);
 	}
+	service->want_ssl_settings = service->ssl_socket_count > 0 ||
+		(flags & MASTER_SERVICE_FLAG_USE_SSL_SETTINGS) != 0;
 
 	/* set up some kind of logging until we know exactly how and where
 	   we want to log */
 	if (getenv("LOG_SERVICE") != NULL)
 		i_set_failure_internal();
-	if (getenv("USER") != NULL) {
-		i_set_failure_prefix(t_strdup_printf("%s(%s): ",
-						     name, getenv("USER")));
-	} else {
-		i_set_failure_prefix(t_strdup_printf("%s: ", name));
-	}
+	if (getenv("USER") != NULL)
+		i_set_failure_prefix("%s(%s): ", name, getenv("USER"));
+	else
+		i_set_failure_prefix("%s: ", name);
 
 	if ((flags & MASTER_SERVICE_FLAG_STANDALONE) == 0) {
 		/* initialize master_status structure */
@@ -260,7 +261,7 @@ void master_service_init_log(struct master_service *service,
 	if (getenv("LOG_SERVICE") != NULL && !service->log_directly) {
 		/* logging via log service */
 		i_set_failure_internal();
-		i_set_failure_prefix(prefix);
+		i_set_failure_prefix("%s", prefix);
 		return;
 	}
 
@@ -285,12 +286,12 @@ void master_service_init_log(struct master_service *service,
 					  &facility))
 			facility = LOG_MAIL;
 		i_set_failure_syslog("dovecot", LOG_NDELAY, facility);
-		i_set_failure_prefix(prefix);
+		i_set_failure_prefix("%s", prefix);
 
 		if (strcmp(service->set->log_path, "syslog") != 0) {
 			/* set error handlers back to file */
-			i_set_fatal_handler(NULL);
-			i_set_error_handler(NULL);
+			i_set_fatal_handler(default_fatal_handler);
+			i_set_error_handler(default_error_handler);
 		}
 	}
 
@@ -332,9 +333,13 @@ static bool get_instance_config(const char *name, const char **config_path_r)
 {
 	struct master_instance_list *list;
 	const struct master_instance *inst;
-	const char *path;
+	const char *instance_path, *path;
 
-	list = master_instance_list_init(MASTER_INSTANCE_PATH);
+	/* note that we don't have any settings yet. we're just finding out
+	   which dovecot.conf we even want to read! so we must use the
+	   hardcoded state_dir path. */
+	instance_path = t_strconcat(PKG_STATEDIR"/"MASTER_INSTANCE_FNAME, NULL);
+	list = master_instance_list_init(instance_path);
 	inst = master_instance_list_find_by_name(list, name);
 	if (inst != NULL) {
 		path = t_strdup_printf("%s/dovecot.conf", inst->base_dir);
@@ -398,10 +403,8 @@ static void master_service_error(struct master_service *service)
 	}
 }
 
-static void master_status_error(void *context)
+static void master_status_error(struct master_service *service)
 {
-	struct master_service *service = context;
-
 	/* status fd is a write-only pipe, so if we're here it means the
 	   master wants us to die (or died itself). don't die until all
 	   service connections are finished. */
@@ -439,6 +442,8 @@ void master_service_init_finish(struct master_service *service)
 						  master_status_error, service);
 	}
 	master_service_io_listeners_add(service);
+	if (service->want_ssl_settings)
+		master_service_ssl_ctx_init(service);
 
 	if ((service->flags & MASTER_SERVICE_FLAG_STD_CLIENT) != 0) {
 		/* we already have a connection to be served */
@@ -630,7 +635,7 @@ void master_service_client_connection_destroyed(struct master_service *service)
 		service->total_available_count--;
                 service->service_count_left--;
 	} else {
-		if (service->service_count_left != (unsigned int)-1)
+		if (service->service_count_left != UINT_MAX)
 			service->service_count_left--;
 
 		i_assert(service->master_status.available_count <
@@ -712,6 +717,7 @@ void master_service_deinit(struct master_service **_service)
 	*_service = NULL;
 
 	master_service_io_listeners_remove(service);
+	master_service_ssl_ctx_deinit(service);
 
 	master_service_close_config_fd(service);
 	if (service->to_die != NULL)
@@ -865,6 +871,19 @@ void master_service_io_listeners_remove(struct master_service *service)
 	if (service->listeners != NULL) {
 		for (i = 0; i < service->socket_count; i++) {
 			if (service->listeners[i].io != NULL)
+				io_remove(&service->listeners[i].io);
+		}
+	}
+}
+
+void master_service_ssl_io_listeners_remove(struct master_service *service)
+{
+	unsigned int i;
+
+	if (service->listeners != NULL) {
+		for (i = 0; i < service->socket_count; i++) {
+			if (service->listeners[i].io != NULL &&
+			    service->listeners[i].ssl)
 				io_remove(&service->listeners[i].io);
 		}
 	}

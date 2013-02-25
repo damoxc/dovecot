@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "lib-signals.h"
@@ -12,10 +12,10 @@
 #include <time.h>
 
 struct auth_cache {
-	struct hash_table *hash;
+	HASH_TABLE(char *, struct auth_cache_node *) hash;
 	struct auth_cache_node *head, *tail;
 
-	size_t size_left;
+	size_t max_size, size_left;
 	unsigned int ttl_secs, neg_ttl_secs;
 
 	unsigned int hit_count, miss_count;
@@ -178,10 +178,12 @@ auth_cache_node_link_head(struct auth_cache *cache,
 static void
 auth_cache_node_destroy(struct auth_cache *cache, struct auth_cache_node *node)
 {
+	char *key = node->data;
+
 	auth_cache_node_unlink(cache, node);
 
 	cache->size_left += node->alloc_size;
-	hash_table_remove(cache->hash, node->data);
+	hash_table_remove(cache->hash, key);
 	i_free(node);
 }
 
@@ -197,6 +199,7 @@ static void sig_auth_cache_stats(const siginfo_t *si ATTR_UNUSED, void *context)
 {
 	struct auth_cache *cache = context;
 	unsigned int total_count;
+	size_t cache_used;
 
 	total_count = cache->hit_count + cache->miss_count;
 	i_info("Authentication cache hits %u/%u (%u%%)",
@@ -204,9 +207,16 @@ static void sig_auth_cache_stats(const siginfo_t *si ATTR_UNUSED, void *context)
 	       total_count == 0 ? 100 : (cache->hit_count * 100 / total_count));
 
 	i_info("Authentication cache inserts: "
-	       "positive: %u %lluB, negative: %u %lluB",
+	       "positive: %u entries %llu bytes, "
+	       "negative: %u entries %llu bytes",
 	       cache->pos_entries, cache->pos_size,
 	       cache->neg_entries, cache->neg_size);
+
+	cache_used = cache->max_size - cache->size_left;
+	i_info("Authentication cache current size: "
+	       "%"PRIuSIZE_T" bytes used of %"PRIuSIZE_T" bytes (%u%%)",
+	       cache_used, cache->max_size,
+	       (unsigned int)(cache_used * 100ULL / cache->max_size));
 
 	/* reset counters */
 	cache->hit_count = cache->miss_count = 0;
@@ -221,8 +231,8 @@ struct auth_cache *auth_cache_new(size_t max_size, unsigned int ttl_secs,
 	struct auth_cache *cache;
 
 	cache = i_new(struct auth_cache, 1);
-	cache->hash = hash_table_create(default_pool, default_pool, 0, str_hash,
-					(hash_cmp_callback_t *)strcmp);
+	hash_table_create(&cache->hash, default_pool, 0, str_hash, strcmp);
+	cache->max_size = max_size;
 	cache->size_left = max_size;
 	cache->ttl_secs = ttl_secs;
 	cache->neg_ttl_secs = neg_ttl_secs;
@@ -386,7 +396,7 @@ void auth_cache_insert(struct auth_cache *cache, struct auth_request *request,
 {
         struct auth_cache_node *node;
 	size_t data_size, alloc_size, key_len, value_len = strlen(value);
-	char *current_username;
+	char *hash_key, *current_username;
 
 	if (*value == '\0' && cache->neg_ttl_secs == 0) {
 		/* we're not caching negative entries */
@@ -430,7 +440,8 @@ void auth_cache_insert(struct auth_cache *cache, struct auth_request *request,
 	auth_cache_node_link_head(cache, node);
 
 	cache->size_left -= alloc_size;
-	hash_table_insert(cache->hash, node->data, node);
+	hash_key = node->data;
+	hash_table_insert(cache->hash, hash_key, node);
 
 	if (*value != '\0') {
 		cache->pos_entries++;

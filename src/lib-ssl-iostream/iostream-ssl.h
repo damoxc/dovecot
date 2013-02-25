@@ -5,17 +5,18 @@ struct ssl_iostream;
 struct ssl_iostream_context;
 
 struct ssl_iostream_settings {
+	const char *protocols;
 	const char *cipher_list;
-	const char *ca, *ca_dir;
+	const char *ca, *ca_dir; /* context-only */
 	const char *cert;
 	const char *key;
 	const char *key_password;
 	const char *cert_username_field;
-	const char *crypto_device;
+	const char *crypto_device; /* context-only */
 
-	bool verbose, verbose_invalid_cert;
-	bool verify_remote_cert;
-	bool require_valid_cert;
+	bool verbose, verbose_invalid_cert; /* stream-only */
+	bool verify_remote_cert; /* neither/both */
+	bool require_valid_cert; /* stream-only */
 };
 
 int io_stream_create_ssl(struct ssl_iostream_context *ctx, const char *source,
@@ -24,6 +25,8 @@ int io_stream_create_ssl(struct ssl_iostream_context *ctx, const char *source,
 			 struct ssl_iostream **iostream_r);
 /* returned input and output streams must also be unreferenced */
 void ssl_iostream_unref(struct ssl_iostream **ssl_io);
+/* shutdown SSL connection and unreference ssl iostream */
+void ssl_iostream_destroy(struct ssl_iostream **ssl_io);
 
 int ssl_iostream_handshake(struct ssl_iostream *ssl_io);
 void ssl_iostream_set_handshake_callback(struct ssl_iostream *ssl_io,

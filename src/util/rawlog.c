@@ -1,10 +1,10 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 
 #include "ioloop.h"
 #include "fd-set-nonblock.h"
-#include "network.h"
+#include "net.h"
 #include "str.h"
 #include "write-full.h"
 #include "istream.h"
@@ -130,8 +130,7 @@ static void proxy_write_in(struct rawlog_proxy *proxy,
 			     data, size) < 0) {
 		/* failed, disable logging */
 		i_error("write(in) failed: %m");
-		(void)close(proxy->fd_in);
-		proxy->fd_in = -1;
+		i_close_fd(&proxy->fd_in);
 	}
 }
 
@@ -142,8 +141,7 @@ static void proxy_write_out(struct rawlog_proxy *proxy,
 			     data, size) < 0) {
 		/* failed, disable logging */
 		i_error("write(out) failed: %m");
-		(void)close(proxy->fd_out);
-		proxy->fd_out = -1;
+		i_close_fd(&proxy->fd_out);
 	}
 }
 
@@ -162,7 +160,7 @@ static void server_input(struct rawlog_proxy *proxy)
 
 	ret = net_receive(proxy->server_fd, buf, sizeof(buf));
 	if (ret > 0) {
-		(void)o_stream_send(proxy->client_output, buf, ret);
+		o_stream_nsend(proxy->client_output, buf, ret);
 		proxy_write_out(proxy, buf, ret);
 	} else if (ret <= 0)
 		rawlog_proxy_destroy(proxy);
@@ -183,7 +181,7 @@ static void client_input(struct rawlog_proxy *proxy)
 
 	ret = net_receive(proxy->client_in_fd, buf, sizeof(buf));
 	if (ret > 0) {
-		(void)o_stream_send(proxy->server_output, buf, ret);
+		o_stream_nsend(proxy->server_output, buf, ret);
 		proxy_write_in(proxy, buf, ret);
 	} else if (ret < 0)
 		rawlog_proxy_destroy(proxy);
@@ -247,8 +245,7 @@ static void proxy_open_logs(struct rawlog_proxy *proxy, const char *path)
 		proxy->fd_out = open(fname, O_CREAT|O_EXCL|O_WRONLY, 0600);
 		if (proxy->fd_out == -1) {
 			i_error("rawlog_open: open() failed for %s: %m", fname);
-			(void)close(proxy->fd_in);
-			proxy->fd_in = -1;
+			i_close_fd(&proxy->fd_in);
 			return;
 		}
 	}
@@ -263,13 +260,15 @@ rawlog_proxy_create(int client_in_fd, int client_out_fd, int server_fd,
 	proxy = i_new(struct rawlog_proxy, 1);
 	proxy->server_fd = server_fd;
 	proxy->server_output = o_stream_create_fd(server_fd, (size_t)-1, FALSE);
-	proxy->server_io = io_add(server_fd, IO_READ, server_input, proxy);
+	o_stream_set_no_error_handling(proxy->server_output, TRUE);
 	o_stream_set_flush_callback(proxy->server_output, server_output, proxy);
+	proxy->server_io = io_add(server_fd, IO_READ, server_input, proxy);
 
 	proxy->client_in_fd = client_in_fd;
 	proxy->client_out_fd = client_out_fd;
 	proxy->client_output =
 		o_stream_create_fd(client_out_fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(proxy->client_output, TRUE);
 	proxy->client_io = io_add(proxy->client_in_fd, IO_READ,
 				  client_input, proxy);
 	o_stream_set_flush_callback(proxy->client_output, client_output, proxy);
@@ -334,11 +333,11 @@ static void rawlog_open(enum rawlog_flags flags)
 			i_fatal("dup2(sfd, 0)");
 		if (dup2(sfd[1], 1) < 0)
 			i_fatal("dup2(sfd, 1)");
-		(void)close(sfd[0]);
-		(void)close(sfd[1]);
+		i_close_fd(&sfd[0]);
+		i_close_fd(&sfd[1]);
 		return;
 	}
-	(void)close(sfd[1]);
+	i_close_fd(&sfd[1]);
 
 	restrict_access_by_env(getenv("HOME"), TRUE);
 
@@ -346,7 +345,7 @@ static void rawlog_open(enum rawlog_flags flags)
 					  dec2str(getppid())));
 
 	ioloop = io_loop_create();
-	rawlog_proxy_create(0, 1, sfd[0], path, flags);
+	(void)rawlog_proxy_create(0, 1, sfd[0], path, flags);
 	io_loop_run(ioloop);
 	io_loop_destroy(&ioloop);
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "base64.h"
@@ -36,9 +36,11 @@ message_header_decode_encoded(const unsigned char *data, size_t size,
 	switch (data[start_pos[0]+1]) {
 	case 'q':
 	case 'Q':
-		quoted_printable_q_decode(data + start_pos[1] + 1,
-					  start_pos[2] - start_pos[1] - 1,
-					  decodebuf);
+		if (quoted_printable_q_decode(data + start_pos[1] + 1,
+					      start_pos[2] - start_pos[1] - 1,
+					      decodebuf) < 0) {
+			/* we skipped over some invalid data */
+		}
 		break;
 	case 'b':
 	case 'B':
@@ -135,9 +137,8 @@ void message_header_decode(const unsigned char *data, size_t size,
 
 struct decode_utf8_context {
 	buffer_t *dest;
+	normalizer_func_t *normalizer;
 	unsigned int changed:1;
-	unsigned int called:1;
-	unsigned int dtcase:1;
 };
 
 static bool
@@ -146,19 +147,11 @@ decode_utf8_callback(const unsigned char *data, size_t size,
 {
 	struct decode_utf8_context *ctx = context;
 	struct charset_translation *t;
-	enum charset_flags flags;
-
-	/* one call with charset=NULL means nothing changed */
-	if (!ctx->called && charset == NULL)
-		ctx->called = TRUE;
-	else
-		ctx->changed = TRUE;
 
 	if (charset == NULL || charset_is_utf8(charset)) {
 		/* ASCII / UTF-8 */
-		if (ctx->dtcase) {
-			(void)uni_utf8_to_decomposed_titlecase(data, size,
-							       ctx->dest);
+		if (ctx->normalizer != NULL) {
+			(void)ctx->normalizer(data, size, ctx->dest);
 		} else {
 			if (uni_utf8_get_valid_data(data, size, ctx->dest))
 				buffer_append(ctx->dest, data, size);
@@ -166,8 +159,7 @@ decode_utf8_callback(const unsigned char *data, size_t size,
 		return TRUE;
 	}
 
-	flags = ctx->dtcase ? CHARSET_FLAG_DECOMP_TITLECASE : 0;
-	if (charset_to_utf8_begin(charset, flags, &t) < 0) {
+	if (charset_to_utf8_begin(charset, ctx->normalizer, &t) < 0) {
 		/* data probably still contains some valid ASCII characters.
 		   append them. */
 		if (uni_utf8_get_valid_data(data, size, ctx->dest))
@@ -181,15 +173,13 @@ decode_utf8_callback(const unsigned char *data, size_t size,
 	return TRUE;
 }
 
-bool message_header_decode_utf8(const unsigned char *data, size_t size,
-				buffer_t *dest, bool dtcase)
+void message_header_decode_utf8(const unsigned char *data, size_t size,
+				buffer_t *dest, normalizer_func_t *normalizer)
 {
 	struct decode_utf8_context ctx;
-	size_t used = dest->used;
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.dest = dest;
-	ctx.dtcase = dtcase;
+	ctx.normalizer = normalizer;
 	message_header_decode(data, size, decode_utf8_callback, &ctx);
-	return ctx.changed || (dest->used - used != size);
 }

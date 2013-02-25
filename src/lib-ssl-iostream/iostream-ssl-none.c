@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "iostream-ssl.h"
@@ -15,6 +15,10 @@ int io_stream_create_ssl(struct ssl_iostream_context *ctx ATTR_UNUSED,
 }
 
 void ssl_iostream_unref(struct ssl_iostream **ssl_io ATTR_UNUSED)
+{
+}
+
+void ssl_iostream_destroy(struct ssl_iostream **ssl_io ATTR_UNUSED)
 {
 }
 

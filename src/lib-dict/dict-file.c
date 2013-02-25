@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -9,6 +9,7 @@
 #include "nfs-workarounds.h"
 #include "istream.h"
 #include "ostream.h"
+#include "dict-transaction-memory.h"
 #include "dict-private.h"
 
 #include <stdio.h>
@@ -23,7 +24,7 @@ struct file_dict {
 	enum file_lock_method lock_method;
 
 	char *path;
-	struct hash_table *hash;
+	HASH_TABLE(char *, char *) hash;
 	int fd;
 
 	bool refreshed;
@@ -45,40 +46,18 @@ struct file_dict_iterate_context {
 	unsigned int failed:1;
 };
 
-enum file_dict_change_type {
-	FILE_DICT_CHANGE_TYPE_SET,
-	FILE_DICT_CHANGE_TYPE_UNSET,
-	FILE_DICT_CHANGE_TYPE_INC
-};
-
-struct file_dict_change {
-	enum file_dict_change_type type;
-	const char *key;
-	union {
-		const char *str;
-		long long diff;
-	} value;
-};
-
-struct file_dict_transaction_context {
-	struct dict_transaction_context ctx;
-
-	pool_t pool;
-	ARRAY_DEFINE(changes, struct file_dict_change);
-
-	unsigned int atomic_inc_not_found:1;
-};
-
 static struct dotlock_settings file_dict_dotlock_settings = {
 	.timeout = 60*2,
 	.stale_timeout = 60,
 	.use_io_notify = TRUE
 };
 
-static struct dict *file_dict_init(struct dict *driver, const char *uri,
-				   enum dict_data_type value_type ATTR_UNUSED,
-				   const char *username ATTR_UNUSED,
-				   const char *base_dir ATTR_UNUSED)
+static int
+file_dict_init(struct dict *driver, const char *uri,
+	       enum dict_data_type value_type ATTR_UNUSED,
+	       const char *username ATTR_UNUSED,
+	       const char *base_dir ATTR_UNUSED, struct dict **dict_r,
+	       const char **error_r)
 {
 	struct file_dict *dict;
 	const char *p;
@@ -96,15 +75,19 @@ static struct dict *file_dict_init(struct dict *driver, const char *uri,
 			dict->lock_method = FILE_LOCK_METHOD_FCNTL;
 		else if (strcmp(p, "lock=flock") == 0)
 			dict->lock_method = FILE_LOCK_METHOD_FLOCK;
-		else
-			i_error("dict file: Invalid parameter: %s", p+1);
+		else {
+			*error_r = t_strdup_printf("Invalid parameter: %s", p+1);
+			i_free(dict->path);
+			i_free(dict);
+			return -1;
+		}
 	}
 	dict->dict = *driver;
 	dict->hash_pool = pool_alloconly_create("file dict", 1024);
-	dict->hash = hash_table_create(default_pool, dict->hash_pool, 0,
-				       str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&dict->hash, dict->hash_pool, 0, str_hash, strcmp);
 	dict->fd = -1;
-	return &dict->dict;
+	*dict_r = &dict->dict;
+	return 0;
 }
 
 static void file_dict_deinit(struct dict *_dict)
@@ -263,15 +246,17 @@ static bool file_dict_iterate(struct dict_iterate_context *_ctx,
 	struct file_dict_iterate_context *ctx =
 		(struct file_dict_iterate_context *)_ctx;
 	const struct file_dict_iterate_path *path;
-	void *key, *value;
+	char *key, *value;
 
-	while (hash_table_iterate(ctx->iter, &key, &value)) {
+	while (hash_table_iterate(ctx->iter,
+				  ((struct file_dict *)_ctx->dict)->hash,
+				  &key, &value)) {
 		path = file_dict_iterate_find_path(ctx, key);
 		if (path == NULL)
 			continue;
 
 		if ((ctx->flags & DICT_ITERATE_FLAG_RECURSE) == 0 &&
-		    strchr((char *)key + path->len, '/') != NULL)
+		    strchr(key + path->len, '/') != NULL)
 			continue;
 
 		*key_r = key;
@@ -295,24 +280,23 @@ static int file_dict_iterate_deinit(struct dict_iterate_context *_ctx)
 static struct dict_transaction_context *
 file_dict_transaction_init(struct dict *_dict)
 {
-	struct file_dict_transaction_context *ctx;
+	struct dict_transaction_memory_context *ctx;
 	pool_t pool;
 
 	pool = pool_alloconly_create("file dict transaction", 2048);
-	ctx = p_new(pool, struct file_dict_transaction_context, 1);
-	ctx->ctx.dict = _dict;
-	ctx->pool = pool;
-	p_array_init(&ctx->changes, pool, 32);
+	ctx = p_new(pool, struct dict_transaction_memory_context, 1);
+	dict_transaction_memory_init(ctx, _dict, pool);
 	return &ctx->ctx;
 }
 
-static void file_dict_apply_changes(struct file_dict_transaction_context *ctx)
+static void file_dict_apply_changes(struct dict_transaction_memory_context *ctx,
+				    bool *atomic_inc_not_found_r)
 {
 	struct file_dict *dict = (struct file_dict *)ctx->ctx.dict;
 	const char *tmp;
 	char *key, *value, *old_value;
-	void *orig_key, *orig_value;
-	const struct file_dict_change *change;
+	char *orig_key, *orig_value;
+	const struct dict_transaction_memory_change *change;
 	unsigned int new_len;
 	long long diff;
 
@@ -328,9 +312,9 @@ static void file_dict_apply_changes(struct file_dict_transaction_context *ctx)
 		value = NULL;
 
 		switch (change->type) {
-		case FILE_DICT_CHANGE_TYPE_INC:
+		case DICT_CHANGE_TYPE_INC:
 			if (old_value == NULL) {
-				ctx->atomic_inc_not_found = TRUE;
+				*atomic_inc_not_found_r = TRUE;
 				break;
 			}
 			diff = strtoll(old_value, NULL, 10) +
@@ -344,7 +328,7 @@ static void file_dict_apply_changes(struct file_dict_transaction_context *ctx)
 				value = old_value;
 			}
 			/* fall through */
-		case FILE_DICT_CHANGE_TYPE_SET:
+		case DICT_CHANGE_TYPE_SET:
 			if (key == NULL)
 				key = p_strdup(dict->hash_pool, change->key);
 			if (value == NULL) {
@@ -353,7 +337,19 @@ static void file_dict_apply_changes(struct file_dict_transaction_context *ctx)
 			}
 			hash_table_update(dict->hash, key, value);
 			break;
-		case FILE_DICT_CHANGE_TYPE_UNSET:
+		case DICT_CHANGE_TYPE_APPEND:
+			if (key == NULL)
+				key = p_strdup(dict->hash_pool, change->key);
+			if (old_value == NULL) {
+				value = p_strdup(dict->hash_pool,
+						 change->value.str);
+			} else {
+				value = p_strconcat(dict->hash_pool, old_value,
+						    change->value.str, NULL);
+			}
+			hash_table_update(dict->hash, key, value);
+			break;
+		case DICT_CHANGE_TYPE_UNSET:
 			if (old_value != NULL)
 				hash_table_remove(dict->hash, key);
 			break;
@@ -491,7 +487,8 @@ file_dict_lock(struct file_dict *dict, struct file_lock **lock_r)
 	return ret < 0 ? -1 : 0;
 }
 
-static int file_dict_write_changes(struct file_dict_transaction_context *ctx)
+static int file_dict_write_changes(struct dict_transaction_memory_context *ctx,
+				   bool *atomic_inc_not_found_r)
 {
 	struct file_dict *dict = (struct file_dict *)ctx->ctx.dict;
 	struct dotlock *dotlock = NULL;
@@ -499,8 +496,10 @@ static int file_dict_write_changes(struct file_dict_transaction_context *ctx)
 	const char *temp_path = NULL;
 	struct hash_iterate_context *iter;
 	struct ostream *output;
-	void *key, *value;
+	char *key, *value;
 	int fd = -1;
+
+	*atomic_inc_not_found_r = FALSE;
 
 	switch (dict->lock_method) {
 	case FILE_LOCK_METHOD_FCNTL:
@@ -536,9 +535,9 @@ static int file_dict_write_changes(struct file_dict_transaction_context *ctx)
 	/* refresh once more now that we're locked */
 	if (file_dict_refresh(dict) < 0) {
 		if (dotlock != NULL)
-			(void)file_dotlock_delete(&dotlock);
+			file_dotlock_delete(&dotlock);
 		else {
-			(void)close(fd);
+			i_close_fd(&fd);
 			file_unlock(&lock);
 		}
 		return -1;
@@ -550,24 +549,23 @@ static int file_dict_write_changes(struct file_dict_transaction_context *ctx)
 		/* get initial permissions from parent directory */
 		(void)fd_copy_parent_dir_permissions(dict->path, fd, temp_path);
 	}
-	file_dict_apply_changes(ctx);
+	file_dict_apply_changes(ctx, atomic_inc_not_found_r);
 
 	output = o_stream_create_fd(fd, 0, FALSE);
 	o_stream_cork(output);
 	iter = hash_table_iterate_init(dict->hash);
-	while (hash_table_iterate(iter, &key, &value)) {
-		(void)o_stream_send_str(output, key);
-		(void)o_stream_send(output, "\n", 1);
-		(void)o_stream_send_str(output, value);
-		(void)o_stream_send(output, "\n", 1);
+	while (hash_table_iterate(iter, dict->hash, &key, &value)) {
+		o_stream_nsend_str(output, key);
+		o_stream_nsend(output, "\n", 1);
+		o_stream_nsend_str(output, value);
+		o_stream_nsend(output, "\n", 1);
 	}
-	o_stream_uncork(output);
 	hash_table_iterate_deinit(&iter);
 
-	if (output->stream_errno != 0) {
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", temp_path);
 		o_stream_destroy(&output);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	o_stream_destroy(&output);
@@ -575,7 +573,7 @@ static int file_dict_write_changes(struct file_dict_transaction_context *ctx)
 	if (dotlock != NULL) {
 		if (file_dotlock_replace(&dotlock,
 				DOTLOCK_REPLACE_FLAG_DONT_CLOSE_FD) < 0) {
-			(void)close(fd);
+			i_close_fd(&fd);
 			return -1;
 		}
 	} else {
@@ -583,14 +581,14 @@ static int file_dict_write_changes(struct file_dict_transaction_context *ctx)
 			i_error("rename(%s, %s) failed: %m",
 				temp_path, dict->path);
 			file_unlock(&lock);
-			(void)close(fd);
+			i_close_fd(&fd);
 			return -1;
 		}
 		file_lock_free(&lock);
 	}
 
 	if (dict->fd != -1)
-		(void)close(dict->fd);
+		i_close_fd(&dict->fd);
 	dict->fd = fd;
 	return 0;
 }
@@ -601,13 +599,14 @@ file_dict_transaction_commit(struct dict_transaction_context *_ctx,
 			     dict_transaction_commit_callback_t *callback,
 			     void *context)
 {
-	struct file_dict_transaction_context *ctx =
-		(struct file_dict_transaction_context *)_ctx;
+	struct dict_transaction_memory_context *ctx =
+		(struct dict_transaction_memory_context *)_ctx;
+	bool atomic_inc_not_found;
 	int ret;
 
-	if (file_dict_write_changes(ctx) < 0)
+	if (file_dict_write_changes(ctx, &atomic_inc_not_found) < 0)
 		ret = -1;
-	else if (ctx->atomic_inc_not_found)
+	else if (atomic_inc_not_found)
 		ret = 0;
 	else
 		ret = 1;
@@ -616,53 +615,6 @@ file_dict_transaction_commit(struct dict_transaction_context *_ctx,
 	if (callback != NULL)
 		callback(ret, context);
 	return ret;
-}
-
-static void file_dict_transaction_rollback(struct dict_transaction_context *_ctx)
-{
-	struct file_dict_transaction_context *ctx =
-		(struct file_dict_transaction_context *)_ctx;
-
-	pool_unref(&ctx->pool);
-}
-
-static void file_dict_set(struct dict_transaction_context *_ctx,
-			  const char *key, const char *value)
-{
-	struct file_dict_transaction_context *ctx =
-		(struct file_dict_transaction_context *)_ctx;
-	struct file_dict_change *change;
-
-	change = array_append_space(&ctx->changes);
-	change->type = FILE_DICT_CHANGE_TYPE_SET;
-	change->key = p_strdup(ctx->pool, key);
-	change->value.str = p_strdup(ctx->pool, value);
-}
-
-static void file_dict_unset(struct dict_transaction_context *_ctx,
-			    const char *key)
-{
-	struct file_dict_transaction_context *ctx =
-		(struct file_dict_transaction_context *)_ctx;
-	struct file_dict_change *change;
-
-	change = array_append_space(&ctx->changes);
-	change->type = FILE_DICT_CHANGE_TYPE_UNSET;
-	change->key = p_strdup(ctx->pool, key);
-}
-
-static void
-file_dict_atomic_inc(struct dict_transaction_context *_ctx,
-		     const char *key, long long diff)
-{
-	struct file_dict_transaction_context *ctx =
-		(struct file_dict_transaction_context *)_ctx;
-	struct file_dict_change *change;
-
-	change = array_append_space(&ctx->changes);
-	change->type = FILE_DICT_CHANGE_TYPE_INC;
-	change->key = p_strdup(ctx->pool, key);
-	change->value.diff = diff;
 }
 
 struct dict dict_driver_file = {
@@ -677,9 +629,10 @@ struct dict dict_driver_file = {
 		file_dict_iterate_deinit,
 		file_dict_transaction_init,
 		file_dict_transaction_commit,
-		file_dict_transaction_rollback,
-		file_dict_set,
-		file_dict_unset,
-		file_dict_atomic_inc
+		dict_transaction_memory_rollback,
+		dict_transaction_memory_set,
+		dict_transaction_memory_unset,
+		dict_transaction_memory_append,
+		dict_transaction_memory_atomic_inc
 	}
 };

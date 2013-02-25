@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -16,7 +16,7 @@ static void sdbox_mail_set_expunged(struct dbox_mail *mail)
 {
 	struct mail *_mail = &mail->imail.mail.mail;
 
-	(void)mail_index_refresh(_mail->box->index);
+	mail_index_refresh(_mail->box->index);
 	if (mail_index_is_expunged(_mail->transaction->view, _mail->seq)) {
 		mail_set_expunged(_mail);
 		return;
@@ -58,6 +58,32 @@ static int sdbox_mail_file_set(struct dbox_mail *mail)
 			return -1;
 		}
 		return 1;
+	}
+}
+
+static int
+sdbox_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
+		       const char **value_r)
+{
+	struct dbox_mail *mail = (struct dbox_mail *)_mail;
+	struct stat st;
+
+	switch (field) {
+	case MAIL_FETCH_REFCOUNT:
+		if (sdbox_mail_file_set(mail) < 0)
+			return -1;
+
+		_mail->transaction->stats.fstat_lookup_count++;
+		if (dbox_file_stat(mail->open_file, &st) < 0) {
+			if (errno == ENOENT)
+				mail_set_expunged(_mail);
+			return -1;
+		}
+		*value_r = p_strdup_printf(mail->imail.mail.data_pool, "%lu",
+					   (unsigned long)st.st_nlink);
+		return 0;
+	default:
+		return dbox_mail_get_special(_mail, field, value_r);
 	}
 }
 
@@ -106,6 +132,7 @@ struct mail_vfuncs sdbox_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	dbox_mail_get_received_date,
@@ -116,11 +143,13 @@ struct mail_vfuncs sdbox_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	dbox_mail_get_stream,
-	dbox_mail_get_special,
+	index_mail_get_binary_stream,
+	sdbox_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
 	index_mail_set_cache_corrupted,

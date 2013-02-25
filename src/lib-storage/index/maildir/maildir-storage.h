@@ -5,7 +5,6 @@
 
 #define MAILDIR_STORAGE_NAME "maildir"
 #define MAILDIR_SUBSCRIPTION_FILE_NAME "subscriptions"
-#define MAILDIR_INDEX_PREFIX "dovecot.index"
 #define MAILDIR_UIDVALIDITY_FNAME "dovecot-uidvalidity"
 
 /* "base,S=123:2," means:
@@ -101,16 +100,11 @@ typedef int maildir_file_do_func(struct maildir_mailbox *mbox,
 
 int maildir_file_do(struct maildir_mailbox *mbox, uint32_t uid,
 		    maildir_file_do_func *callback, void *context);
-#ifdef CONTEXT_TYPE_SAFETY
-#  define maildir_file_do(mbox, seq, callback, context) \
-	({(void)(1 ? 0 : callback((struct maildir_mailbox *)NULL, \
-				  (const char *)NULL, context)); \
-	  maildir_file_do(mbox, seq, \
-		(maildir_file_do_func *)callback, context); })
-#else
-#  define maildir_file_do(mbox, seq, callback, context) \
-	maildir_file_do(mbox, seq, (maildir_file_do_func *)callback, context)
-#endif
+#define maildir_file_do(mbox, seq, callback, context) \
+	maildir_file_do(mbox, seq + \
+		CALLBACK_TYPECHECK(callback, int (*)( \
+			struct maildir_mailbox *, const char *, typeof(context))), \
+		(maildir_file_do_func *)callback, context)
 
 bool maildir_set_deleted(struct mailbox *box);
 uint32_t maildir_get_uidvalidity_next(struct mailbox_list *list);
@@ -126,7 +120,7 @@ void maildir_save_cancel(struct mail_save_context *ctx);
 
 struct maildir_filename *
 maildir_save_add(struct mail_save_context *_ctx, const char *tmp_fname,
-		 struct mail *src_mail);
+		 struct mail *src_mail) ATTR_NULL(3);
 void maildir_save_set_dest_basename(struct mail_save_context *ctx,
 				    struct maildir_filename *mf,
 				    const char *basename);

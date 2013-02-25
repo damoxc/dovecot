@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -31,9 +31,9 @@ static void auth_server_send_new_request(struct auth_server_connection *conn,
 
 	str = t_str_new(512);
 	str_printfa(str, "AUTH\t%u\t", request->id);
-	str_tabescape_write(str, info->mech);
+	str_append_tabescaped(str, info->mech);
 	str_append(str, "\tservice=");
-	str_tabescape_write(str, info->service);
+	str_append_tabescaped(str, info->service);
 
 	if ((info->flags & AUTH_REQUEST_FLAG_SUPPORT_FINAL_RESP) != 0)
 		str_append(str, "\tfinal-resp-ok");
@@ -46,11 +46,11 @@ static void auth_server_send_new_request(struct auth_server_connection *conn,
 
 	if (info->session_id != NULL) {
 		str_append(str, "\tsession=");
-		str_tabescape_write(str, info->session_id);
+		str_append_tabescaped(str, info->session_id);
 	}
 	if (info->cert_username != NULL) {
 		str_append(str, "\tcert_username=");
-		str_tabescape_write(str, info->cert_username);
+		str_append_tabescaped(str, info->cert_username);
 	}
 	if (info->local_ip.family != 0)
 		str_printfa(str, "\tlip=%s", net_ip2addr(&info->local_ip));
@@ -60,9 +60,29 @@ static void auth_server_send_new_request(struct auth_server_connection *conn,
 		str_printfa(str, "\tlport=%u", info->local_port);
 	if (info->remote_port != 0)
 		str_printfa(str, "\trport=%u", info->remote_port);
+
+	/* send the real_* variants only when they differ from the unreal
+	   ones */
+	if (info->real_local_ip.family != 0 &&
+	    !net_ip_compare(&info->real_local_ip, &info->local_ip)) {
+		str_printfa(str, "\treal_lip=%s",
+			    net_ip2addr(&info->real_local_ip));
+	}
+	if (info->real_remote_ip.family != 0 &&
+	    !net_ip_compare(&info->real_remote_ip, &info->remote_ip)) {
+		str_printfa(str, "\treal_rip=%s",
+			    net_ip2addr(&info->real_remote_ip));
+	}
+	if (info->real_local_port != 0 &&
+	    info->real_local_port != info->local_port)
+		str_printfa(str, "\treal_lport=%u", info->real_local_port);
+	if (info->real_remote_port != 0 &&
+	    info->real_remote_port != info->remote_port)
+		str_printfa(str, "\treal_rport=%u", info->real_remote_port);
+
 	if (info->initial_resp_base64 != NULL) {
 		str_append(str, "\tresp=");
-		str_tabescape_write(str, info->initial_resp_base64);
+		str_append_tabescaped(str, info->initial_resp_base64);
 	}
 	str_append_c(str, '\n');
 
@@ -124,10 +144,11 @@ void auth_client_request_continue(struct auth_client_request *request,
 		i_error("Error sending continue request to auth server: %m");
 }
 
-static void call_callback(struct auth_client_request *request,
-			  enum auth_request_status status,
-			  const char *data_base64,
-			  const char *const *args)
+static void ATTR_NULL(3, 4)
+call_callback(struct auth_client_request *request,
+	      enum auth_request_status status,
+	      const char *data_base64,
+	      const char *const *args)
 {
 	auth_request_callback_t *callback = request->callback;
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* CRAM-MD5 SASL authentication, see RFC-2195
    Joshua Goodall <joshua@roughtrade.net> */
@@ -7,7 +7,9 @@
 #include "ioloop.h"
 #include "buffer.h"
 #include "hex-binary.h"
-#include "hmac-md5.h"
+#include "hmac-cram-md5.h"
+#include "hmac.h"
+#include "md5.h"
 #include "randgen.h"
 #include "mech.h"
 #include "passdb.h"
@@ -50,7 +52,7 @@ static bool verify_credentials(struct cram_auth_request *request,
 {
 	
 	unsigned char digest[MD5_RESULTLEN];
-        struct hmac_md5_context ctx;
+        struct hmac_context ctx;
 	const char *response_hex;
 
 	if (size != CRAM_MD5_CONTEXTLEN) {
@@ -59,9 +61,10 @@ static bool verify_credentials(struct cram_auth_request *request,
 		return FALSE;
 	}
 
+	hmac_init(&ctx, NULL, 0, &hash_method_md5);
 	hmac_md5_set_cram_context(&ctx, credentials);
-	hmac_md5_update(&ctx, request->challenge, strlen(request->challenge));
-	hmac_md5_final(&ctx, digest);
+	hmac_update(&ctx, request->challenge, strlen(request->challenge));
+	hmac_final(&ctx, digest);
 
 	response_hex = binary_to_hex(digest, sizeof(digest));
 
@@ -115,7 +118,7 @@ static void credentials_callback(enum passdb_result result,
 	switch (result) {
 	case PASSDB_RESULT_OK:
 		if (verify_credentials(request, credentials, size))
-			auth_request_success(auth_request, NULL, 0);
+			auth_request_success(auth_request, "", 0);
 		else
 			auth_request_fail(auth_request);
 		break;

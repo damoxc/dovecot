@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "str.h"
@@ -48,9 +48,9 @@ static void test_base64_decode(void)
 		"aGVs!!!!!"
 	};
 	static const struct test_base64_decode_output output[] = {
-		{ "hello world", 0, -1U },
-		{ "foo barits", 0, -1U },
-		{ "just niin", 1, -1U },
+		{ "hello world", 0, UINT_MAX },
+		{ "foo barits", 0, UINT_MAX },
+		{ "just niin", 1, UINT_MAX },
 		{ "hel", 1, 4 },
 		{ "hel", -1, 4 },
 		{ "hel", -1, 4 }
@@ -71,7 +71,7 @@ static void test_base64_decode(void)
 		test_assert(output[i].ret == ret &&
 			    strcmp(output[i].text, str_c(str)) == 0 &&
 			    (src_pos == output[i].src_pos ||
-			     (output[i].src_pos == -1U &&
+			     (output[i].src_pos == UINT_MAX &&
 			      src_pos == strlen(input[i]))));
 	}
 	test_end();
@@ -95,7 +95,7 @@ static void test_base64_random(void)
 		str_truncate(str, 0);
 		str_truncate(dest, 0);
 		base64_encode(buf, max, str);
-		base64_decode(str_data(str), str_len(str), NULL, dest);
+		test_assert(base64_decode(str_data(str), str_len(str), NULL, dest) >= 0);
 		test_assert(str_len(dest) == max &&
 			    memcmp(buf, str_data(dest), max) == 0);
 	}

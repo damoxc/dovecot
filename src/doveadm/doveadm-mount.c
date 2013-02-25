@@ -1,6 +1,7 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
+#include "master-service-settings.h"
 #include "mountpoint-list.h"
 #include "doveadm.h"
 #include "doveadm-print.h"
@@ -13,8 +14,9 @@ static struct mountpoint_list *mountpoint_list_get(void)
 {
 	const char *perm_path, *state_path;
 
-	perm_path = t_strconcat(PKG_STATEDIR"/"MOUNTPOINT_LIST_FNAME, NULL);
-	state_path = t_strconcat(doveadm_settings->base_dir,
+	perm_path = t_strconcat(service_set->state_dir,
+				 "/"MOUNTPOINT_LIST_FNAME, NULL);
+	state_path = t_strconcat(service_set->base_dir,
 				 "/"MOUNTPOINT_LIST_FNAME, NULL);
 	return mountpoint_list_init(perm_path, state_path);
 }
@@ -71,13 +73,14 @@ static void cmd_mount_add(int argc, char *argv[])
 {
 	struct mountpoint_list *mountpoints;
 	struct mountpoint_list_rec rec;
+	int ret = 0;
 
 	if (argc > 3)
 		mount_cmd_help(cmd_mount_add);
 
 	mountpoints = mountpoint_list_get();
 	if (argv[1] == NULL) {
-		mountpoint_list_add_missing(mountpoints,
+		ret = mountpoint_list_add_missing(mountpoints,
 			MOUNTPOINT_STATE_DEFAULT,
 			mountpoint_list_default_ignore_prefixes,
 			mountpoint_list_default_ignore_types);
@@ -91,8 +94,11 @@ static void cmd_mount_add(int argc, char *argv[])
 			rec.wildcard = TRUE;
 		mountpoint_list_add(mountpoints, &rec);
 	}
-	(void)mountpoint_list_save(mountpoints);
+	if (mountpoint_list_save(mountpoints) < 0)
+		ret = -1;
 	mountpoint_list_deinit(&mountpoints);
+	if (ret < 0)
+		doveadm_exit_code = EX_TEMPFAIL;
 }
 
 static void cmd_mount_remove(int argc, char *argv[])

@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -46,7 +46,7 @@ struct fts_expunge_log_append_ctx {
 	struct fts_expunge_log *log;
 	pool_t pool;
 
-	struct hash_table *mailboxes;
+	HASH_TABLE(uint8_t *, struct fts_expunge_log_mailbox *) mailboxes;
 	struct fts_expunge_log_mailbox *prev_mailbox;
 
 	bool failed;
@@ -99,7 +99,7 @@ static int fts_expunge_log_open(struct fts_expunge_log *log, bool create)
 	}
 	if (fstat(fd, &log->st) < 0) {
 		i_error("fstat(%s) failed: %m", log->path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 	log->fd = fd;
@@ -177,9 +177,7 @@ fts_expunge_log_append_begin(struct fts_expunge_log *log)
 	ctx = p_new(pool, struct fts_expunge_log_append_ctx, 1);
 	ctx->log = log;
 	ctx->pool = pool;
-	ctx->mailboxes =
-		hash_table_create(default_pool, pool, 0,
-				  guid_128_hash, guid_128_cmp);
+	hash_table_create(&ctx->mailboxes, pool, 0, guid_128_hash, guid_128_cmp);
 
 	if (fts_expunge_log_reopen_if_needed(log, TRUE) < 0)
 		ctx->failed = TRUE;
@@ -190,12 +188,15 @@ static struct fts_expunge_log_mailbox *
 fts_expunge_log_mailbox_alloc(struct fts_expunge_log_append_ctx *ctx,
 			      const guid_128_t mailbox_guid)
 {
+	uint8_t *guid_p;
 	struct fts_expunge_log_mailbox *mailbox;
 
 	mailbox = p_new(ctx->pool, struct fts_expunge_log_mailbox, 1);
 	memcpy(mailbox->guid, mailbox_guid, sizeof(mailbox->guid));
 	p_array_init(&mailbox->uids, ctx->pool, 16);
-	hash_table_insert(ctx->mailboxes, mailbox->guid, mailbox);
+
+	guid_p = mailbox->guid;
+	hash_table_insert(ctx->mailboxes, guid_p, mailbox);
 	return mailbox;
 }
 
@@ -203,18 +204,19 @@ void fts_expunge_log_append_next(struct fts_expunge_log_append_ctx *ctx,
 				 const guid_128_t mailbox_guid,
 				 uint32_t uid)
 {
+	const uint8_t *guid_p = mailbox_guid;
 	struct fts_expunge_log_mailbox *mailbox;
 
 	if (ctx->prev_mailbox != NULL &&
 	    memcmp(mailbox_guid, ctx->prev_mailbox->guid, GUID_128_SIZE) == 0)
 		mailbox = ctx->prev_mailbox;
 	else {
-		mailbox = hash_table_lookup(ctx->mailboxes, mailbox_guid);
+		mailbox = hash_table_lookup(ctx->mailboxes, guid_p);
 		if (mailbox == NULL)
 			mailbox = fts_expunge_log_mailbox_alloc(ctx, mailbox_guid);
 		ctx->prev_mailbox = mailbox;
 	}
-	if (!seq_range_array_add(&mailbox->uids, 0, uid))
+	if (!seq_range_array_add(&mailbox->uids, uid))
 		mailbox->uids_count++;
 }
 
@@ -223,14 +225,13 @@ fts_expunge_log_export(struct fts_expunge_log_append_ctx *ctx,
 		       uint32_t expunge_count, buffer_t *output)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	uint8_t *guid_p;
+	struct fts_expunge_log_mailbox *mailbox;
 	struct fts_expunge_log_record *rec;
 	size_t rec_offset;
 
 	iter = hash_table_iterate_init(ctx->mailboxes);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct fts_expunge_log_mailbox *mailbox = value;
-
+	while (hash_table_iterate(iter, ctx->mailboxes, &guid_p, &mailbox)) {
 		rec_offset = output->used;
 		rec = buffer_append_space_unsafe(output, sizeof(*rec));
 		memcpy(rec->guid, mailbox->guid, sizeof(rec->guid));
@@ -368,7 +369,7 @@ fts_expunge_log_read_failure(struct fts_expunge_log_read_ctx *ctx,
 		ctx->failed = TRUE;
 		i_error("read(%s) failed: %m", ctx->log->path);
 	} else {
-		(void)i_stream_get_data(ctx->input, &size);
+		size = i_stream_get_data_size(ctx->input);
 		ctx->corrupted = TRUE;
 		i_error("Corrupted fts expunge log %s: "
 			"Unexpected EOF (read %"PRIuSIZE_T" / %u bytes)",
@@ -443,7 +444,7 @@ fts_expunge_log_read_next(struct fts_expunge_log_read_ctx *ctx)
 	       sizeof(ctx->read_rec.mailbox_guid));
 	/* create the UIDs array by pointing it directly into input
 	   stream's buffer */
-	buffer_create_const_data(&ctx->buffer, rec + 1, uids_size);
+	buffer_create_from_const_data(&ctx->buffer, rec + 1, uids_size);
 	array_create_from_buffer(&ctx->read_rec.uids, &ctx->buffer,
 				 sizeof(struct seq_range));
 

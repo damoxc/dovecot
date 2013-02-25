@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -203,7 +203,6 @@ fts_mailbox_search_init(struct mailbox_transaction_context *t,
 static bool fts_mailbox_build_continue(struct mail_search_context *ctx)
 {
 	struct fts_search_context *fctx = FTS_CONTEXT(ctx);
-	enum mail_error error;
 	int ret;
 
 	ret = fts_indexer_more(fctx->indexer_ctx);
@@ -224,8 +223,8 @@ static bool fts_mailbox_build_continue(struct mail_search_context *ctx)
 
 		   if indexing failed for any other reason, just
 		   fallback to searching the slow way. */
-		(void)mailbox_get_last_error(fctx->box, &error);
-		fctx->indexing_timed_out = error == MAIL_ERROR_INUSE;
+		fctx->indexing_timed_out =
+			mailbox_get_last_mail_error(fctx->box) == MAIL_ERROR_INUSE;
 	}
 	return TRUE;
 }
@@ -356,8 +355,9 @@ static int fts_mail_get_special(struct mail *_mail, enum mail_fetch_field field,
 	}
 	if (scores != NULL) {
 		i_assert(scores->uid == _mail->uid);
-		i_snprintf(fmail->score, sizeof(fmail->score),
-			   "%f", scores->score);
+		(void)i_snprintf(fmail->score, sizeof(fmail->score),
+				 "%f", scores->score);
+			
 		*value_r = fmail->score;
 		return 0;
 	}
@@ -643,9 +643,7 @@ void fts_mailbox_list_created(struct mailbox_list *list)
 		return;
 	}
 
-	path = mailbox_list_get_path(list, NULL,
-				     MAILBOX_LIST_PATH_TYPE_INDEX);
-	if (*path == '\0') {
+	if (!mailbox_list_get_root_path(list, MAILBOX_LIST_PATH_TYPE_INDEX, &path)) {
 		if (list->mail_set->mail_debug) {
 			i_debug("fts: Indexes disabled for namespace '%s'",
 				list->ns->prefix);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -73,7 +73,7 @@ pop3c_client_create_from_set(struct mail_user *user,
 	client_set.rawlog_dir =
 		mail_user_home_expand(user, set->pop3c_rawlog_dir);
 
-	client_set.ssl_ca_dir = set->pop3c_ssl_ca_dir;
+	client_set.ssl_ca_dir = set->ssl_client_ca_dir;
 	client_set.ssl_verify = set->pop3c_ssl_verify;
 	if (strcmp(set->pop3c_ssl, "pop3s") == 0)
 		client_set.ssl_mode = POP3C_CLIENT_SSL_MODE_IMMEDIATE;
@@ -117,8 +117,7 @@ pop3c_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.mail_vfuncs = &pop3c_mail_vfuncs;
 	mbox->storage = (struct pop3c_storage *)storage;
 
-	index_storage_mailbox_alloc(&mbox->box, vname, flags,
-				    POP3C_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 	return &mbox->box;
 }
 
@@ -229,7 +228,7 @@ struct mail_storage pop3c_storage = {
 		pop3c_get_setting_parser_info,
 		pop3c_storage_alloc,
 		pop3c_storage_create,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		pop3c_storage_get_list_settings,
 		NULL,
@@ -253,6 +252,11 @@ struct mailbox pop3c_mailbox = {
 		index_storage_get_status,
 		index_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		pop3c_storage_sync_init,

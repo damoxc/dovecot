@@ -14,8 +14,11 @@ base_sources = \
 	dict.c \
 	dict-client.c \
 	dict-file.c \
+	dict-cdb.c \
 	dict-memcached.c \
-	dict-redis.c
+	dict-memcached-ascii.c \
+	dict-redis.c \
+	dict-transaction-memory.c
 
 libdict_la_SOURCES = \
 	$(base_sources)
@@ -33,7 +36,8 @@ headers = \
 	dict-client.h \
 	dict-private.h \
 	dict-sql.h \
-	dict-sql-settings.h
+	dict-sql-settings.h \
+	dict-transaction-memory.h
 
 pkginc_libdir=$(pkgincludedir)
 pkginc_lib_HEADERS = $(headers)
@@ -82,7 +86,7 @@ test_libs = \
 
 test_dict_SOURCES = test-dict.c
 test_dict_LDADD = dict.lo $(test_libs)
-test_dict_DEPENDENCIES = dict.lo $(test_libs)
+test_dict_DEPENDENCIES = $(noinst_LTLIBRARIES) $(test_libs)
 
 check: check-am check-test
 check-test: all-am

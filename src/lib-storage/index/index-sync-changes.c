@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -10,7 +10,7 @@ struct index_sync_changes_context {
 	struct mail_index_view *sync_view;
 	struct mail_index_transaction *sync_trans;
 
-	ARRAY_DEFINE(syncs, struct mail_index_sync_rec);
+	ARRAY(struct mail_index_sync_rec) syncs;
 	struct mail_index_sync_rec sync_rec;
 	bool dirty_flag_updates;
 };
@@ -101,8 +101,7 @@ void index_sync_changes_read(struct index_sync_changes_context *ctx,
 	orig_count = array_count(&ctx->syncs);
 
 	while (uid >= sync_rec->uid1) {
-		if (uid <= sync_rec->uid2 &&
-		    sync_rec->type != MAIL_INDEX_SYNC_TYPE_APPEND) {
+		if (uid <= sync_rec->uid2) {
 			array_append(&ctx->syncs, sync_rec, 1);
 
 			if (sync_rec->type == MAIL_INDEX_SYNC_TYPE_EXPUNGE) {
@@ -118,24 +117,19 @@ void index_sync_changes_read(struct index_sync_changes_context *ctx,
 		}
 
 		switch (sync_rec->type) {
-		case MAIL_INDEX_SYNC_TYPE_APPEND:
-			/* ignore */
-			memset(sync_rec, 0, sizeof(*sync_rec));
-			break;
 		case MAIL_INDEX_SYNC_TYPE_EXPUNGE:
 			break;
 		case MAIL_INDEX_SYNC_TYPE_FLAGS:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE:
-		case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
 			if (!ctx->dirty_flag_updates)
 				break;
 
 			/* mark the changes as dirty */
-			mail_index_lookup_seq_range(ctx->sync_view,
-						    sync_rec->uid1,
-						    sync_rec->uid2,
-						    &seq1, &seq2);
+			(void)mail_index_lookup_seq_range(ctx->sync_view,
+							  sync_rec->uid1,
+							  sync_rec->uid2,
+							  &seq1, &seq2);
 			memset(sync_rec, 0, sizeof(*sync_rec));
 
 			if (seq1 == 0)
@@ -184,7 +178,6 @@ void index_sync_changes_apply(struct index_sync_changes_context *ctx,
 			break;
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE:
-		case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
 			if (!array_is_created(keywords)) {
 				/* no existing keywords */
 				if (syncs[i].type !=

@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -9,7 +9,7 @@
 
 struct expire_set {
 	pool_t pool;
-	ARRAY_DEFINE(globs, struct imap_match_glob *);
+	ARRAY(struct imap_match_glob *) globs;
 };
 
 struct expire_set *expire_set_init(const char *const *patterns)

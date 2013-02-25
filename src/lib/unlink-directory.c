@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /*
    There's a bit tricky race condition with recursive deletion.
@@ -33,7 +33,6 @@
 #define _GNU_SOURCE /* for O_NOFOLLOW with Linux */
 
 #include "lib.h"
-#include "close-keep-errno.h"
 #include "unlink-directory.h"
 
 #include <fcntl.h>
@@ -41,7 +40,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-static int unlink_directory_r(const char *dir)
+static int
+unlink_directory_r(const char *dir, enum unlink_directory_flags flags)
 {
 	DIR *dirp;
 	struct dirent *d;
@@ -73,36 +73,39 @@ static int unlink_directory_r(const char *dir)
 		return -1;
 
 	if (fstat(dir_fd, &st2) < 0) {
-		close_keep_errno(dir_fd);
+		i_close_fd(&dir_fd);
 		return -1;
 	}
 
 	if (st.st_ino != st2.st_ino ||
 	    !CMP_DEV_T(st.st_dev, st2.st_dev)) {
 		/* directory was just replaced with something else. */
-		(void)close(dir_fd);
+		i_close_fd(&dir_fd);
 		errno = ENOTDIR;
 		return -1;
 	}
 #endif
 	if (fchdir(dir_fd) < 0) {
-                close_keep_errno(dir_fd);
+                i_close_fd(&dir_fd);
 		return -1;
 	}
 
 	dirp = opendir(".");
 	if (dirp == NULL) {
-		close_keep_errno(dir_fd);
+		i_close_fd(&dir_fd);
 		return -1;
 	}
 
 	errno = 0;
 	while ((d = readdir(dirp)) != NULL) {
-		if (d->d_name[0] == '.' &&
-		    (d->d_name[1] == '\0' ||
-		     (d->d_name[1] == '.' && d->d_name[2] == '\0'))) {
-			/* skip . and .. */
-			continue;
+		if (d->d_name[0] == '.') {
+			if ((d->d_name[1] == '\0' ||
+			     (d->d_name[1] == '.' && d->d_name[2] == '\0'))) {
+				/* skip . and .. */
+				continue;
+			}
+			if ((flags & UNLINK_DIRECTORY_FLAG_SKIP_DOTFILES) != 0)
+				continue;
 		}
 
 		if (unlink(d->d_name) < 0 && errno != ENOENT) {
@@ -112,8 +115,9 @@ static int unlink_directory_r(const char *dir)
 				if (errno != ENOENT)
 					break;
 				errno = 0;
-			} else if (S_ISDIR(st.st_mode)) {
-				if (unlink_directory_r(d->d_name) < 0) {
+			} else if (S_ISDIR(st.st_mode) &&
+				   (flags & UNLINK_DIRECTORY_FLAG_FILES_ONLY) == 0) {
+				if (unlink_directory_r(d->d_name, flags) < 0) {
 					if (errno != ENOENT)
 						break;
 					errno = 0;
@@ -131,6 +135,9 @@ static int unlink_directory_r(const char *dir)
 					}
 					errno = 0;
 				}
+			} else if (S_ISDIR(st.st_mode) &&
+				   (flags & UNLINK_DIRECTORY_FLAG_FILES_ONLY) != 0) {
+				/* skip directory */
 			} else if (old_errno == EBUSY &&
 				   strncmp(d->d_name, ".nfs", 4) == 0) {
 				/* can't delete NFS files that are still
@@ -148,7 +155,7 @@ static int unlink_directory_r(const char *dir)
 	}
 	old_errno = errno;
 
-	(void)close(dir_fd);
+	i_close_fd(&dir_fd);
 	if (closedir(dirp) < 0)
 		return -1;
 
@@ -160,7 +167,7 @@ static int unlink_directory_r(const char *dir)
 	return 0;
 }
 
-int unlink_directory(const char *dir, bool unlink_dir)
+int unlink_directory(const char *dir, enum unlink_directory_flags flags)
 {
 	int fd, ret, old_errno;
 
@@ -168,7 +175,7 @@ int unlink_directory(const char *dir, bool unlink_dir)
 	if (fd == -1)
 		return -1;
 
-	ret = unlink_directory_r(dir);
+	ret = unlink_directory_r(dir, flags);
 	if (ret < 0 && errno == ENOENT)
 		ret = 0;
 	old_errno = errno;
@@ -177,14 +184,14 @@ int unlink_directory(const char *dir, bool unlink_dir)
 		i_fatal("unlink_directory(%s): "
 			"Can't fchdir() back to our original dir: %m", dir);
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 
 	if (ret < 0) {
 		errno = old_errno;
 		return -1;
 	}
 
-	if (unlink_dir) {
+	if ((flags & UNLINK_DIRECTORY_FLAG_RMDIR) != 0) {
 		if (rmdir(dir) < 0 && errno != ENOENT) {
 			if (errno == EEXIST) {
 				/* standardize errno */
@@ -193,6 +200,5 @@ int unlink_directory(const char *dir, bool unlink_dir)
 			return -1;
 		}
 	}
-
 	return 0;
 }

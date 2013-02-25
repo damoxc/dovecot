@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -21,13 +21,9 @@ struct mail_index_sync_ctx {
 	const struct mail_transaction_header *hdr;
 	const void *data;
 
-	ARRAY_DEFINE(sync_list, struct mail_index_sync_list);
+	ARRAY(struct mail_index_sync_list) sync_list;
 	uint32_t next_uid;
 	uint32_t last_tail_seq, last_tail_offset;
-
-	uint32_t append_uid_first, append_uid_last;
-
-	unsigned int sync_appends:1;
 };
 
 static void mail_index_sync_add_expunge(struct mail_index_sync_ctx *ctx)
@@ -123,20 +119,6 @@ static void mail_index_sync_add_keyword_reset(struct mail_index_sync_ctx *ctx)
 	mail_index_keywords_unref(&keywords);
 }
 
-static void mail_index_sync_add_append(struct mail_index_sync_ctx *ctx)
-{
-	const struct mail_index_record *rec = ctx->data;
-
-	if (ctx->append_uid_first == 0 || rec->uid < ctx->append_uid_first)
-		ctx->append_uid_first = rec->uid;
-
-	rec = CONST_PTR_OFFSET(ctx->data, ctx->hdr->size - sizeof(*rec));
-	if (rec->uid > ctx->append_uid_last)
-		ctx->append_uid_last = rec->uid;
-
-	ctx->sync_appends = TRUE;
-}
-
 static bool mail_index_sync_add_transaction(struct mail_index_sync_ctx *ctx)
 {
 	switch (ctx->hdr->type & MAIL_TRANSACTION_TYPE_MASK) {
@@ -154,9 +136,6 @@ static bool mail_index_sync_add_transaction(struct mail_index_sync_ctx *ctx)
 		break;
 	case MAIL_TRANSACTION_KEYWORD_RESET:
                 mail_index_sync_add_keyword_reset(ctx);
-		break;
-	case MAIL_TRANSACTION_APPEND:
-		mail_index_sync_add_append(ctx);
 		break;
 	default:
 		return FALSE;
@@ -240,12 +219,6 @@ mail_index_sync_read_and_sort(struct mail_index_sync_ctx *ctx)
 	if (array_is_created(&sync_trans->updates)) {
 		synclist = array_append_space(&ctx->sync_list);
 		synclist->array = (void *)&sync_trans->updates;
-	}
-
-	/* we must return resets before keyword additions or they get lost */
-	if (array_is_created(&sync_trans->keyword_resets)) {
-		synclist = array_append_space(&ctx->sync_list);
-		synclist->array = (void *)&sync_trans->keyword_resets;
 	}
 
 	keyword_updates = keyword_count == 0 ? NULL :
@@ -527,6 +500,8 @@ int mail_index_sync_begin_to(struct mail_index *index,
 	bool retry;
 	int ret;
 
+	i_assert(index->open_count > 0);
+
 	ret = mail_index_sync_begin_to2(index, ctx_r, view_r, trans_r,
 					log_file_seq, log_file_offset,
 					flags, &retry);
@@ -632,7 +607,7 @@ mail_index_sync_get_expunge(struct mail_index_sync_rec *rec,
 
 static void
 mail_index_sync_get_update(struct mail_index_sync_rec *rec,
-			   const struct mail_transaction_flag_update *update)
+			   const struct mail_index_flag_update *update)
 {
 	rec->type = MAIL_INDEX_SYNC_TYPE_FLAGS;
 	rec->uid1 = update->uid1;
@@ -655,14 +630,6 @@ mail_index_sync_get_keyword_update(struct mail_index_sync_rec *rec,
 	rec->keyword_idx = sync_list->keyword_idx;
 }
 
-static void mail_index_sync_get_keyword_reset(struct mail_index_sync_rec *rec,
-					       const struct uid_range *range)
-{
-	rec->type = MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET;
-	rec->uid1 = range->uid1;
-	rec->uid2 = range->uid2;
-}
-
 bool mail_index_sync_next(struct mail_index_sync_ctx *ctx,
 			  struct mail_index_sync_rec *sync_rec)
 {
@@ -672,7 +639,7 @@ bool mail_index_sync_next(struct mail_index_sync_ctx *ctx,
 	unsigned int i, count, next_i;
 	uint32_t next_found_uid;
 
-	next_i = (unsigned int)-1;
+	next_i = UINT_MAX;
 	next_found_uid = (uint32_t)-1;
 
 	/* FIXME: replace with a priority queue so we don't have to go
@@ -698,15 +665,8 @@ bool mail_index_sync_next(struct mail_index_sync_ctx *ctx,
 	}
 
 	if (i == count) {
-		if (next_i == (unsigned int)-1) {
+		if (next_i == UINT_MAX) {
 			/* nothing left in sync_list */
-			if (ctx->sync_appends) {
-				ctx->sync_appends = FALSE;
-				sync_rec->type = MAIL_INDEX_SYNC_TYPE_APPEND;
-				sync_rec->uid1 = ctx->append_uid_first;
-				sync_rec->uid2 = ctx->append_uid_last;
-				return TRUE;
-			}
 			return FALSE;
 		}
                 ctx->next_uid = next_found_uid;
@@ -719,9 +679,7 @@ bool mail_index_sync_next(struct mail_index_sync_ctx *ctx,
 			(const struct mail_transaction_expunge_guid *)uid_range);
 	} else if (sync_list[i].array == (void *)&sync_trans->updates) {
 		mail_index_sync_get_update(sync_rec,
-			(const struct mail_transaction_flag_update *)uid_range);
-	} else if (sync_list[i].array == (void *)&sync_trans->keyword_resets) {
-		mail_index_sync_get_keyword_reset(sync_rec, uid_range);
+			(const struct mail_index_flag_update *)uid_range);
 	} else {
 		mail_index_sync_get_keyword_update(sync_rec, uid_range,
 						   &sync_list[i]);
@@ -733,9 +691,6 @@ bool mail_index_sync_next(struct mail_index_sync_ctx *ctx,
 bool mail_index_sync_have_more(struct mail_index_sync_ctx *ctx)
 {
 	const struct mail_index_sync_list *sync_list;
-
-	if (ctx->sync_appends)
-		return TRUE;
 
 	array_foreach(&ctx->sync_list, sync_list) {
 		if (array_is_created(sync_list->array) &&
@@ -804,6 +759,11 @@ mail_index_sync_update_mailbox_offset(struct mail_index_sync_ctx *ctx)
 static bool mail_index_sync_want_index_write(struct mail_index *index)
 {
 	uint32_t log_diff;
+
+	if (index->last_read_log_file_seq != index->map->hdr.log_file_seq) {
+		/* we recently just rotated the log and rewrote index */
+		return FALSE;
+	}
 
 	log_diff = index->map->hdr.log_file_tail_offset -
 		index->last_read_log_file_tail_offset;
@@ -921,12 +881,6 @@ bool mail_index_sync_keywords_apply(const struct mail_index_sync_rec *sync_rec,
 			}
 		}
 		return FALSE;
-	case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
-		if (array_count(keywords) == 0)
-			return FALSE;
-
-		array_clear(keywords);
-		return TRUE;
 	default:
 		i_unreached();
 		return FALSE;

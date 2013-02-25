@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -39,7 +39,7 @@ struct expire_transaction_context {
 	unsigned int first_expunged:1;
 };
 
-const char *expire_plugin_version = DOVECOT_VERSION;
+const char *expire_plugin_version = DOVECOT_ABI_VERSION;
 
 static MODULE_CONTEXT_DEFINE_INIT(expire_storage_module,
 				  &mail_storage_module_register);
@@ -306,7 +306,7 @@ static const char *const *expire_get_patterns(struct mail_user *user)
 {
 	ARRAY_TYPE(const_string) patterns;
 	const char *str;
-	char set_name[20];
+	char set_name[6+MAX_INT_STRLEN+1];
 	unsigned int i;
 
 	t_array_init(&patterns, 16);
@@ -314,10 +314,11 @@ static const char *const *expire_get_patterns(struct mail_user *user)
 	for (i = 2; str != NULL; i++) {
 		array_append(&patterns, &str, 1);
 
-		i_snprintf(set_name, sizeof(set_name), "expire%u", i);
+		if (i_snprintf(set_name, sizeof(set_name), "expire%u", i) < 0)
+			i_unreached();
 		str = mail_user_set_plugin_getenv(user->set, set_name);
 	}
-	(void)array_append_space(&patterns);
+	array_append_zero(&patterns);
 	return array_idx(&patterns, 0);
 }
 
@@ -325,7 +326,7 @@ static void expire_mail_namespaces_created(struct mail_namespace *ns)
 {
 	struct mail_user *user = ns->user;
 	struct expire_mail_user *euser;
-	const char *dict_uri;
+	const char *dict_uri, *error;
 
 	dict_uri = mail_user_plugin_getenv(user, "expire_dict");
 	if (mail_user_plugin_getenv(user, "expire") == NULL) {
@@ -344,12 +345,13 @@ static void expire_mail_namespaces_created(struct mail_namespace *ns)
 		euser->set = expire_set_init(expire_get_patterns(user));
 		/* we're using only shared dictionary, the username
 		   doesn't matter. */
-		euser->db = dict_init(dict_uri, DICT_DATA_TYPE_UINT32, "",
-				      user->set->base_dir);
-		if (euser->db == NULL)
-			i_error("expire plugin: dict_init(%s) failed", dict_uri);
-		else
+		if (dict_init(dict_uri, DICT_DATA_TYPE_UINT32, "",
+			      user->set->base_dir, &euser->db, &error) < 0) {
+			i_error("expire plugin: dict_init(%s) failed: %s",
+				dict_uri, error);
+		} else {
 			MODULE_CONTEXT_SET(user, expire_mail_user_module, euser);
+		}
 	}
 }
 

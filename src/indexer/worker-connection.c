@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -32,7 +32,7 @@ struct worker_connection {
 	struct ostream *output;
 
 	char *request_username;
-	ARRAY_DEFINE(request_contexts, void *);
+	ARRAY(void *) request_contexts;
 	struct aqueue *request_queue;
 
 	unsigned int process_limit;
@@ -198,7 +198,8 @@ int worker_connection_connect(struct worker_connection *conn)
 	conn->io = io_add(conn->fd, IO_READ, worker_connection_input, conn);
 	conn->input = i_stream_create_fd(conn->fd, (size_t)-1, FALSE);
 	conn->output = o_stream_create_fd(conn->fd, (size_t)-1, FALSE);
-	o_stream_send_str(conn->output, INDEXER_MASTER_HANDSHAKE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
+	o_stream_nsend_str(conn->output, INDEXER_MASTER_HANDSHAKE);
 	return 0;
 }
 
@@ -237,16 +238,16 @@ void worker_connection_request(struct worker_connection *conn,
 	T_BEGIN {
 		string_t *str = t_str_new(128);
 
-		str_tabescape_write(str, request->username);
+		str_append_tabescaped(str, request->username);
 		str_append_c(str, '\t');
-		str_tabescape_write(str, request->mailbox);
+		str_append_tabescaped(str, request->mailbox);
 		str_printfa(str, "\t%u\t", request->max_recent_msgs);
 		if (request->index)
 			str_append_c(str, 'i');
 		if (request->optimize)
 			str_append_c(str, 'o');
 		str_append_c(str, '\n');
-		o_stream_send(conn->output, str_data(str), str_len(str));
+		o_stream_nsend(conn->output, str_data(str), str_len(str));
 	} T_END;
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "imap-commands.h"
@@ -19,10 +19,13 @@ static bool cmd_expunge_callback(struct client_command_context *cmd)
 	return TRUE;
 }
 
-static bool cmd_expunge_finish(struct client_command_context *cmd,
-			       struct mail_search_args *search_args)
+static bool ATTR_NULL(2)
+cmd_expunge_finish(struct client_command_context *cmd,
+		   struct mail_search_args *search_args)
 {
 	struct client *client = cmd->client;
+	const char *errstr;
+	enum mail_error error = MAIL_ERROR_NONE;
 	int ret;
 
 	ret = imap_expunge(client->mailbox, search_args == NULL ? NULL :
@@ -30,13 +33,19 @@ static bool cmd_expunge_finish(struct client_command_context *cmd,
 	if (search_args != NULL)
 		mail_search_args_unref(&search_args);
 	if (ret < 0) {
-		client_send_storage_error(cmd,
-					  mailbox_get_storage(client->mailbox));
-		return TRUE;
+		errstr = mailbox_get_last_error(client->mailbox, &error);
+		if (error != MAIL_ERROR_PERM) {
+			client_send_storage_error(cmd,
+				mailbox_get_storage(client->mailbox));
+			return TRUE;
+		} else {
+			return cmd_sync(cmd, 0, IMAP_SYNC_FLAG_SAFE,
+				t_strdup_printf("OK Expunge ignored: %s.",
+						errstr));
+		}
 	}
 
 	client->sync_seen_deletes = FALSE;
-	client->sync_seen_expunges = FALSE;
 	if ((client->enabled_features & MAILBOX_FEATURE_QRESYNC) != 0) {
 		return cmd_sync(cmd, MAILBOX_SYNC_FLAG_EXPUNGE,
 				IMAP_SYNC_FLAG_SAFE, "OK Expunge completed.");

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream-private.h"
@@ -31,7 +31,8 @@ struct istream *i_stream_create_from_data(const void *data, size_t size)
 	stream->istream.readable_fd = FALSE;
 	stream->istream.blocking = TRUE;
 	stream->istream.seekable = TRUE;
-	(void)i_stream_create(stream, NULL, -1);
+	i_stream_create(stream, NULL, -1);
 	stream->statbuf.st_size = size;
+	i_stream_set_name(&stream->istream, "(buffer)");
 	return &stream->istream;
 }

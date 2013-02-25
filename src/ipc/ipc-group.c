@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -13,7 +13,7 @@ struct ipc_group_cmd {
 	char *first_error;
 };
 
-static ARRAY_DEFINE(ipc_groups, struct ipc_group *);
+static ARRAY(struct ipc_group *) ipc_groups;
 
 struct ipc_group *ipc_group_alloc(int listen_fd)
 {

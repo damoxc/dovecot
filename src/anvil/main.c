@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "array.h"
@@ -26,10 +26,11 @@ static void client_connected(struct master_service_connection *conn)
 	bool master = conn->listen_fd == MASTER_LISTEN_FD_FIRST;
 
 	master_service_client_connection_accept(conn);
-	anvil_connection_create(conn->fd, master, conn->fifo);
+	(void)anvil_connection_create(conn->fd, master, conn->fifo);
 }
 
-static void log_fdpass_input(void *context ATTR_UNUSED)
+static void ATTR_NULL(1)
+log_fdpass_input(void *context ATTR_UNUSED)
 {
 	int fd;
 	char c;
@@ -57,7 +58,7 @@ int main(int argc, char *argv[])
 	const char *error;
 
 	master_service = master_service_init("anvil", service_flags,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 	if (master_service_settings_read_simple(master_service,
@@ -76,7 +77,7 @@ int main(int argc, char *argv[])
 	connect_limit = connect_limit_init();
 	penalty = penalty_init();
 	log_fdpass_io = io_add(MASTER_ANVIL_LOG_FDPASS_FD, IO_READ,
-			       log_fdpass_input, NULL);
+			       log_fdpass_input, (void *)NULL);
 
 	master_service_run(master_service, client_connected);
 

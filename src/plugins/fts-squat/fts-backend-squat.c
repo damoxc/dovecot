@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -115,9 +115,8 @@ fts_backend_squat_set_box(struct squat_fts_backend *backend,
 
 	perm = mailbox_get_permissions(box);
 	storage = mailbox_get_storage(box);
-	path = mailbox_list_get_path(box->list, box->name,
-				     MAILBOX_LIST_PATH_TYPE_INDEX);
-	i_assert(*path != '\0'); /* fts already checked this */
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX, &path) <= 0)
+		i_unreached(); /* fts already checked this */
 
 	mailbox_get_open_status(box, STATUS_UIDVALIDITY, &status);
 	if (storage->set->mmap_disable)
@@ -374,8 +373,8 @@ static int squat_lookup_arg(struct squat_fts_backend *backend,
 	i_array_init(&tmp_maybe_uids, 128);
 
 	dtc = t_str_new(128);
-	if (uni_utf8_to_decomposed_titlecase(arg->value.str,
-					     strlen(arg->value.str), dtc) < 0)
+	if (backend->backend.ns->user->
+	    default_normalizer(arg->value.str, strlen(arg->value.str), dtc) < 0)
 		i_panic("squat: search key not utf8");
 
 	ret = squat_trie_lookup(backend->trie, str_c(dtc), squat_type,
@@ -462,7 +461,7 @@ fts_backend_squat_lookup(struct fts_backend *_backend, struct mailbox *box,
 
 struct fts_backend fts_backend_squat = {
 	.name = "squat",
-	.flags = FTS_BACKEND_FLAG_BUILD_DTCASE,
+	.flags = FTS_BACKEND_FLAG_NORMALIZE_INPUT,
 
 	{
 		fts_backend_squat_alloc,

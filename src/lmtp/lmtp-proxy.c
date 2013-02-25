@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -21,7 +21,7 @@ struct lmtp_proxy_recipient {
 
 struct lmtp_proxy_connection {
 	struct lmtp_proxy *proxy;
-	struct lmtp_proxy_settings set;
+	struct lmtp_proxy_rcpt_settings set;
 
 	struct lmtp_client *client;
 	struct istream *data_input;
@@ -33,11 +33,11 @@ struct lmtp_proxy_connection {
 
 struct lmtp_proxy {
 	pool_t pool;
-	const char *mail_from, *my_hostname, *session_id;
-	const char *dns_client_socket_path;
+	const char *mail_from;
+	struct lmtp_proxy_settings set;
 
-	ARRAY_DEFINE(connections, struct lmtp_proxy_connection *);
-	ARRAY_DEFINE(rcpt_to, struct lmtp_proxy_recipient *);
+	ARRAY(struct lmtp_proxy_connection *) connections;
+	ARRAY(struct lmtp_proxy_recipient *) rcpt_to;
 	unsigned int next_data_reply_idx;
 
 	struct timeout *to_finish;
@@ -55,21 +55,26 @@ struct lmtp_proxy {
 static void lmtp_conn_finish(void *context);
 
 struct lmtp_proxy *
-lmtp_proxy_init(const char *my_hostname, const char *dns_client_socket_path,
-		const char *session_id, struct ostream *client_output)
+lmtp_proxy_init(const struct lmtp_proxy_settings *set,
+		struct ostream *client_output)
 {
 	struct lmtp_proxy *proxy;
 	pool_t pool;
 
+	i_assert(set->proxy_ttl > 0);
 	o_stream_ref(client_output);
 
 	pool = pool_alloconly_create("lmtp proxy", 1024);
 	proxy = p_new(pool, struct lmtp_proxy, 1);
 	proxy->pool = pool;
-	proxy->my_hostname = p_strdup(pool, my_hostname);
 	proxy->client_output = client_output;
-	proxy->dns_client_socket_path = p_strdup(pool, dns_client_socket_path);
-	proxy->session_id = p_strdup(pool, session_id);
+	proxy->set.my_hostname = p_strdup(pool, set->my_hostname);
+	proxy->set.dns_client_socket_path =
+		p_strdup(pool, set->dns_client_socket_path);
+	proxy->set.session_id = p_strdup(pool, set->session_id);
+	proxy->set.source_ip = set->source_ip;
+	proxy->set.source_port = set->source_port;
+	proxy->set.proxy_ttl = set->proxy_ttl;
 	i_array_init(&proxy->rcpt_to, 32);
 	i_array_init(&proxy->connections, 32);
 	return proxy;
@@ -111,7 +116,7 @@ void lmtp_proxy_mail_from(struct lmtp_proxy *proxy, const char *value)
 
 static struct lmtp_proxy_connection *
 lmtp_proxy_get_connection(struct lmtp_proxy *proxy,
-			  const struct lmtp_proxy_settings *set)
+			  const struct lmtp_proxy_rcpt_settings *set)
 {
 	struct lmtp_proxy_connection *const *conns, *conn;
 	struct lmtp_client_settings client_set;
@@ -128,8 +133,12 @@ lmtp_proxy_get_connection(struct lmtp_proxy *proxy,
 
 	memset(&client_set, 0, sizeof(client_set));
 	client_set.mail_from = proxy->mail_from;
-	client_set.my_hostname = proxy->my_hostname;
-	client_set.dns_client_socket_path = proxy->dns_client_socket_path;
+	client_set.my_hostname = proxy->set.my_hostname;
+	client_set.dns_client_socket_path = proxy->set.dns_client_socket_path;
+	client_set.source_ip = proxy->set.source_ip;
+	client_set.source_port = proxy->set.source_port;
+	client_set.proxy_ttl = proxy->set.proxy_ttl;
+	client_set.proxy_timeout_secs = set->timeout_msecs/1000;
 
 	conn = p_new(proxy->pool, struct lmtp_proxy_connection, 1);
 	conn->proxy = proxy;
@@ -158,8 +167,8 @@ static bool lmtp_proxy_send_data_replies(struct lmtp_proxy *proxy)
 	for (i = proxy->next_data_reply_idx; i < count; i++) {
 		if (!(rcpt[i]->rcpt_to_failed || rcpt[i]->data_reply_received))
 			break;
-		o_stream_send_str(proxy->client_output,
-				  t_strconcat(rcpt[i]->reply, "\r\n", NULL));
+		o_stream_nsend_str(proxy->client_output,
+				   t_strconcat(rcpt[i]->reply, "\r\n", NULL));
 	}
 	o_stream_uncork(proxy->client_output);
 	proxy->next_data_reply_idx = i;
@@ -241,7 +250,7 @@ lmtp_proxy_conn_data(bool success ATTR_UNUSED, const char *reply, void *context)
 }
 
 int lmtp_proxy_add_rcpt(struct lmtp_proxy *proxy, const char *address,
-			const struct lmtp_proxy_settings *set)
+			const struct lmtp_proxy_rcpt_settings *set)
 {
 	struct lmtp_proxy_connection *conn;
 	struct lmtp_proxy_recipient *rcpt;
@@ -267,7 +276,7 @@ static void lmtp_proxy_conn_timeout(struct lmtp_proxy_connection *conn)
 	line = t_strdup_printf(ERRSTR_TEMP_REMOTE_FAILURE
 			       " (timeout while waiting for reply to %s) <%s>",
 			       lmtp_client_state_to_string(conn->client),
-			       conn->proxy->session_id);
+			       conn->proxy->set.session_id);
 	lmtp_client_fail(conn->client, line);
 }
 

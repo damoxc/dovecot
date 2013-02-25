@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -28,7 +28,7 @@ const struct doveadm_print_vfuncs *doveadm_print_vfuncs_all[] = {
 
 int doveadm_exit_code = 0;
 
-static ARRAY_DEFINE(doveadm_cmds, struct doveadm_cmd);
+static ARRAY(struct doveadm_cmd) doveadm_cmds;
 
 static void failure_exit_callback(int *status)
 {
@@ -55,15 +55,15 @@ static void
 doveadm_usage_compress_lines(FILE *out, const char *str, const char *prefix)
 {
 	const char *cmd, *args, *p, *short_name, *prev_name = "";
-	char **lines;
+	const char **lines;
 	unsigned int i, count, prefix_len = strlen(prefix);
 
 	/* split lines */
-	lines = p_strsplit(pool_datastack_create(), str, "\n");
+	lines = (void *)p_strsplit(pool_datastack_create(), str, "\n");
 	for (count = 0; lines[count] != NULL; count++) ;
 
 	/* sort lines */
-	qsort(lines, count, sizeof(*lines), i_strcmp_p);
+	i_qsort(lines, count, sizeof(*lines), i_strcmp_p);
 
 	/* print lines, compress subcommands into a single line */
 	for (i = 0; i < count; i++) {
@@ -276,6 +276,10 @@ static void doveadm_read_settings(void)
 					 &output, &error) < 0)
 		i_fatal("Error reading configuration: %s", error);
 
+	service_set = master_service_settings_get(master_service);
+	service_set = settings_dup(&master_service_setting_parser_info,
+				   service_set, pool_datastack_create());
+
 	set = master_service_settings_get_others(master_service)[0];
 	doveadm_settings = settings_dup(&doveadm_setting_parser_info, set,
 					pool_datastack_create());
@@ -296,7 +300,8 @@ static struct doveadm_cmd *doveadm_commands[] = {
 	&doveadm_cmd_sis_deduplicate,
 	&doveadm_cmd_sis_find,
 	&doveadm_cmd_stats_dump,
-	&doveadm_cmd_stats_top
+	&doveadm_cmd_stats_top,
+	&doveadm_cmd_zlibconnect
 };
 
 int main(int argc, char *argv[])

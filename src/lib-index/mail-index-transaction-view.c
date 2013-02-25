@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -22,7 +22,7 @@ struct mail_index_view_transaction {
 	unsigned int record_size;
 	unsigned int recs_count;
 	void *recs;
-	ARRAY_DEFINE(all_recs, void *);
+	ARRAY(void *) all_recs;
 };
 
 static void tview_close(struct mail_index_view *view)
@@ -85,7 +85,7 @@ tview_apply_flag_updates(struct mail_index_view_transaction *tview,
 			 const struct mail_index_record *rec, uint32_t seq)
 {
 	struct mail_index_transaction *t = tview->t;
-	const struct mail_transaction_flag_update *updates;
+	const struct mail_index_flag_update *updates;
 	struct mail_index_record *trec;
 	unsigned int idx, count;
 
@@ -139,14 +139,16 @@ tview_lookup_full(struct mail_index_view *view, uint32_t seq,
 		/* FIXME: is this right to return index map..?
 		   it's not there yet. */
 		*map_r = view->index->map;
-		*expunged_r = FALSE;
+		if (expunged_r != NULL)
+			*expunged_r = FALSE;
 		return mail_index_transaction_lookup(tview->t, seq);
 	}
 
 	rec = tview->super->lookup_full(view, seq, map_r, expunged_r);
 	rec = tview_apply_flag_updates(tview, *map_r, rec, seq);
 
-	if (mail_index_transaction_is_expunged(tview->t, seq))
+	if (expunged_r != NULL &&
+	    mail_index_transaction_is_expunged(tview->t, seq))
 		*expunged_r = TRUE;
 	return rec;
 }
@@ -303,12 +305,6 @@ static void tview_lookup_keywords(struct mail_index_view *view, uint32_t seq,
 		return;
 	}
 
-	/* apply any keyword updates in this transaction */
-	if (array_is_created(&t->keyword_resets)) {
-		if (seq_range_exists(&t->keyword_resets, seq))
-			array_clear(keyword_idx);
-	}
-
 	if (array_is_created(&t->keyword_updates))
 		updates = array_get(&t->keyword_updates, &count);
 	else {
@@ -393,6 +389,19 @@ tview_return_updated_ext(struct mail_index_view_transaction *tview,
 	}
 }
 
+static bool
+tview_is_ext_reset(struct mail_index_view_transaction *tview, uint32_t ext_id)
+{
+	const struct mail_transaction_ext_reset *resets;
+	unsigned int count;
+
+	if (!array_is_created(&tview->t->ext_resets))
+		return FALSE;
+
+	resets = array_get(&tview->t->ext_resets, &count);
+	return ext_id < count && resets[ext_id].new_reset_id != 0;
+}
+
 static void
 tview_lookup_ext_full(struct mail_index_view *view, uint32_t seq,
 		      uint32_t ext_id, struct mail_index_map **map_r,
@@ -406,7 +415,8 @@ tview_lookup_ext_full(struct mail_index_view *view, uint32_t seq,
 
 	i_assert(ext_id < array_count(&view->index->extensions));
 
-	*expunged_r = FALSE;
+	if (expunged_r != NULL)
+		*expunged_r = FALSE;
 
 	if (array_is_created(&tview->t->ext_rec_updates) &&
 	    ext_id < array_count(&tview->t->ext_rec_updates)) {
@@ -423,8 +433,10 @@ tview_lookup_ext_full(struct mail_index_view *view, uint32_t seq,
 		}
 	}
 
-	/* not updated, return the existing value */
-	if (seq < tview->t->first_new_seq) {
+	/* not updated, return the existing value, unless ext was
+	   already reset */
+	if (seq < tview->t->first_new_seq &&
+	    !tview_is_ext_reset(tview, ext_id)) {
 		tview->super->lookup_ext_full(view, seq, ext_id,
 					      map_r, data_r, expunged_r);
 	} else {

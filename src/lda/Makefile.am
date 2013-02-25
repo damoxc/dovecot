@@ -16,25 +16,12 @@ AM_CPPFLAGS = \
 
 dovecot_lda_LDFLAGS = -export-dynamic
 
-if !BUILD_SHARED_LIBS
-unused_objects = \
-	../lib/mountpoint.o \
-	../lib-mail/message-header-encode.o \
-	../lib-imap/imap-util.o \
-	../lib-storage/mail-search-parser-imap.o
-endif
-
-libs = \
-	$(unused_objects) \
-	$(LIBDOVECOT_LDA)
-
 dovecot_lda_LDADD = \
-	$(libs) \
+	$(LIBDOVECOT_LDA) \
 	$(LIBDOVECOT_STORAGE) \
-	$(LIBDOVECOT) \
-	$(MODULE_LIBS)
+	$(LIBDOVECOT)
 dovecot_lda_DEPENDENCIES = \
-	$(libs) \
+	$(LIBDOVECOT_LDA) \
 	$(LIBDOVECOT_STORAGE_DEPS) \
 	$(LIBDOVECOT_DEPS)
 

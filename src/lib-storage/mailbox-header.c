@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "mail-cache.h"
@@ -28,7 +28,7 @@ mailbox_header_lookup_init_real(struct mailbox *box,
 	/* @UNSAFE: headers need to be sorted for filter stream. */
 	sorted_headers = t_new(const char *, count);
 	memcpy(sorted_headers, headers, count * sizeof(*sorted_headers));
-	qsort(sorted_headers, count, sizeof(*sorted_headers), i_strcasecmp_p);
+	i_qsort(sorted_headers, count, sizeof(*sorted_headers), i_strcasecmp_p);
 	headers = sorted_headers;
 
 	/* @UNSAFE */

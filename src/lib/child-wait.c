@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "lib-signals.h"
@@ -14,7 +14,8 @@ struct child_wait {
 	void *context;
 };
 
-struct hash_table *child_pids;
+/* pid_t => wait */
+HASH_TABLE(void *, struct child_wait *) child_pids;
 
 #undef child_wait_new_with_pid
 struct child_wait *
@@ -36,14 +37,15 @@ void child_wait_free(struct child_wait **_wait)
 {
 	struct child_wait *wait = *_wait;
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct child_wait *value;
 
 	*_wait = NULL;
 
 	if (wait->pid_count > 0) {
 		/* this should be rare, so iterating hash is fast enough */
 		iter = hash_table_iterate_init(child_pids);
-		while (hash_table_iterate(iter, &key, &value)) {
+		while (hash_table_iterate(iter, child_pids, &key, &value)) {
 			if (value == wait) {
 				hash_table_remove(child_pids, key);
 				if (--wait->pid_count == 0)
@@ -88,8 +90,7 @@ sigchld_handler(const siginfo_t *si ATTR_UNUSED, void *context ATTR_UNUSED)
 
 void child_wait_init(void)
 {
-	child_pids = hash_table_create(default_pool, default_pool, 0,
-				       NULL, NULL);
+	hash_table_create_direct(&child_pids, default_pool, 0);
 
 	lib_signals_set_handler(SIGCHLD, LIBSIG_FLAGS_SAFE,
 				sigchld_handler, NULL);
@@ -98,12 +99,13 @@ void child_wait_init(void)
 void child_wait_deinit(void)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct child_wait *value;
 
 	lib_signals_unset_handler(SIGCHLD, sigchld_handler, NULL);
 
 	iter = hash_table_iterate_init(child_pids);
-	while (hash_table_iterate(iter, &key, &value))
+	while (hash_table_iterate(iter, child_pids, &key, &value))
 		i_free(value);
 	hash_table_iterate_deinit(&iter);
 

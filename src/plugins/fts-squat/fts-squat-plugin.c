@@ -1,9 +1,9 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "fts-squat-plugin.h"
 
-const char *fts_squat_plugin_version = DOVECOT_VERSION;
+const char *fts_squat_plugin_version = DOVECOT_ABI_VERSION;
 
 void fts_squat_plugin_init(struct module *module ATTR_UNUSED)
 {

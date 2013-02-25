@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -164,15 +164,14 @@ static bool str_array_contains(ARRAY_TYPE(const_string) *arr, const char *str)
 }
 
 static bool have_changed_settings(const struct config_filter_parser *parser,
-				  const char *module)
+				  const char *const *modules)
 {
 	const unsigned char *changes;
 	unsigned int i, j, size;
 
 	for (i = 0; parser->parsers[i].root != NULL; i++) {
-		if (*module != '\0' &&
-		    !config_module_want_parser(config_module_parsers,
-					       module, parser->parsers[i].root))
+		if (!config_module_want_parser(config_module_parsers,
+					       modules, parser->parsers[i].root))
 			continue;
 
 		changes = settings_parser_get_changes(parser->parsers[i].parser);
@@ -186,7 +185,8 @@ static bool have_changed_settings(const struct config_filter_parser *parser,
 }
 
 static struct config_filter_parser *const *
-config_filter_find_all(struct config_filter_context *ctx, const char *module,
+config_filter_find_all(struct config_filter_context *ctx,
+		       const char *const *modules,
 		       const struct config_filter *filter,
 		       struct master_service_settings_output *output_r)
 {
@@ -203,7 +203,7 @@ config_filter_find_all(struct config_filter_context *ctx, const char *module,
 
 		if (!config_filter_match_service(mask, filter)) {
 			if (!str_array_contains(&service_names, mask->service) &&
-			    have_changed_settings(ctx->parsers[i], module))
+			    have_changed_settings(ctx->parsers[i], modules))
 				array_append(&service_names, &mask->service, 1);
 			continue;
 		}
@@ -221,12 +221,12 @@ config_filter_find_all(struct config_filter_context *ctx, const char *module,
 		}
 	}
 	if (filter->service == NULL) {
-		(void)array_append_space(&service_names);
+		array_append_zero(&service_names);
 		output_r->specific_services = array_idx(&service_names, 0);
 	}
 
 	array_sort(&matches, config_filter_parser_cmp);
-	(void)array_append_space(&matches);
+	array_append_zero(&matches);
 	return array_idx(&matches, 0);
 }
 
@@ -259,7 +259,7 @@ config_filter_find_subset(struct config_filter_context *ctx,
 			array_append(&matches, &ctx->parsers[i], 1);
 	}
 	array_sort(&matches, config_filter_parser_cmp_rev);
-	(void)array_append_space(&matches);
+	array_append_zero(&matches);
 	return array_idx(&matches, 0);
 }
 
@@ -306,7 +306,7 @@ config_module_parser_apply_changes(struct config_module_parser *dest,
 }
 
 int config_filter_parsers_get(struct config_filter_context *ctx, pool_t pool,
-			      const char *module,
+			      const char *const *modules,
 			      const struct config_filter *filter,
 			      struct config_module_parser **parsers_r,
 			      struct master_service_settings_output *output_r,
@@ -322,7 +322,7 @@ int config_filter_parsers_get(struct config_filter_context *ctx, pool_t pool,
 	   with an error. Merging SET_STRLIST types requires
 	   settings_parser_apply_changes() to work a bit unintuitively by
 	   letting the destination settings override the source settings. */
-	src = config_filter_find_all(ctx, module, filter, output_r);
+	src = config_filter_find_all(ctx, modules, filter, output_r);
 
 	/* all of them should have the same number of parsers.
 	   duplicate our initial parsers from the first match */

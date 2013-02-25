@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -88,12 +88,12 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	const struct mail_storage_settings *mail_set = list->mail_set;
 	struct dotlock_settings dotlock_set;
 	struct dotlock *dotlock;
-	const char *line, *origin;
+	struct mailbox_permissions perm;
+	const char *line, *dir, *fname;
 	struct istream *input;
 	struct ostream *output;
 	int fd_in, fd_out;
-	mode_t file_mode, dir_mode;
-	gid_t gid;
+	enum mailbox_list_path_type type;
 	bool found, changed = FALSE, failed = FALSE;
 
 	if (strcasecmp(name, "INBOX") == 0)
@@ -106,17 +106,27 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	dotlock_set.timeout = SUBSCRIPTION_FILE_LOCK_TIMEOUT;
 	dotlock_set.stale_timeout = SUBSCRIPTION_FILE_CHANGE_TIMEOUT;
 
-	mailbox_list_get_root_permissions(list, &file_mode, &dir_mode,
-					  &gid, &origin);
+	mailbox_list_get_root_permissions(list, &perm);
 	fd_out = file_dotlock_open_group(&dotlock_set, path, 0,
-					 file_mode, gid, origin, &dotlock);
+					 perm.file_create_mode,
+					 perm.file_create_gid,
+					 perm.file_create_gid_origin, &dotlock);
 	if (fd_out == -1 && errno == ENOENT) {
 		/* directory hasn't been created yet. */
-		if (mailbox_list_mkdir_parent(list, NULL, path) < 0)
-			return -1;
+		type = list->set.control_dir != NULL ?
+			MAILBOX_LIST_PATH_TYPE_CONTROL :
+			MAILBOX_LIST_PATH_TYPE_DIR;
+		fname = strrchr(path, '/');
+		if (fname != NULL) {
+			dir = t_strdup_until(path, fname);
+			if (mailbox_list_mkdir_root(list, dir, type) < 0)
+				return -1;
+		}
 		fd_out = file_dotlock_open_group(&dotlock_set, path, 0,
-						 file_mode, gid,
-						 origin, &dotlock);
+						 perm.file_create_mode,
+						 perm.file_create_gid,
+						 perm.file_create_gid_origin,
+						 &dotlock);
 	}
 	if (fd_out == -1) {
 		if (errno == EAGAIN) {
@@ -132,7 +142,7 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	fd_in = nfs_safe_open(path, O_RDONLY);
 	if (fd_in == -1 && errno != ENOENT) {
 		subswrite_set_syscall_error(list, "open()", path);
-		(void)file_dotlock_delete(&dotlock);
+		file_dotlock_delete(&dotlock);
 		return -1;
 	}
 
@@ -152,8 +162,8 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 				}
 			}
 
-			(void)o_stream_send_str(output, line);
-			(void)o_stream_send(output, "\n", 1);
+			o_stream_nsend_str(output, line);
+			o_stream_nsend(output, "\n", 1);
 		}
 		i_stream_destroy(&input);
 	}
@@ -161,12 +171,12 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 	if (!failed && set && !found) {
 		/* append subscription */
 		line = t_strconcat(name, "\n", NULL);
-		(void)o_stream_send_str(output, line);
+		o_stream_nsend_str(output, line);
 		changed = TRUE;
 	}
 
 	if (changed && !failed) {
-		if (o_stream_flush(output) < 0) {
+		if (o_stream_nfinish(output) < 0) {
 			subswrite_set_syscall_error(list, "write()", path);
 			failed = TRUE;
 		} else if (mail_set->parsed_fsync_mode != FSYNC_MODE_NEVER) {
@@ -176,8 +186,9 @@ int subsfile_set_subscribed(struct mailbox_list *list, const char *path,
 				failed = TRUE;
 			}
 		}
+	} else {
+		o_stream_ignore_last_errors(output);
 	}
-
 	o_stream_destroy(&output);
 
 	if (failed || !changed) {
@@ -243,7 +254,7 @@ int subsfile_list_fstat(struct subsfile_list_context *ctx, struct stat *st_r)
 	if (ctx->failed)
 		return -1;
 
-	if ((st = i_stream_stat(ctx->input, FALSE)) == NULL) {
+	if (i_stream_stat(ctx->input, FALSE, &st) < 0) {
 		ctx->failed = TRUE;
 		return -1;
 	}

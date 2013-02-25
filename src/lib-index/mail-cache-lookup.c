@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -63,8 +63,7 @@ uint32_t mail_cache_lookup_cur_offset(struct mail_index_view *view,
 	const void *data;
 	uint32_t offset;
 
-	mail_index_lookup_ext_full(view, seq, cache->ext_id,
-				   &map, &data, NULL);
+	mail_index_lookup_ext_full(view, seq, cache->ext_id, &map, &data, NULL);
 	if (data == NULL) {
 		/* no cache offsets */
 		return 0;
@@ -254,7 +253,7 @@ int mail_cache_lookup_iter_next(struct mail_cache_lookup_iterate_ctx *ctx,
 
 	field_idx = cache->file_field_map[file_field];
 	data_size = cache->fields[field_idx].field.field_size;
-	if (data_size == (unsigned int)-1 &&
+	if (data_size == UINT_MAX &&
 	    ctx->pos + sizeof(uint32_t) <= ctx->rec->size) {
 		/* variable size field. get its size from the file. */
 		data_size = *((const uint32_t *)
@@ -419,7 +418,7 @@ struct header_lookup_line {
 
 struct header_lookup_context {
 	struct mail_cache_view *view;
-	ARRAY_DEFINE(lines, struct header_lookup_line);
+	ARRAY(struct header_lookup_line) lines;
 };
 
 enum {

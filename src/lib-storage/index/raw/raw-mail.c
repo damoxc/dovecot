@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -14,12 +14,13 @@ static int raw_mail_stat(struct mail *mail)
 	struct raw_mailbox *mbox = (struct raw_mailbox *)mail->box;
 	const struct stat *st;
 
-	if (mail->lookup_abort == MAIL_LOOKUP_ABORT_NOT_IN_CACHE)
-		return mail_set_aborted(mail);
+	if (mail->lookup_abort == MAIL_LOOKUP_ABORT_NOT_IN_CACHE) {
+		mail_set_aborted(mail);
+		return -1;
+	}
 
 	mail->transaction->stats.fstat_lookup_count++;
-	st = i_stream_stat(mail->box->input, TRUE);
-	if (st == NULL) {
+	if (i_stream_stat(mail->box->input, TRUE, &st) < 0) {
 		mail_storage_set_critical(mail->box->storage,
 					  "stat(%s) failed: %m",
 					  i_stream_get_name(mail->box->input));
@@ -127,6 +128,7 @@ struct mail_vfuncs raw_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	raw_mail_get_received_date,
@@ -137,11 +139,13 @@ struct mail_vfuncs raw_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	raw_mail_get_stream,
+	index_mail_get_binary_stream,
 	raw_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
 	index_mail_set_cache_corrupted,

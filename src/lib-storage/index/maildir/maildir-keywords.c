@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 /* note that everything here depends on uidlist file being locked the whole
    time. that's why we don't have any locking of our own, or that we do things
@@ -32,7 +32,7 @@ struct maildir_keywords {
 
 	pool_t pool;
 	ARRAY_TYPE(keywords) list;
-	struct hash_table *hash; /* name -> idx+1 */
+	HASH_TABLE(char *, void *) hash; /* name -> idx+1 */
 
         struct dotlock_settings dotlock_settings;
 
@@ -46,7 +46,7 @@ struct maildir_keywords_sync_ctx {
 	struct mail_index *index;
 
 	const ARRAY_TYPE(keywords) *keywords;
-	ARRAY_DEFINE(idx_to_chr, char);
+	ARRAY(char) idx_to_chr;
 	unsigned int chridx_to_idx[MAILDIR_MAX_KEYWORDS];
 	bool readonly;
 };
@@ -66,16 +66,15 @@ maildir_keywords_init_readonly(struct mailbox *box)
 	struct maildir_keywords *mk;
 	const char *dir;
 
-	dir = mailbox_list_get_path(box->list, box->name,
-				    MAILBOX_LIST_PATH_TYPE_CONTROL);
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_CONTROL, &dir) <= 0)
+		i_unreached();
 
 	mk = i_new(struct maildir_keywords, 1);
 	mk->storage = box->storage;
 	mk->path = i_strconcat(dir, "/" MAILDIR_KEYWORDS_NAME, NULL);
 	mk->pool = pool_alloconly_create("maildir keywords", 512);
 	i_array_init(&mk->list, MAILDIR_MAX_KEYWORDS);
-	mk->hash = hash_table_create(default_pool, mk->pool, 0,
-				     strcase_hash, (hash_cmp_callback_t *)strcasecmp);
+	hash_table_create(&mk->hash, mk->pool, 0, strcase_hash, strcasecmp);
 
 	mk->dotlock_settings.use_excl_lock =
 		box->storage->set->dotlock_use_excl;
@@ -198,10 +197,10 @@ static int
 maildir_keywords_lookup(struct maildir_keywords *mk, const char *name,
 			unsigned int *chridx_r)
 {
-	void *p;
+	void *value;
 
-	p = hash_table_lookup(mk->hash, name);
-	if (p == NULL) {
+	value = hash_table_lookup(mk->hash, name);
+	if (value == 0) {
 		if (mk->synced)
 			return 0;
 
@@ -209,12 +208,12 @@ maildir_keywords_lookup(struct maildir_keywords *mk, const char *name,
 			return -1;
 		i_assert(mk->synced);
 
-		p = hash_table_lookup(mk->hash, name);
-		if (p == NULL)
+		value = hash_table_lookup(mk->hash, name);
+		if (value == 0)
 			return 0;
 	}
 
-	*chridx_r = POINTER_CAST_TO(p, int)-1;
+	*chridx_r = POINTER_CAST_TO(value, unsigned int)-1;
 	return 1;
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "crc32.h"
@@ -6,7 +6,7 @@
 #include "lucene-wrapper.h"
 #include "fts-lucene-plugin.h"
 
-const char *fts_lucene_plugin_version = DOVECOT_VERSION;
+const char *fts_lucene_plugin_version = DOVECOT_ABI_VERSION;
 
 struct fts_lucene_user_module fts_lucene_user_module =
 	MODULE_CONTEXT_INIT(&mail_user_module_register);

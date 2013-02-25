@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "mail-storage-hooks.h"
@@ -7,7 +7,7 @@
 
 #define DEFAULT_ESCAPE_CHAR '\\'
 
-const char *listescape_plugin_version = DOVECOT_VERSION;
+const char *listescape_plugin_version = DOVECOT_ABI_VERSION;
 
 static void listescape_mailbox_list_created(struct mailbox_list *list)
 {

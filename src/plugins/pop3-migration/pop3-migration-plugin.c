@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -44,7 +44,7 @@ struct pop3_migration_mail_storage {
 
 	const char *pop3_box_vname;
 	struct mailbox *pop3_box;
-	ARRAY_DEFINE(pop3_uidl_map, struct pop3_uidl_map);
+	ARRAY(struct pop3_uidl_map) pop3_uidl_map;
 
 	unsigned int all_mailboxes:1;
 	unsigned int pop3_all_hdr_sha1_set:1;
@@ -53,7 +53,7 @@ struct pop3_migration_mail_storage {
 struct pop3_migration_mailbox {
 	union mailbox_module_context module_ctx;
 
-	ARRAY_DEFINE(imap_msg_map, struct imap_msg_map);
+	ARRAY(struct imap_msg_map) imap_msg_map;
 	unsigned int first_unfound_idx;
 
 	unsigned int uidl_synced:1;
@@ -72,7 +72,7 @@ static const char *hdr_hash_skip_headers[] = {
 	"X-UID",
 	"X-UIDL"
 };
-const char *pop3_migration_plugin_version = DOVECOT_VERSION;
+const char *pop3_migration_plugin_version = DOVECOT_ABI_VERSION;
 
 static MODULE_CONTEXT_DEFINE_INIT(pop3_migration_storage_module,
 				  &mail_storage_module_register);
@@ -130,7 +130,7 @@ static int get_hdr_sha1(struct mail *mail, unsigned char sha1[SHA1_RESULTLEN])
 				HEADER_FILTER_EXCLUDE | HEADER_FILTER_NO_CR,
 				hdr_hash_skip_headers,
 				N_ELEMENTS(hdr_hash_skip_headers),
-				null_header_filter_callback, NULL);
+				*null_header_filter_callback, (void *)NULL);
 	i_stream_unref(&input2);
 
 	sha1_init(&sha1_ctx);
@@ -160,11 +160,6 @@ static int pop3_mailbox_open(struct mail_storage *storage)
 
 	ns = mail_namespace_find(storage->user->namespaces,
 				 mstorage->pop3_box_vname);
-	if (ns == NULL) {
-		i_error("pop3_migration: Namespace not found for mailbox %s",
-			mstorage->pop3_box_vname);
-		return -1;
-	}
 	mstorage->pop3_box = mailbox_alloc(ns->list, mstorage->pop3_box_vname,
 					   MAILBOX_FLAG_READONLY |
 					   MAILBOX_FLAG_POP3_SESSION);
@@ -595,8 +590,7 @@ static void pop3_migration_mail_storage_destroy(struct mail_storage *storage)
 	if (array_is_created(&mstorage->pop3_uidl_map))
 		array_free(&mstorage->pop3_uidl_map);
 
-	if (mstorage->module_ctx.super.destroy != NULL)
-		mstorage->module_ctx.super.destroy(storage);
+	mstorage->module_ctx.super.destroy(storage);
 }
 
 static void pop3_migration_mail_storage_created(struct mail_storage *storage)

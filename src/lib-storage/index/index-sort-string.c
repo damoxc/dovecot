@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 /* The idea is that we use 32bit integers for string sort IDs which specifiy
    the sort order for primary sort condition. The whole 32bit integer space is
@@ -91,10 +91,9 @@ void index_sort_list_init_string(struct mail_search_sort_program *program)
 	i_array_init(&ctx->nonzero_nodes, 128);
 }
 
-static int sort_node_seq_cmp(const void *p1, const void *p2)
+static int sort_node_seq_cmp(const struct mail_sort_node *n1,
+			     const struct mail_sort_node *n2)
 {
-	const struct mail_sort_node *n1 = p1, *n2 = p2;
-
 	if (n1->seq < n2->seq)
 		return -1;
 	if (n1->seq > n2->seq)
@@ -275,8 +274,8 @@ static void index_sort_zeroes(struct sort_string_context *ctx)
 		i_assert(nodes[i].seq <= ctx->last_seq);
 
 		T_BEGIN {
-			index_sort_header_get(mail, nodes[i].seq,
-					      sort_type, str);
+			(void)index_sort_header_get(mail, nodes[i].seq,
+						    sort_type, str);
 			ctx->sort_strings[nodes[i].seq] =
 				str_len(str) == 0 ? "" :
 				p_strdup(pool, str_c(str));

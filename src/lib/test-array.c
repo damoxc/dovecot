@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "array.h"
@@ -9,7 +9,7 @@ struct foo {
 
 static void test_array_foreach(void)
 {
-	ARRAY_DEFINE(foos, struct foo);
+	ARRAY(struct foo) foos;
 	const struct foo *foo;
 	struct foo nfoo;
 	unsigned int i;
@@ -32,7 +32,7 @@ static void test_array_foreach(void)
 
 static void test_array_reverse(void)
 {
-	ARRAY_DEFINE(intarr, int);
+	ARRAY(int) intarr;
 	int input[] = { -1234567890, -272585721, 272485922, 824725652 };
 	const int *output;
 	unsigned int i, j;

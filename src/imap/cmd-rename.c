@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "mail-namespace.h"
@@ -37,7 +37,7 @@ bool cmd_rename(struct client_command_context *cmd)
 
 	old_box = mailbox_alloc(old_ns->list, oldname, 0);
 	new_box = mailbox_alloc(new_ns->list, newname, 0);
-	if (mailbox_rename(old_box, new_box, TRUE) < 0)
+	if (mailbox_rename(old_box, new_box) < 0)
 		client_send_storage_error(cmd, mailbox_get_storage(old_box));
 	else
 		client_send_tagline(cmd, "OK Rename completed.");

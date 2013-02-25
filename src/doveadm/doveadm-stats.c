@@ -1,8 +1,8 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
-#include "network.h"
+#include "net.h"
 #include "ioloop.h"
 #include "istream.h"
 #include "hash.h"
@@ -37,8 +37,8 @@ struct top_context {
 
 	pool_t prev_pool, cur_pool;
 	/* id => struct top_line. */
-	struct hash_table *sessions;
-	ARRAY_DEFINE(lines, struct top_line *);
+	HASH_TABLE(char *, struct top_line *) sessions;
+	ARRAY(struct top_line *) lines;
 	int (*lines_sort)(struct top_line *const *, struct top_line *const *);
 
 	unsigned int last_update_idx, user_idx;
@@ -203,14 +203,13 @@ static void stats_read(struct top_context *ctx)
 static void stats_drop_stale(struct top_context *ctx)
 {
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	char *id;
+	struct top_line *line;
 
 	iter = hash_table_iterate_init(ctx->sessions);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct top_line *line = value;
-
+	while (hash_table_iterate(iter, ctx->sessions, &id, &line)) {
 		if (line->flip != ctx->flip)
-			hash_table_remove(ctx->sessions, key);
+			hash_table_remove(ctx->sessions, id);
 	}
 	hash_table_iterate_deinit(&iter);
 }
@@ -373,7 +372,7 @@ static bool stats_top_round(struct top_context *ctx)
 	stats_drop_stale(ctx);
 
 	sort_ctx = ctx;
-	array_sort(&ctx->lines, ctx->lines_sort);
+	array_sort(&ctx->lines, *ctx->lines_sort);
 	sort_ctx = NULL;
 	return TRUE;
 }
@@ -388,17 +387,19 @@ stats_top_output_diff(struct top_context *ctx,
 
 	if (str_to_uint64(line->prev_values[i], &prev_num) == 0 &&
 	    str_to_uint64(line->cur_values[i], &cur_num) == 0) {
-		i_snprintf(numstr, sizeof(numstr), "%llu",
-			   (unsigned long long)(cur_num - prev_num));
+		if (i_snprintf(numstr, sizeof(numstr), "%llu",
+			       (unsigned long long)(cur_num - prev_num)) < 0)
+			i_unreached();
 		doveadm_print(numstr);
 	} else if (get_double(line->prev_values[i], &prev_double) == 0 &&
 		   get_double(line->cur_values[i], &cur_double) == 0 &&
 		   get_double(line->prev_values[ctx->last_update_idx], &prev_time) == 0 &&
 		   get_double(line->cur_values[ctx->last_update_idx], &cur_time) == 0) {
 		/* %CPU */
-		i_snprintf(numstr, sizeof(numstr), "%d",
-			   (int)((cur_double - prev_double) *
-				 (cur_time - prev_time) * 100));
+		if (i_snprintf(numstr, sizeof(numstr), "%d",
+			       (int)((cur_double - prev_double) *
+				     (cur_time - prev_time) * 100)) < 0)
+			i_unreached();
 		doveadm_print(numstr);
 	} else {
 		doveadm_print(line->cur_values[i]);
@@ -437,7 +438,7 @@ static void stats_top_output(struct top_context *ctx)
 
 	for (i = 0; i < N_ELEMENTS(names); i++) {
 		if (!stats_header_find(ctx, names[i], &indexes[i]))
-			indexes[i] = -1U;
+			indexes[i] = UINT_MAX;
 	}
 
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) < 0)
@@ -447,7 +448,7 @@ static void stats_top_output(struct top_context *ctx)
 	lines = array_get(&ctx->lines, &count);
 	for (i = 0, row = 1; row < maxrow && i < count; i++, row++) {
 		for (j = 0; j < N_ELEMENTS(names); j++) {
-			if (indexes[j] == -1U)
+			if (indexes[j] == UINT_MAX)
 				doveadm_print("?");
 			else
 				stats_top_output_diff(ctx, lines[i], indexes[j]);
@@ -475,9 +476,7 @@ static void stats_top(const char *path, const char *sort_type)
 	ctx.prev_pool = pool_alloconly_create("stats top", 1024*16);
 	ctx.cur_pool = pool_alloconly_create("stats top", 1024*16);
 	i_array_init(&ctx.lines, 128);
-	ctx.sessions =
-		hash_table_create(default_pool, default_pool, 0,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&ctx.sessions, default_pool, 0, str_hash, strcmp);
 	net_set_nonblock(ctx.fd, FALSE);
 
 	ctx.input = i_stream_create_fd(ctx.fd, (size_t)-1, TRUE);
@@ -494,7 +493,7 @@ static void stats_top(const char *path, const char *sort_type)
 	array_free(&ctx.lines);
 	pool_unref(&ctx.prev_pool);
 	pool_unref(&ctx.cur_pool);
-	(void)close(ctx.fd);
+	i_close_fd(&ctx.fd);
 }
 
 static void cmd_stats_top(int argc, char *argv[])

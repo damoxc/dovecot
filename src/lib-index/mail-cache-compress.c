@@ -1,11 +1,10 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "ostream.h"
 #include "nfs-workarounds.h"
 #include "read-full.h"
-#include "close-keep-errno.h"
 #include "file-dotlock.h"
 #include "file-cache.h"
 #include "file-set-size.h"
@@ -17,7 +16,7 @@ struct mail_cache_copy_context {
 	struct mail_cache *cache;
 
 	buffer_t *buffer, *field_seen;
-	ARRAY_DEFINE(bitmask_pos, unsigned int);
+	ARRAY(unsigned int) bitmask_pos;
 	uint32_t *field_file_map;
 
 	uint8_t field_seen_value;
@@ -78,7 +77,7 @@ mail_cache_compress_field(struct mail_cache_copy_context *ctx,
 
 	buffer_append(ctx->buffer, &file_field_idx, sizeof(file_field_idx));
 
-	if (cache_field->field_size == (unsigned int)-1) {
+	if (cache_field->field_size == UINT_MAX) {
 		size32 = (uint32_t)field->size;
 		buffer_append(ctx->buffer, &size32, sizeof(size32));
 	}
@@ -164,7 +163,7 @@ mail_cache_copy(struct mail_cache *cache, struct mail_index_transaction *trans,
 	struct mail_cache_record cache_rec;
 	struct ostream *output;
 	uint32_t message_count, seq, first_new_seq, ext_offset;
-	unsigned int i, used_fields_count, orig_fields_count;
+	unsigned int i, used_fields_count, orig_fields_count, record_count;
 	time_t max_drop_time;
 
 	view = mail_index_transaction_get_view(trans);
@@ -172,11 +171,12 @@ mail_cache_copy(struct mail_cache *cache, struct mail_index_transaction *trans,
 	output = o_stream_create_fd_file(fd, 0, FALSE);
 
 	memset(&hdr, 0, sizeof(hdr));
-	hdr.version = MAIL_CACHE_VERSION;
+	hdr.major_version = MAIL_CACHE_MAJOR_VERSION;
+	hdr.minor_version = MAIL_CACHE_MINOR_VERSION;
 	hdr.compat_sizeof_uoff_t = sizeof(uoff_t);
 	hdr.indexid = cache->index->indexid;
 	hdr.file_seq = get_next_file_seq(cache, view);
-	o_stream_send(output, &hdr, sizeof(hdr));
+	o_stream_nsend(output, &hdr, sizeof(hdr));
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.cache = cache;
@@ -231,10 +231,10 @@ mail_cache_copy(struct mail_cache *cache, struct mail_index_transaction *trans,
 	first_new_seq = mail_cache_get_first_new_seq(view);
 	message_count = mail_index_view_get_messages_count(view);
 
-	i_array_init(ext_offsets, message_count);
+	i_array_init(ext_offsets, message_count); record_count = 0;
 	for (seq = 1; seq <= message_count; seq++) {
 		if (mail_index_transaction_is_expunged(trans, seq)) {
-			(void)array_append_space(ext_offsets);
+			array_append_zero(ext_offsets);
 			continue;
 		}
 
@@ -254,47 +254,43 @@ mail_cache_copy(struct mail_cache *cache, struct mail_index_transaction *trans,
 		while (mail_cache_lookup_iter_next(&iter, &field) > 0)
 			mail_cache_compress_field(&ctx, &field);
 
-		cache_rec.size = buffer_get_used_size(ctx.buffer);
-		if (cache_rec.size == sizeof(cache_rec)) {
+		if (ctx.buffer->used == sizeof(cache_rec) ||
+		    ctx.buffer->used > MAIL_CACHE_RECORD_MAX_SIZE) {
 			/* nothing cached */
 			ext_offset = 0;
 		} else {
+			cache_rec.size = ctx.buffer->used;
 			ext_offset = output->offset;
 			buffer_write(ctx.buffer, 0, &cache_rec,
 				     sizeof(cache_rec));
-			o_stream_send(output, ctx.buffer->data, cache_rec.size);
+			o_stream_nsend(output, ctx.buffer->data, cache_rec.size);
+			record_count++;
 		}
 
 		array_append(ext_offsets, &ext_offset, 1);
 	}
 	i_assert(orig_fields_count == cache->fields_count);
 
+	hdr.record_count = record_count;
 	hdr.field_header_offset = mail_index_uint32_to_offset(output->offset);
 	mail_cache_compress_get_fields(&ctx, used_fields_count);
-	o_stream_send(output, ctx.buffer->data, ctx.buffer->used);
+	o_stream_nsend(output, ctx.buffer->data, ctx.buffer->used);
 
-	hdr.used_file_size = output->offset;
+	hdr.backwards_compat_used_file_size = output->offset;
 	buffer_free(&ctx.buffer);
 	buffer_free(&ctx.field_seen);
 
-	o_stream_seek(output, 0);
-	o_stream_send(output, &hdr, sizeof(hdr));
+	(void)o_stream_seek(output, 0);
+	o_stream_nsend(output, &hdr, sizeof(hdr));
 
 	mail_cache_view_close(&cache_view);
 
-	if (o_stream_flush(output) < 0) {
-		errno = output->stream_errno;
-		mail_cache_set_syscall_error(cache, "o_stream_flush()");
+	if (o_stream_nfinish(output) < 0) {
+		mail_cache_set_syscall_error(cache, "write()");
 		o_stream_destroy(&output);
 		array_free(ext_offsets);
 		return -1;
 	}
-
-	if (hdr.used_file_size < MAIL_CACHE_INITIAL_SIZE) {
-		/* grow the file some more. doesn't matter if it fails */
-		(void)file_set_size(fd, MAIL_CACHE_INITIAL_SIZE);
-	}
-
 	o_stream_destroy(&output);
 
 	if (cache->index->fsync_mode == FSYNC_MODE_ALWAYS) {
@@ -326,7 +322,7 @@ static int mail_cache_compress_has_file_changed(struct mail_cache *cache)
 		}
 
 		ret = read_full(fd, &hdr, sizeof(hdr));
-		close_keep_errno(fd);
+		i_close_fd(&fd);
 
 		if (ret >= 0) {
 			if (ret == 0)
@@ -396,13 +392,13 @@ static int mail_cache_compress_locked(struct mail_cache *cache,
 		   reverse those changes by re-reading them from file. */
 		if (mail_cache_header_fields_read(cache) < 0)
 			return -1;
-		(void)file_dotlock_delete(&dotlock);
+		file_dotlock_delete(&dotlock);
 		return -1;
 	}
 
 	if (fstat(fd, &st) < 0) {
 		mail_cache_set_syscall_error(cache, "fstat()");
-		(void)file_dotlock_delete(&dotlock);
+		file_dotlock_delete(&dotlock);
 		return -1;
 	}
 
@@ -410,7 +406,7 @@ static int mail_cache_compress_locked(struct mail_cache *cache,
 				 DOTLOCK_REPLACE_FLAG_DONT_CLOSE_FD) < 0) {
 		mail_cache_set_syscall_error(cache,
 					     "file_dotlock_replace()");
-		(void)close(fd);
+		i_close_fd(&fd);
 		array_free(&ext_offsets);
 		return -1;
 	}

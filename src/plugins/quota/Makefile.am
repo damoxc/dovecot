@@ -44,6 +44,7 @@ quota_common_objects = \
 
 lib10_quota_plugin_la_SOURCES = $(quota_dist_sources)
 nodist_lib10_quota_plugin_la_SOURCES = $(RQUOTA_XDR)
+lib10_quota_plugin_la_LIBADD = $(QUOTA_LIBS)
 
 doveadm_module_LTLIBRARIES = \
 	lib10_doveadm_quota_plugin.la
@@ -54,19 +55,11 @@ lib10_doveadm_quota_plugin_la_SOURCES = \
 quota_status_SOURCES = \
 	quota-status.c
 
-if !BUILD_SHARED_LIBS
-unused_objects = \
-	../../lib/mountpoint.o \
-	../../lib-imap/imap-util.o \
-	../../lib-storage/mail-search-parser-imap.o
-endif
-
 quota_status_LDADD = \
 	$(quota_common_objects) \
-	$(unused_objects) \
 	$(LIBDOVECOT_STORAGE) \
 	$(LIBDOVECOT) \
-	$(MODULE_LIBS)
+	$(QUOTA_LIBS)
 quota_status_DEPENDENCIES = \
 	$(quota_common_objects) \
 	$(LIBDOVECOT_STORAGE_DEPS) \

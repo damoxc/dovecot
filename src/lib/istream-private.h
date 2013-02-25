@@ -15,7 +15,7 @@ struct istream_private {
 	void (*seek)(struct istream_private *stream,
 		     uoff_t v_offset, bool mark);
 	void (*sync)(struct istream_private *stream);
-	const struct stat *(*stat)(struct istream_private *stream, bool exact);
+	int (*stat)(struct istream_private *stream, bool exact);
 	int (*get_size)(struct istream_private *stream, bool exact, uoff_t *size_r);
 
 /* data: */
@@ -29,7 +29,7 @@ struct istream_private {
 	unsigned char *w_buffer; /* may be NULL */
 
 	size_t buffer_size, max_buffer_size, init_buffer_size;
-	size_t skip, pos;
+	size_t skip, pos, try_alloc_limit;
 
 	struct istream *parent; /* for filter streams */
 	uoff_t parent_start_offset;
@@ -44,18 +44,23 @@ struct istream_private {
 	unsigned int access_counter;
 
 	string_t *line_str; /* for i_stream_next_line() if w_buffer == NULL */
+	unsigned int line_crlf:1;
 	unsigned int return_nolf_line:1;
+	unsigned int stream_size_passthrough:1; /* stream is parent's size */
 };
 
-struct istream *
-i_stream_create(struct istream_private *stream, struct istream *parent, int fd);
+struct istream * ATTR_NOWARN_UNUSED_RESULT
+i_stream_create(struct istream_private *stream, struct istream *parent, int fd)
+	ATTR_NULL(2);
 
 void i_stream_compress(struct istream_private *stream);
 void i_stream_grow_buffer(struct istream_private *stream, size_t bytes);
-bool i_stream_get_buffer_space(struct istream_private *stream,
-			       size_t wanted_size, size_t *size_r);
+bool ATTR_NOWARN_UNUSED_RESULT
+i_stream_try_alloc(struct istream_private *stream,
+		   size_t wanted_size, size_t *size_r);
+void *i_stream_alloc(struct istream_private *stream, size_t size);
 ssize_t i_stream_read_copy_from_parent(struct istream *istream);
-void i_stream_default_seek(struct istream_private *stream,
-			   uoff_t v_offset, bool mark);
+void i_stream_default_seek_nonseekable(struct istream_private *stream,
+				       uoff_t v_offset, bool mark);
 
 #endif

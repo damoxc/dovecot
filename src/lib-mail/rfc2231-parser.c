@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -41,7 +41,7 @@ int rfc2231_parse(struct rfc822_parser_context *ctx,
 		  const char *const **result_r)
 {
 	ARRAY_TYPE(const_string) result;
-	ARRAY_DEFINE(rfc2231_params_arr, struct rfc2231_parameter);
+	ARRAY(struct rfc2231_parameter) rfc2231_params_arr;
 	struct rfc2231_parameter rfc2231_param;
 	const struct rfc2231_parameter *rfc2231_params;
 	const char *key, *value, *p, *p2;
@@ -99,7 +99,7 @@ int rfc2231_parse(struct rfc822_parser_context *ctx,
 
 	if (array_count(&rfc2231_params_arr) == 0) {
 		/* No RFC 2231 parameters */
-		(void)array_append_space(&result); /* NULL-terminate */
+		array_append_zero(&result); /* NULL-terminate */
 		*result_r = array_idx(&result, 0);
 		return broken ? -1 : 0;
 	}
@@ -166,7 +166,7 @@ int rfc2231_parse(struct rfc822_parser_context *ctx,
 			array_append(&result, &value, 1);
 		}
 	}
-	(void)array_append_space(&result); /* NULL-terminate */
+	array_append_zero(&result); /* NULL-terminate */
 	*result_r = array_idx(&result, 0);
 	return broken ? -1 : 0;
 }

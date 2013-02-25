@@ -1,7 +1,7 @@
 #ifndef AUTH_CLIENT_H
 #define AUTH_CLIENT_H
 
-#include "network.h"
+#include "net.h"
 #include "auth-client-interface.h"
 
 struct auth_client;
@@ -41,8 +41,8 @@ struct auth_request_info {
 	const char *cert_username;
 	enum auth_request_flags flags;
 
-	struct ip_addr local_ip, remote_ip;
-	unsigned int local_port, remote_port;
+	struct ip_addr local_ip, remote_ip, real_local_ip, real_remote_ip;
+	unsigned int local_port, remote_port, real_local_port, real_remote_port;
 
 	const char *initial_resp_base64;
 };
@@ -67,7 +67,7 @@ bool auth_client_is_connected(struct auth_client *client);
 bool auth_client_is_disconnected(struct auth_client *client);
 void auth_client_set_connect_notify(struct auth_client *client,
 				    auth_connect_notify_callback_t *callback,
-				    void *context);
+				    void *context) ATTR_NULL(2, 3);
 const struct auth_mech_desc *
 auth_client_get_available_mechs(struct auth_client *client,
 				unsigned int *mech_count);
@@ -84,7 +84,8 @@ void auth_client_get_connect_id(struct auth_client *client,
 struct auth_client_request *
 auth_client_request_new(struct auth_client *client,
 			const struct auth_request_info *request_info,
-			auth_request_callback_t *callback, void *context);
+			auth_request_callback_t *callback, void *context)
+	ATTR_NULL(4);
 /* Continue authentication. Call when
    reply->result == AUTH_CLIENT_REQUEST_CONTINUE */
 void auth_client_request_continue(struct auth_client_request *request,

@@ -1,7 +1,8 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "str.h"
+#include "strescape.h"
 #include "auth-worker-server.h"
 #include "password-scheme.h"
 #include "passdb.h"
@@ -17,11 +18,8 @@ auth_worker_reply_parse_args(struct auth_request *request,
 		request->passdb_password = p_strdup(request->pool, *args);
 	args++;
 
-	if (*args != NULL) {
-		i_assert(auth_stream_is_empty(request->extra_fields) ||
-			 request->master_user != NULL);
+	if (*args != NULL)
 		auth_request_set_fields(request, args, NULL);
-	}
 }
 
 static enum passdb_result
@@ -76,19 +74,17 @@ verify_plain_callback(const char *reply, void *context)
 
 void passdb_blocking_verify_plain(struct auth_request *request)
 {
-	struct auth_stream_reply *reply;
+	string_t *str;
 
-	i_assert(auth_stream_is_empty(request->extra_fields) ||
-		 request->master_user != NULL);
-
-	reply = auth_stream_reply_init(pool_datastack_create());
-	auth_stream_reply_add(reply, "PASSV", NULL);
-	auth_stream_reply_add(reply, NULL, dec2str(request->passdb->passdb->id));
-	auth_stream_reply_add(reply, NULL, request->mech_password);
-	auth_request_export(request, reply);
+	str = t_str_new(128);
+	str_printfa(str, "PASSV\t%u\t", request->passdb->passdb->id);
+	str_append_tabescaped(str, request->mech_password);
+	str_append_c(str, '\t');
+	auth_request_export(request, str);
 
 	auth_request_ref(request);
-	auth_worker_call(request->pool, reply, verify_plain_callback, request);
+	auth_worker_call(request->pool, str_c(str),
+			 verify_plain_callback, request);
 }
 
 static bool lookup_credentials_callback(const char *reply, void *context)
@@ -118,19 +114,16 @@ static bool lookup_credentials_callback(const char *reply, void *context)
 
 void passdb_blocking_lookup_credentials(struct auth_request *request)
 {
-	struct auth_stream_reply *reply;
+	string_t *str;
 
-	i_assert(auth_stream_is_empty(request->extra_fields) ||
-		 request->master_user != NULL);
-
-	reply = auth_stream_reply_init(pool_datastack_create());
-	auth_stream_reply_add(reply, "PASSL", NULL);
-	auth_stream_reply_add(reply, NULL, dec2str(request->passdb->passdb->id));
-	auth_stream_reply_add(reply, NULL, request->credentials_scheme);
-	auth_request_export(request, reply);
+	str = t_str_new(128);
+	str_printfa(str, "PASSL\t%u\t", request->passdb->passdb->id);
+	str_append_tabescaped(str, request->credentials_scheme);
+	str_append_c(str, '\t');
+	auth_request_export(request, str);
 
 	auth_request_ref(request);
-	auth_worker_call(request->pool, reply,
+	auth_worker_call(request->pool, str_c(str),
 			 lookup_credentials_callback, request);
 }
 
@@ -149,15 +142,15 @@ set_credentials_callback(const char *reply, void *context)
 void passdb_blocking_set_credentials(struct auth_request *request,
 				     const char *new_credentials)
 {
-	struct auth_stream_reply *reply;
+	string_t *str;
 
-	reply = auth_stream_reply_init(pool_datastack_create());
-	auth_stream_reply_add(reply, "SETCRED", NULL);
-	auth_stream_reply_add(reply, NULL, dec2str(request->passdb->passdb->id));
-	auth_stream_reply_add(reply, NULL, new_credentials);
-	auth_request_export(request, reply);
+	str = t_str_new(128);
+	str_printfa(str, "SETCRED\t%u\t", request->passdb->passdb->id);
+	str_append_tabescaped(str, new_credentials);
+	str_append_c(str, '\t');
+	auth_request_export(request, str);
 
 	auth_request_ref(request);
-	auth_worker_call(request->pool, reply,
+	auth_worker_call(request->pool, str_c(str),
 			 set_credentials_callback, request);
 }

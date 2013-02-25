@@ -1,8 +1,8 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
-#include "network.h"
+#include "net.h"
 #include "hash.h"
 #include "doveadm.h"
 #include "doveadm-who.h"
@@ -21,15 +21,15 @@ struct kick_user {
 
 struct kick_pid {
 	pid_t pid;
-	ARRAY_DEFINE(users, struct kick_user);
+	ARRAY(struct kick_user) users;
 	bool kick;
 };
 
 struct kick_context {
 	struct who_context who;
-	struct hash_table *pids;
+	HASH_TABLE(void *, struct kick_pid *) pids;
 	bool force_kick;
-	ARRAY_DEFINE(kicked_users, const char *);
+	ARRAY(const char *) kicked_users;
 };
 
 static void
@@ -129,16 +129,15 @@ kick_print_kicked(struct kick_context *ctx, const bool show_warning)
 static void kick_users(struct kick_context *ctx)
 {
 	bool show_enforce_warning = FALSE;
-	void *key, *value;
-	struct kick_pid *k_pid;
 	struct hash_iterate_context *iter;
+	void *key;
+	struct kick_pid *k_pid;
 	const struct kick_user *user;
 
 	p_array_init(&ctx->kicked_users, ctx->who.pool, 10);
 
 	iter = hash_table_iterate_init(ctx->pids);
-	while (hash_table_iterate(iter, &key, &value)) {
-		k_pid = value;
+	while (hash_table_iterate(iter, ctx->pids, &key, &k_pid)) {
 		if (kick_pid_want_kicked(ctx, k_pid, &show_enforce_warning))
 			k_pid->kick = TRUE;
 	}
@@ -150,8 +149,7 @@ static void kick_users(struct kick_context *ctx)
 	}
 
 	iter = hash_table_iterate_init(ctx->pids);
-	while (hash_table_iterate(iter, &key, &value)) {
-		k_pid = value;
+	while (hash_table_iterate(iter, ctx->pids, &key, &k_pid)) {
 		if (!k_pid->kick)
 			continue;
 
@@ -179,7 +177,7 @@ static void cmd_kick(int argc, char *argv[])
 	ctx.who.anvil_path = t_strconcat(doveadm_settings->base_dir, "/anvil", NULL);
 	ctx.force_kick = FALSE;
 	ctx.who.pool = pool_alloconly_create("kick pids", 10240);
-	ctx.pids = hash_table_create(default_pool, ctx.who.pool, 0, NULL, NULL);
+	hash_table_create_direct(&ctx.pids, ctx.who.pool, 0);
 
 	while ((c = getopt(argc, argv, "a:f")) > 0) {
 		switch (c) {

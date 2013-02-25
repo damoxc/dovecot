@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -360,10 +360,17 @@ static void mail_log_mail_copy(void *txn, struct mail *src, struct mail *dst)
 {
 	struct mail_log_mail_txn_context *ctx =
 		(struct mail_log_mail_txn_context *)txn;
+	struct mail_private *src_pmail = (struct mail_private *)src;
+	struct mailbox *src_box = src->box;
 	const char *desc;
 
+	if (src_pmail->vmail != NULL) {
+		/* copying a mail from virtual storage. src points to the
+		   backend mail, but we want to log the virtual mailbox name. */
+		src_box = src_pmail->vmail->box;
+	}
 	desc = t_strdup_printf("copy from %s",
-			       str_sanitize(mailbox_get_vname(src->box),
+			       str_sanitize(mailbox_get_vname(src_box),
 					    MAILBOX_NAME_LOG_LEN));
 	mail_log_append_mail_message(ctx, dst,
 				     MAIL_LOG_EVENT_COPY, desc);
@@ -482,8 +489,7 @@ mail_log_mailbox_delete_commit(void *txn ATTR_UNUSED, struct mailbox *box)
 }
 
 static void
-mail_log_mailbox_rename(struct mailbox *src,
-			struct mailbox *dest, bool rename_children ATTR_UNUSED)
+mail_log_mailbox_rename(struct mailbox *src, struct mailbox *dest)
 {
 	struct mail_log_user *muser = MAIL_LOG_USER_CONTEXT(src->storage->user);
 

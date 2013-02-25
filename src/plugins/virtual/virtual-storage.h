@@ -7,7 +7,6 @@
 #define VIRTUAL_STORAGE_NAME "virtual"
 #define VIRTUAL_SUBSCRIPTION_FILE_NAME ".virtual-subscriptions"
 #define VIRTUAL_CONFIG_FNAME "dovecot-virtual"
-#define VIRTUAL_INDEX_PREFIX "dovecot.index"
 
 #define VIRTUAL_CONTEXT(obj) \
 	MODULE_CONTEXT(obj, virtual_storage_module)
@@ -79,7 +78,7 @@ struct virtual_backend_box {
 	struct mailbox *box;
 	/* Messages currently included in the virtual mailbox,
 	   sorted by real_uid */
-	ARRAY_DEFINE(uids, struct virtual_backend_uidmap);
+	ARRAY(struct virtual_backend_uidmap) uids;
 
 	/* temporary mail used while syncing */
 	struct mail *sync_mail;
@@ -145,6 +144,7 @@ struct virtual_mailbox {
 	unsigned int uids_mapped:1;
 	unsigned int sync_initialized:1;
 	unsigned int inconsistent:1;
+	unsigned int have_guids:1;
 };
 
 extern MODULE_CONTEXT_DEFINE(virtual_storage_module,

@@ -1,10 +1,25 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "buffer.h"
 #include "mail-index-view-private.h"
 #include "mail-transaction-log.h"
+
+struct mail_index_view *
+mail_index_view_dup_private(const struct mail_index_view *src)
+{
+	struct mail_index_view *view;
+	struct mail_index_map *map;
+
+	view = i_new(struct mail_index_view, 1);
+	mail_index_view_clone(view, src);
+
+	map = mail_index_map_clone(view->map);
+	mail_index_unmap(&view->map);
+	view->map = map;
+	return view;
+}
 
 void mail_index_view_clone(struct mail_index_view *dest,
 			   const struct mail_index_view *src)
@@ -166,13 +181,15 @@ view_lookup_full(struct mail_index_view *view, uint32_t seq,
 
 		/* we'll need to return something so the caller doesn't crash */
 		*map_r = view->map;
-		*expunged_r = TRUE;
+		if (expunged_r != NULL)
+			*expunged_r = TRUE;
 		return &broken_rec;
 	}
 	if (view->map == view->index->map) {
 		/* view's mapping is latest. we can use it directly. */
 		*map_r = view->map;
-		*expunged_r = FALSE;
+		if (expunged_r != NULL)
+			*expunged_r = FALSE;
 		return rec;
 	}
 
@@ -190,7 +207,8 @@ view_lookup_full(struct mail_index_view *view, uint32_t seq,
 	if (seq == 0) {
 		/* everything is expunged from head. use the old record. */
 		*map_r = view->map;
-		*expunged_r = TRUE;
+		if (expunged_r != NULL)
+			*expunged_r = TRUE;
 		return rec;
 	}
 
@@ -207,12 +225,14 @@ view_lookup_full(struct mail_index_view *view, uint32_t seq,
 		   returned record doesn't get invalidated after next sync. */
 		mail_index_view_ref_map(view, view->index->map);
 		*map_r = view->index->map;
-		*expunged_r = FALSE;
+		if (expunged_r != NULL)
+			*expunged_r = FALSE;
 		return head_rec;
 	} else {
 		/* expuned from head. use the old record. */
 		*map_r = view->map;
-		*expunged_r = TRUE;
+		if (expunged_r != NULL)
+			*expunged_r = TRUE;
 		return rec;
 	}
 }
@@ -275,16 +295,17 @@ mail_index_data_lookup_keywords(struct mail_index_map *map,
 {
 	const unsigned int *keyword_idx_map;
 	unsigned int i, j, keyword_count, index_idx;
-	uint32_t idx;
-	uint16_t record_size;
+	uint32_t idx, hdr_size;
+	uint16_t record_size, record_align;
 
 	array_clear(keyword_idx);
 	if (data == NULL) {
 		/* no keywords at all in index */
 		return;
 	}
-	(void)mail_index_ext_get_size(NULL, map->index->keywords_ext_id,
-				      map, NULL, &record_size, NULL);
+	(void)mail_index_ext_get_size(map, map->index->keywords_ext_id,
+				      &hdr_size, &record_size,
+				      &record_align);
 
 	/* keyword_idx_map[] contains file => index keyword mapping */
 	if (!array_is_created(&map->keyword_idx_map))
@@ -425,9 +446,7 @@ const struct mail_index_record *
 mail_index_lookup_full(struct mail_index_view *view, uint32_t seq,
 		       struct mail_index_map **map_r)
 {
-	bool expunged;
-
-	return view->v.lookup_full(view, seq, map_r, &expunged);
+	return view->v.lookup_full(view, seq, map_r, NULL);
 }
 
 bool mail_index_is_expunged(struct mail_index_view *view, uint32_t seq)
@@ -523,11 +542,6 @@ void mail_index_lookup_ext_full(struct mail_index_view *view, uint32_t seq,
 				uint32_t ext_id, struct mail_index_map **map_r,
 				const void **data_r, bool *expunged_r)
 {
-	bool expunged;
-
-	if (expunged_r == NULL)
-		expunged_r = &expunged;
-
 	view->v.lookup_ext_full(view, seq, ext_id, map_r, data_r, expunged_r);
 }
 
@@ -551,8 +565,7 @@ bool mail_index_ext_get_reset_id(struct mail_index_view *view,
 	return view->v.ext_get_reset_id(view, map, ext_id, reset_id_r);
 }
 
-void mail_index_ext_get_size(struct mail_index_view *view ATTR_UNUSED,
-			     uint32_t ext_id, struct mail_index_map *map,
+void mail_index_ext_get_size(struct mail_index_map *map, uint32_t ext_id,
 			     uint32_t *hdr_size_r, uint16_t *record_size_r,
 			     uint16_t *record_align_r)
 {
@@ -563,22 +576,16 @@ void mail_index_ext_get_size(struct mail_index_view *view ATTR_UNUSED,
 
 	if (!mail_index_map_get_ext_idx(map, ext_id, &idx)) {
 		/* extension doesn't exist in this index file */
-		if (hdr_size_r != NULL)
-			*hdr_size_r = 0;
-		if (record_size_r != NULL)
-			*record_size_r = 0;
-		if (record_align_r != NULL)
-			*record_align_r = 0;
+		*hdr_size_r = 0;
+		*record_size_r = 0;
+		*record_align_r = 0;
 		return;
 	}
 
 	ext = array_idx(&map->extensions, idx);
-	if (hdr_size_r != NULL)
-		*hdr_size_r = ext->hdr_size;
-	if (record_size_r != NULL)
-		*record_size_r = ext->record_size;
-	if (record_align_r != NULL)
-		*record_align_r = ext->record_align;
+	*hdr_size_r = ext->hdr_size;
+	*record_size_r = ext->record_size;
+	*record_align_r = ext->record_align;
 }
 
 static struct mail_index_view_vfuncs view_vfuncs = {

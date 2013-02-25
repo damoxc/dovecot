@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "mail-storage.h"
@@ -208,4 +208,19 @@ int imap_search_get_anyset(struct client_command_context *cmd,
 		return -1;
 	}
 	return 1;
+}
+
+void imap_search_add_changed_since(struct mail_search_args *search_args,
+				   uint64_t modseq)
+{
+	struct mail_search_arg *search_arg;
+
+	search_arg = p_new(search_args->pool, struct mail_search_arg, 1);
+	search_arg->type = SEARCH_MODSEQ;
+	search_arg->value.modseq =
+		p_new(search_args->pool, struct mail_search_modseq, 1);
+	search_arg->value.modseq->modseq = modseq + 1;
+
+	search_arg->next = search_args->args->next;
+	search_args->args->next = search_arg;
 }

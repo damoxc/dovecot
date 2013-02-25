@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "ostream.h"
@@ -10,6 +10,7 @@
 #include "imap-seqset.h"
 #include "imap-util.h"
 #include "mail-search-build.h"
+#include "imap-fetch.h"
 #include "imap-commands.h"
 #include "imap-search-args.h"
 #include "imap-search.h"
@@ -42,10 +43,28 @@ imap_partial_range_parse(struct imap_search_context *ctx, const char *str)
 }
 
 static bool
+search_parse_fetch_att(struct imap_search_context *ctx,
+		       const struct imap_arg *update_args)
+{
+	const char *error;
+
+	ctx->fetch_pool = pool_alloconly_create("search update fetch", 512);
+	if (imap_fetch_att_list_parse(ctx->cmd->client, ctx->fetch_pool,
+				      update_args, &ctx->fetch_ctx, &error) < 0) {
+		client_send_command_error(ctx->cmd, t_strconcat(
+			"SEARCH UPDATE fetch-att: ", error, NULL));
+		pool_unref(&ctx->fetch_pool);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static bool
 search_parse_return_options(struct imap_search_context *ctx,
 			    const struct imap_arg *args)
 {
 	struct client_command_context *cmd = ctx->cmd;
+	const struct imap_arg *update_args;
 	const char *name, *str;
 	unsigned int idx;
 
@@ -69,9 +88,19 @@ search_parse_return_options(struct imap_search_context *ctx,
 			ctx->return_options |= SEARCH_RETURN_SAVE;
 		else if (strcmp(name, "CONTEXT") == 0) {
 			/* no-op */
-		} else if (strcmp(name, "UPDATE") == 0)
+		} else if (strcmp(name, "UPDATE") == 0) {
+			if ((ctx->return_options & SEARCH_RETURN_UPDATE) != 0) {
+				client_send_command_error(cmd,
+					"SEARCH return options have duplicate UPDATE.");
+				return FALSE;
+			}
 			ctx->return_options |= SEARCH_RETURN_UPDATE;
-		else if (strcmp(name, "RELEVANCY") == 0)
+			if (imap_arg_get_list(args, &update_args)) {
+				if (!search_parse_fetch_att(ctx, update_args))
+					return FALSE;
+				args++;
+			}
+		} else if (strcmp(name, "RELEVANCY") == 0)
 			ctx->return_options |= SEARCH_RETURN_RELEVANCY;
 		else if (strcmp(name, "PARTIAL") == 0) {
 			if (ctx->partial1 != 0) {
@@ -149,10 +178,11 @@ static void imap_search_result_save(struct imap_search_context *ctx)
 		/* too many updates */
 		string_t *str = t_str_new(256);
 		str_append(str, "* NO [NOUPDATE ");
-		imap_quote_append_string(str, ctx->cmd->tag, FALSE);
+		imap_append_quoted(str, ctx->cmd->tag);
 		str_append_c(str, ']');
 		client_send_line(client, str_c(str));
 		ctx->return_options &= ~SEARCH_RETURN_UPDATE;
+		imap_search_context_free(ctx);
 		return;
 	}
 	result = mailbox_search_result_save(ctx->search_ctx,
@@ -163,6 +193,10 @@ static void imap_search_result_save(struct imap_search_context *ctx)
 	update->tag = i_strdup(ctx->cmd->tag);
 	update->result = result;
 	update->return_uids = ctx->cmd->uid;
+	update->fetch_pool = ctx->fetch_pool;
+	update->fetch_ctx = ctx->fetch_ctx;
+	ctx->fetch_pool = NULL;
+	ctx->fetch_ctx = NULL;
 }
 
 static void imap_search_send_result_standard(struct imap_search_context *ctx)
@@ -177,8 +211,8 @@ static void imap_search_send_result_standard(struct imap_search_context *ctx)
 		for (seq = range->seq1; seq <= range->seq2; seq++)
 			str_printfa(str, " %u", seq);
 		if (str_len(str) >= 1024-32) {
-			o_stream_send(ctx->cmd->client->output,
-				      str_data(str), str_len(str));
+			o_stream_nsend(ctx->cmd->client->output,
+				       str_data(str), str_len(str));
 			str_truncate(str, 0);
 		}
 	}
@@ -188,8 +222,7 @@ static void imap_search_send_result_standard(struct imap_search_context *ctx)
 			    (unsigned long long)ctx->highest_seen_modseq);
 	}
 	str_append(str, "\r\n");
-	o_stream_send(ctx->cmd->client->output,
-		      str_data(str), str_len(str));
+	o_stream_nsend(ctx->cmd->client->output, str_data(str), str_len(str));
 }
 
 static void
@@ -285,7 +318,7 @@ static void imap_search_send_result(struct imap_search_context *ctx)
 
 	str = str_new(default_pool, 1024);
 	str_append(str, "* ESEARCH (TAG ");
-	imap_quote_append_string(str, ctx->cmd->tag, FALSE);
+	imap_append_string(str, ctx->cmd->tag);
 	str_append_c(str, ')');
 
 	if (ctx->cmd->uid)
@@ -318,7 +351,7 @@ static void imap_search_send_result(struct imap_search_context *ctx)
 			    (unsigned long long)ctx->highest_seen_modseq);
 	}
 	str_append(str, "\r\n");
-	o_stream_send(client->output, str_data(str), str_len(str));
+	o_stream_nsend(client->output, str_data(str), str_len(str));
 	str_free(&str);
 }
 
@@ -334,7 +367,7 @@ search_update_mail(struct imap_search_context *ctx, struct mail *mail)
 	}
 	if ((ctx->return_options & SEARCH_RETURN_SAVE) != 0) {
 		seq_range_array_add(&ctx->cmd->client->search_saved_uidset,
-				    0, mail->uid);
+				    mail->uid);
 	}
 	if ((ctx->return_options & SEARCH_RETURN_RELEVANCY) != 0) {
 		const char *str;
@@ -491,7 +524,7 @@ static void cmd_search_more_callback(struct client_command_context *cmd)
 		(void)client_handle_unfinished_cmd(cmd);
 	else
 		client_command_free(&cmd);
-	(void)cmd_sync_delayed(client);
+	cmd_sync_delayed(client);
 
 	if (client->disconnected)
 		client_destroy(client, NULL);
@@ -511,20 +544,24 @@ int cmd_search_parse_return_if_found(struct imap_search_context *ctx,
 		return 1;
 	}
 
-	if (!search_parse_return_options(ctx, list_args))
+	if (!search_parse_return_options(ctx, list_args)) {
+		imap_search_context_free(ctx);
 		return -1;
+	}
 
 	if ((ctx->return_options & SEARCH_RETURN_SAVE) != 0) {
 		/* wait if there is another SEARCH SAVE command running. */
-		cmd->search_save_result = TRUE;
-		if (client_handle_search_save_ambiguity(cmd))
+		if (client_handle_search_save_ambiguity(cmd)) {
+			imap_search_context_free(ctx);
 			return 0;
+		}
 
 		/* make sure the search result gets cleared if SEARCH fails */
 		if (array_is_created(&cmd->client->search_saved_uidset))
 			array_clear(&cmd->client->search_saved_uidset);
 		else
 			i_array_init(&cmd->client->search_saved_uidset, 128);
+		cmd->search_save_result = TRUE;
 	}
 
 	*_args = args + 2;
@@ -554,6 +591,9 @@ bool imap_search_start(struct imap_search_context *ctx,
 	i_array_init(&ctx->result, 128);
 	if ((ctx->return_options & SEARCH_RETURN_UPDATE) != 0)
 		imap_search_result_save(ctx);
+	else {
+		i_assert(ctx->fetch_ctx == NULL);
+	}
 	if ((ctx->return_options & SEARCH_RETURN_RELEVANCY) != 0)
 		i_array_init(&ctx->relevancy_scores, 128);
 
@@ -593,7 +633,26 @@ static int imap_search_deinit(struct imap_search_context *ctx)
 	array_free(&ctx->result);
 	mail_search_args_deinit(ctx->sargs);
 	mail_search_args_unref(&ctx->sargs);
+	imap_search_context_free(ctx);
 
 	ctx->cmd->context = NULL;
 	return ret;
+}
+
+void imap_search_context_free(struct imap_search_context *ctx)
+{
+	if (ctx->fetch_ctx != NULL) {
+		imap_fetch_free(&ctx->fetch_ctx);
+		pool_unref(&ctx->fetch_pool);
+	}
+}
+
+void imap_search_update_free(struct imap_search_update *update)
+{
+	if (update->fetch_ctx != NULL) {
+		imap_fetch_free(&update->fetch_ctx);
+		pool_unref(&update->fetch_pool);
+	}
+	mailbox_search_result_free(&update->result);
+	i_free(update->tag);
 }

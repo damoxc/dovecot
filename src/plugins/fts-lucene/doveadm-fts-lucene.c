@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "doveadm-dump.h"
@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-const char *doveadm_fts_lucene_plugin_version = DOVECOT_VERSION;
+const char *doveadm_fts_lucene_plugin_version = DOVECOT_ABI_VERSION;
 
 void doveadm_fts_lucene_plugin_init(struct module *module);
 void doveadm_fts_lucene_plugin_deinit(void);

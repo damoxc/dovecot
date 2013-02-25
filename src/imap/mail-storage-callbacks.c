@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "ostream.h"
@@ -17,8 +17,8 @@ static void notify_ok(struct mailbox *mailbox ATTR_UNUSED,
 		const char *str;
 
 		str = t_strconcat("* OK ", text, "\r\n", NULL);
-		o_stream_send_str(client->output, str);
-		o_stream_flush(client->output);
+		o_stream_nsend_str(client->output, str);
+		(void)o_stream_flush(client->output);
 	} T_END;
 }
 
@@ -34,8 +34,8 @@ static void notify_no(struct mailbox *mailbox ATTR_UNUSED,
 		const char *str;
 
 		str = t_strconcat("* NO ", text, "\r\n", NULL);
-		o_stream_send_str(client->output, str);
-		o_stream_flush(client->output);
+		o_stream_nsend_str(client->output, str);
+		(void)o_stream_flush(client->output);
 	} T_END;
 }
 

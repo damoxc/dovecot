@@ -1,8 +1,8 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "hostpid.h"
-#include "network.h"
+#include "net.h"
 #include "str.h"
 #include "strescape.h"
 #include "mail-storage.h"
@@ -40,7 +40,7 @@ stats_connection_create(const char *path)
 	conn = i_new(struct stats_connection, 1);
 	conn->refcount = 1;
 	conn->path = i_strdup(path);
-	stats_connection_open(conn);
+	(void)stats_connection_open(conn);
 	return conn;
 }
 
@@ -108,9 +108,9 @@ void stats_connection_connect(struct stats_connection *conn,
 	/* required fields */
 	str_append(str, guid_128_to_string(suser->session_guid));
 	str_append_c(str, '\t');
-	str_tabescape_write(str, user->username);
+	str_append_tabescaped(str, user->username);
 	str_append_c(str, '\t');
-	str_tabescape_write(str, user->service);
+	str_append_tabescaped(str, user->service);
 	str_printfa(str, "\t%s", my_pid);
 
 	/* optional fields */

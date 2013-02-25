@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -10,7 +10,7 @@ int mail_index_map_parse_extensions(struct mail_index_map *map)
 	const struct mail_index_ext_header *ext_hdr;
 	unsigned int i, old_count, offset;
 	const char *name, *error;
-	uint32_t ext_id, ext_offset;
+	uint32_t ext_id, ext_map_idx, ext_offset;
 
 	/* extension headers always start from 64bit offsets, so if base header
 	   doesn't happen to be 64bit aligned we'll skip some bytes */
@@ -45,14 +45,14 @@ int mail_index_map_parse_extensions(struct mail_index_map *map)
 					     index->filepath, i, name, error);
 			return -1;
 		}
-		if (mail_index_map_lookup_ext(map, name, NULL)) {
+		if (mail_index_map_lookup_ext(map, name, &ext_map_idx)) {
 			mail_index_set_error(index, "Corrupted index file %s: "
 				"Duplicate header extension %s",
 				index->filepath, name);
 			return -1;
 		}
 
-		mail_index_map_register_ext(map, name, ext_offset, ext_hdr);
+		(void)mail_index_map_register_ext(map, name, ext_offset, ext_hdr);
 	}
 	return 0;
 }
@@ -272,6 +272,12 @@ int mail_index_map_check_header(struct mail_index_map *map)
 		/* pre-v1.1.rc6: make sure the \Recent flags are gone */
 		mail_index_map_clear_recent_flags(map);
 		map->hdr.minor_version = MAIL_INDEX_MINOR_VERSION;
+		/* fall through */
+	case 2:
+		/* pre-v2.2 (although should have been done in v2.1 already):
+		   make sure the old unused fields are cleared */
+		map->hdr.unused_old_sync_size = 0;
+		map->hdr.unused_old_sync_stamp = 0;
 	}
 	if (hdr->first_recent_uid == 0 ||
 	    hdr->first_recent_uid > hdr->next_uid ||

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "seq-range-array.h"
@@ -189,8 +189,7 @@ bool cmd_store(struct client_command_context *cmd)
 			/* check early so there's less work for transaction
 			   commit if something has to be cancelled */
 			if (mail_get_modseq(mail) > ctx.max_modseq) {
-				seq_range_array_add(&modified_set, 0,
-						    mail->seq);
+				seq_range_array_add(&modified_set, mail->seq);
 				continue;
 			}
 		}

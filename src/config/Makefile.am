@@ -9,6 +9,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-settings \
 	-I$(top_srcdir)/src/lib-master \
 	-DPKG_RUNDIR=\""$(rundir)"\" \
+	-DPKG_STATEDIR=\""$(statedir)"\" \
 	-DPKG_LIBEXECDIR=\""$(pkglibexecdir)"\" \
 	-DEXAMPLE_CONFIG_DIR=\""$(exampledir)"\" \
 	-DMODULEDIR=\""$(moduledir)"\" \
@@ -16,13 +17,11 @@ AM_CPPFLAGS = \
 
 config_LDADD = \
 	$(LIBDOVECOT) \
-	$(MODULE_LIBS) \
 	$(RAND_LIBS)
 config_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 
 doveconf_LDADD = \
 	$(LIBDOVECOT) \
-	$(MODULE_LIBS) \
 	$(RAND_LIBS)
 doveconf_DEPENDENCIES = $(LIBDOVECOT_DEPS)
 

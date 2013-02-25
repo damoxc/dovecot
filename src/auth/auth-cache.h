@@ -29,7 +29,8 @@ struct auth_cache *auth_cache_new(size_t max_size, unsigned int ttl_secs,
 void auth_cache_free(struct auth_cache **cache);
 
 /* Clear the cache. Returns how many entries were removed. */
-unsigned int auth_cache_clear(struct auth_cache *cache);
+unsigned int ATTR_NOWARN_UNUSED_RESULT
+auth_cache_clear(struct auth_cache *cache);
 unsigned int auth_cache_clear_users(struct auth_cache *cache,
 				    const char *const *usernames);
 

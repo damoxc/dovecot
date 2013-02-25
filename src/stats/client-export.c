@@ -1,7 +1,7 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
-#include "network.h"
+#include "net.h"
 #include "ostream.h"
 #include "str.h"
 #include "strescape.h"
@@ -255,7 +255,7 @@ static int client_export_iter_command(struct client *client)
 	mail_command_unref(&client->mail_cmd_iter);
 
 	if (!cmd->header_sent) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			"cmd\targs\tsession\tuser\tlast_update"MAIL_STATS_HEADER);
 		cmd->header_sent = TRUE;
 	}
@@ -268,22 +268,22 @@ static int client_export_iter_command(struct client *client)
 			continue;
 
 		str_truncate(cmd->str, 0);
-		str_tabescape_write(cmd->str, command->name);
+		str_append_tabescaped(cmd->str, command->name);
 		str_append_c(cmd->str, '\t');
-		str_tabescape_write(cmd->str, command->args);
+		str_append_tabescaped(cmd->str, command->args);
 		str_append_c(cmd->str, '\t');
 		T_BEGIN {
 			str_append(cmd->str,
 				   guid_128_to_string(command->session->guid));
 			str_append_c(cmd->str, '\t');
-			str_tabescape_write(cmd->str,
-					    command->session->user->name);
+			str_append_tabescaped(cmd->str,
+					      command->session->user->name);
 		} T_END;
 		client_export_timeval(cmd->str, &command->last_update);
 		client_export_mail_stats(cmd->str, &command->stats);
 		str_append_c(cmd->str, '\n');
-		o_stream_send(client->output, str_data(cmd->str),
-			      str_len(cmd->str));
+		o_stream_nsend(client->output, str_data(cmd->str),
+			       str_len(cmd->str));
 	}
 
 	if (command != NULL) {
@@ -303,7 +303,7 @@ static int client_export_iter_session(struct client *client)
 	mail_session_unref(&client->mail_session_iter);
 
 	if (!cmd->header_sent) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			"session\tuser\tip\tservice\tpid\tconnected"
 			"\tlast_update\tnum_cmds"
 			MAIL_STATS_HEADER);
@@ -320,14 +320,14 @@ static int client_export_iter_session(struct client *client)
 		T_BEGIN {
 			str_append(cmd->str, guid_128_to_string(session->guid));
 			str_append_c(cmd->str, '\t');
-			str_tabescape_write(cmd->str, session->user->name);
+			str_append_tabescaped(cmd->str, session->user->name);
 			str_append_c(cmd->str, '\t');
 			if (session->ip != NULL) {
 				str_append(cmd->str,
 					   net_ip2addr(&session->ip->ip));
 			}
 			str_append_c(cmd->str, '\t');
-			str_tabescape_write(cmd->str, session->service);
+			str_append_tabescaped(cmd->str, session->service);
 		} T_END;
 		str_printfa(cmd->str, "\t%ld", (long)session->pid);
 		str_printfa(cmd->str, "\t%d", !session->disconnected);
@@ -335,8 +335,8 @@ static int client_export_iter_session(struct client *client)
 		str_printfa(cmd->str, "\t%u", session->num_cmds);
 		client_export_mail_stats(cmd->str, &session->stats);
 		str_append_c(cmd->str, '\n');
-		o_stream_send(client->output, str_data(cmd->str),
-			      str_len(cmd->str));
+		o_stream_nsend(client->output, str_data(cmd->str),
+			       str_len(cmd->str));
 	}
 
 	if (session != NULL) {
@@ -356,7 +356,7 @@ static int client_export_iter_user(struct client *client)
 	mail_user_unref(&client->mail_user_iter);
 
 	if (!cmd->header_sent) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			"user\treset_timestamp\tlast_update"
 			"\tnum_logins\tnum_cmds"MAIL_STATS_HEADER);
 		cmd->header_sent = TRUE;
@@ -369,15 +369,15 @@ static int client_export_iter_user(struct client *client)
 			continue;
 
 		str_truncate(cmd->str, 0);
-		str_tabescape_write(cmd->str, user->name);
+		str_append_tabescaped(cmd->str, user->name);
 		str_printfa(cmd->str, "\t%ld", (long)user->reset_timestamp);
 		client_export_timeval(cmd->str, &user->last_update);
 		str_printfa(cmd->str, "\t%u\t%u",
 			    user->num_logins, user->num_cmds);
 		client_export_mail_stats(cmd->str, &user->stats);
 		str_append_c(cmd->str, '\n');
-		o_stream_send(client->output, str_data(cmd->str),
-			      str_len(cmd->str));
+		o_stream_nsend(client->output, str_data(cmd->str),
+			       str_len(cmd->str));
 	}
 
 	if (user != NULL) {
@@ -397,7 +397,7 @@ static int client_export_iter_domain(struct client *client)
 	mail_domain_unref(&client->mail_domain_iter);
 
 	if (!cmd->header_sent) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			"domain\treset_timestamp\tlast_update"
 			"\tnum_logins\tnum_cmds"MAIL_STATS_HEADER);
 		cmd->header_sent = TRUE;
@@ -410,15 +410,15 @@ static int client_export_iter_domain(struct client *client)
 			continue;
 
 		str_truncate(cmd->str, 0);
-		str_tabescape_write(cmd->str, domain->name);
+		str_append_tabescaped(cmd->str, domain->name);
 		str_printfa(cmd->str, "\t%ld", (long)domain->reset_timestamp);
 		client_export_timeval(cmd->str, &domain->last_update);
 		str_printfa(cmd->str, "\t%u\t%u",
 			    domain->num_logins, domain->num_cmds);
 		client_export_mail_stats(cmd->str, &domain->stats);
 		str_append_c(cmd->str, '\n');
-		o_stream_send(client->output, str_data(cmd->str),
-			      str_len(cmd->str));
+		o_stream_nsend(client->output, str_data(cmd->str),
+			       str_len(cmd->str));
 	}
 
 	if (domain != NULL) {
@@ -438,7 +438,7 @@ static int client_export_iter_ip(struct client *client)
 	mail_ip_unref(&client->mail_ip_iter);
 
 	if (!cmd->header_sent) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			"ip\treset_timestamp\tlast_update"
 			"\tnum_logins\tnum_cmds"MAIL_STATS_HEADER);
 		cmd->header_sent = TRUE;
@@ -459,8 +459,8 @@ static int client_export_iter_ip(struct client *client)
 		str_printfa(cmd->str, "\t%u\t%u", ip->num_logins, ip->num_cmds);
 		client_export_mail_stats(cmd->str, &ip->stats);
 		str_append_c(cmd->str, '\n');
-		o_stream_send(client->output, str_data(cmd->str),
-			      str_len(cmd->str));
+		o_stream_nsend(client->output, str_data(cmd->str),
+			       str_len(cmd->str));
 	}
 
 	if (ip != NULL) {
@@ -475,7 +475,7 @@ static int client_export_more(struct client *client)
 {
 	if (client->cmd_export->export_iter(client) == 0)
 		return 0;
-	o_stream_send_str(client->output, "\n");
+	o_stream_nsend_str(client->output, "\n");
 	return 1;
 }
 
@@ -610,7 +610,7 @@ int client_export(struct client *client, const char *const *args,
 	client->cmd_export = cmd;
 	if (!client_export_iter_init(client)) {
 		/* nothing to export */
-		o_stream_send_str(client->output, "\n");
+		o_stream_nsend_str(client->output, "\n");
 		return 1;
 	}
 	client->cmd_more = client_export_more;

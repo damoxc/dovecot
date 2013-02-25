@@ -4,9 +4,10 @@
 #include "dict.h"
 
 struct dict_vfuncs {
-	struct dict *(*init)(struct dict *dict_driver, const char *uri,
-			     enum dict_data_type value_type,
-			     const char *username, const char *base_dir);
+	int (*init)(struct dict *dict_driver, const char *uri,
+		    enum dict_data_type value_type,
+		    const char *username, const char *base_dir,
+		    struct dict **dict_r, const char **error_r);
 	void (*deinit)(struct dict *dict);
 	int (*wait)(struct dict *dict);
 
@@ -31,6 +32,8 @@ struct dict_vfuncs {
 		    const char *key, const char *value);
 	void (*unset)(struct dict_transaction_context *ctx,
 		      const char *key);
+	void (*append)(struct dict_transaction_context *ctx,
+		       const char *key, const char *value);
 	void (*atomic_inc)(struct dict_transaction_context *ctx,
 			   const char *key, long long diff);
 };
@@ -54,6 +57,8 @@ struct dict_transaction_context {
 extern struct dict dict_driver_client;
 extern struct dict dict_driver_file;
 extern struct dict dict_driver_memcached;
+extern struct dict dict_driver_memcached_ascii;
 extern struct dict dict_driver_redis;
+extern struct dict dict_driver_cdb;
 
 #endif

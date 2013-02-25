@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -40,7 +40,7 @@ struct duplicate_record_header {
 
 struct duplicate_file {
 	pool_t pool;
-	struct hash_table *hash;
+	HASH_TABLE(struct duplicate *, struct duplicate *) hash;
 	const char *path;
 
 	int new_fd;
@@ -59,19 +59,16 @@ static const struct dotlock_settings default_duplicate_dotlock_set = {
 	.stale_timeout = 10,
 };
 
-static int duplicate_cmp(const void *p1, const void *p2)
+static int duplicate_cmp(const struct duplicate *d1, const struct duplicate *d2)
 {
-	const struct duplicate *d1 = p1, *d2 = p2;
-
 	return (d1->id_size == d2->id_size &&
 		memcmp(d1->id, d2->id, d1->id_size) == 0 &&
 		strcasecmp(d1->user, d2->user) == 0) ? 0 : 1;
 }
 
-static unsigned int duplicate_hash(const void *p)
+static unsigned int duplicate_hash(const struct duplicate *d)
 {
 	/* a char* hash function from ASU -- from glib */
-	const struct duplicate *d = p;
         const unsigned char *s = d->id, *end = s + d->id_size;
 	unsigned int g, h = 0;
 
@@ -220,8 +217,8 @@ static struct duplicate_file *duplicate_file_new(struct duplicate_context *ctx)
 		i_error("Creating lock file for %s timed out in %u secs",
 			file->path, ctx->dotlock_set.timeout);
 	}
-	file->hash = hash_table_create(default_pool, pool, 0,
-				       duplicate_hash, duplicate_cmp);
+	hash_table_create(&file->hash, pool, 0, duplicate_hash, duplicate_cmp);
+
 	(void)duplicate_read(file);
 	return file;
 }
@@ -293,7 +290,7 @@ void duplicate_flush(struct duplicate_context *ctx)
 	struct duplicate_record_header rec;
 	struct ostream *output;
         struct hash_iterate_context *iter;
-	void *key, *value;
+	struct duplicate *d;
 
 	if (file == NULL || !file->changed || file->new_fd == -1)
 		return;
@@ -303,26 +300,22 @@ void duplicate_flush(struct duplicate_context *ctx)
 
 	output = o_stream_create_fd_file(file->new_fd, 0, FALSE);
 	o_stream_cork(output);
-	(void)o_stream_send(output, &hdr, sizeof(hdr));
+	o_stream_nsend(output, &hdr, sizeof(hdr));
 
 	memset(&rec, 0, sizeof(rec));
 	iter = hash_table_iterate_init(file->hash);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct duplicate *d = value;
-
+	while (hash_table_iterate(iter, file->hash, &d, &d)) {
 		rec.stamp = d->time;
 		rec.id_size = d->id_size;
 		rec.user_size = strlen(d->user);
 
-		(void)o_stream_send(output, &rec, sizeof(rec));
-		(void)o_stream_send(output, d->id, rec.id_size);
-		(void)o_stream_send(output, d->user, rec.user_size);
+		o_stream_nsend(output, &rec, sizeof(rec));
+		o_stream_nsend(output, d->id, rec.id_size);
+		o_stream_nsend(output, d->user, rec.user_size);
 	}
-	o_stream_uncork(output);
 	hash_table_iterate_deinit(&iter);
 
-	if (output->last_failed_errno != 0) {
-		errno = output->last_failed_errno;
+	if (o_stream_nfinish(output) < 0) {
 		i_error("write(%s) failed: %m", file->path);
 		o_stream_unref(&output);
 		file_dotlock_delete(&file->dotlock);

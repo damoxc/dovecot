@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 
@@ -10,6 +10,22 @@
 
 #define HASH_TABLE_MIN_SIZE 67
 
+#undef hash_table_create
+#undef hash_table_create_direct
+#undef hash_table_destroy
+#undef hash_table_clear
+#undef hash_table_lookup
+#undef hash_table_lookup_full
+#undef hash_table_insert
+#undef hash_table_update
+#undef hash_table_remove
+#undef hash_table_count
+#undef hash_table_iterate_init
+#undef hash_table_iterate
+#undef hash_table_freeze
+#undef hash_table_thaw
+#undef hash_table_copy
+
 struct hash_node {
 	struct hash_node *next;
 	void *key;
@@ -17,7 +33,7 @@ struct hash_node {
 };
 
 struct hash_table {
-	pool_t table_pool, node_pool;
+	pool_t node_pool;
 
 	int frozen;
 	unsigned int initial_size, nodes_count, removed_count;
@@ -38,9 +54,24 @@ struct hash_iterate_context {
 
 static bool hash_table_resize(struct hash_table *table, bool grow);
 
-static int direct_cmp(const void *p1, const void *p2)
+void hash_table_create(struct hash_table **table_r, pool_t node_pool,
+		       unsigned int initial_size, hash_callback_t *hash_cb,
+		       hash_cmp_callback_t *key_compare_cb)
 {
-	return p1 == p2 ? 0 : 1;
+	struct hash_table *table;
+
+	pool_ref(node_pool);
+	table = i_new(struct hash_table, 1);
+	table->node_pool = node_pool;
+	table->initial_size =
+		I_MAX(primes_closest(initial_size), HASH_TABLE_MIN_SIZE);
+
+	table->hash_cb = hash_cb;
+	table->key_compare_cb = key_compare_cb;
+
+	table->size = table->initial_size;
+	table->nodes = i_new(struct hash_node, table->size);
+	*table_r = table;
 }
 
 static unsigned int direct_hash(const void *p)
@@ -49,25 +80,16 @@ static unsigned int direct_hash(const void *p)
 	return POINTER_CAST_TO(p, unsigned int);
 }
 
-struct hash_table *
-hash_table_create(pool_t table_pool, pool_t node_pool, unsigned int initial_size,
-		  hash_callback_t *hash_cb, hash_cmp_callback_t *key_compare_cb)
+static int direct_cmp(const void *p1, const void *p2)
 {
-	struct hash_table *table;
+	return p1 == p2 ? 0 : 1;
+}
 
-	table = p_new(table_pool, struct hash_table, 1);
-        table->table_pool = table_pool;
-	table->node_pool = node_pool;
-	table->initial_size =
-		I_MAX(primes_closest(initial_size), HASH_TABLE_MIN_SIZE);
-
-	table->hash_cb = hash_cb != NULL ? hash_cb : direct_hash;
-	table->key_compare_cb = key_compare_cb == NULL ?
-		direct_cmp : key_compare_cb;
-
-	table->size = table->initial_size;
-	table->nodes = p_new(table_pool, struct hash_node, table->size);
-	return table;
+void hash_table_create_direct(struct hash_table **table_r, pool_t node_pool,
+			      unsigned int initial_size)
+{
+	hash_table_create(table_r, node_pool, initial_size,
+			  direct_hash, direct_cmp);
 }
 
 static void free_node(struct hash_table *table, struct hash_node *node)
@@ -112,8 +134,9 @@ void hash_table_destroy(struct hash_table **_table)
 		destroy_node_list(table, table->free_nodes);
 	}
 
-	p_free(table->table_pool, table->nodes);
-	p_free(table->table_pool, table);
+	pool_unref(&table->node_pool);
+	i_free(table->nodes);
+	i_free(table);
 }
 
 void hash_table_clear(struct hash_table *table, bool free_nodes)
@@ -171,14 +194,12 @@ bool hash_table_lookup_full(const struct hash_table *table,
 	if (node == NULL)
 		return FALSE;
 
-	if (orig_key != NULL)
-		*orig_key = node->key;
-	if (value != NULL)
-		*value = node->value;
+	*orig_key = node->key;
+	*value = node->value;
 	return TRUE;
 }
 
-static struct hash_node *
+static struct hash_node * ATTR_NOWARN_UNUSED_RESULT
 hash_table_insert_node(struct hash_table *table, void *key, void *value,
 		       bool check_existing)
 {
@@ -267,7 +288,7 @@ void hash_table_insert(struct hash_table *table, void *key, void *value)
 
 void hash_table_update(struct hash_table *table, void *key, void *value)
 {
-	(void)hash_table_insert_node(table, key, value, TRUE);
+	hash_table_insert_node(table, key, value, TRUE);
 }
 
 static void
@@ -429,7 +450,7 @@ static bool hash_table_resize(struct hash_table *table, bool grow)
 	old_nodes = table->nodes;
 
 	table->size = I_MAX(next_size, HASH_TABLE_MIN_SIZE);
-	table->nodes = p_new(table->table_pool, struct hash_node, table->size);
+	table->nodes = i_new(struct hash_node, table->size);
 
 	table->nodes_count = 0;
 	table->removed_count = 0;
@@ -457,7 +478,7 @@ static bool hash_table_resize(struct hash_table *table, bool grow)
 
 	table->frozen--;
 
-	p_free(table->table_pool, old_nodes);
+	i_free(old_nodes);
 	return TRUE;
 }
 
@@ -477,9 +498,9 @@ void hash_table_copy(struct hash_table *dest, struct hash_table *src)
 }
 
 /* a char* hash function from ASU -- from glib */
-unsigned int str_hash(const void *p)
+unsigned int str_hash(const char *p)
 {
-        const unsigned char *s = p;
+        const unsigned char *s = (const unsigned char *)p;
 	unsigned int g, h = 0;
 
 	while (*s != '\0') {
@@ -495,9 +516,9 @@ unsigned int str_hash(const void *p)
 }
 
 /* a char* hash function from ASU -- from glib */
-unsigned int strcase_hash(const void *p)
+unsigned int strcase_hash(const char *p)
 {
-        const unsigned char *s = p;
+        const unsigned char *s = (const unsigned char *)p;
 	unsigned int g, h = 0;
 
 	while (*s != '\0') {

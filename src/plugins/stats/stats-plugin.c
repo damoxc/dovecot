@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -44,7 +44,7 @@ struct stats_mailbox {
 	union mailbox_module_context module_ctx;
 };
 
-const char *stats_plugin_version = DOVECOT_VERSION;
+const char *stats_plugin_version = DOVECOT_ABI_VERSION;
 
 struct stats_user_module stats_user_module =
 	MODULE_CONTEXT_INIT(&mail_user_module_register);

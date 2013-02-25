@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "restrict-access.h"
@@ -23,7 +23,7 @@ static void dict_die(void)
 static void client_connected(struct master_service_connection *conn)
 {
 	master_service_client_connection_accept(conn);
-	dict_connection_create(conn->fd);
+	(void)dict_connection_create(conn->fd);
 }
 
 static void main_preinit(void)
@@ -35,6 +35,9 @@ static void main_preinit(void)
 	/* Load built-in SQL drivers (if any) */
 	sql_drivers_init();
 	sql_drivers_register_all();
+#ifdef HAVE_CDB
+	dict_driver_register(&dict_driver_cdb);
+#endif
 
 	restrict_access_by_env(NULL, FALSE);
 	restrict_access_allow_coredumps(TRUE);
@@ -55,7 +58,7 @@ static void main_init(void)
 	}
 
 	memset(&mod_set, 0, sizeof(mod_set));
-	mod_set.version = master_service_get_version_string(master_service);
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
 	mod_set.require_init_funcs = TRUE;
 
 	modules = module_dir_load(DICT_MODULE_DIR, NULL, &mod_set);
@@ -85,7 +88,7 @@ int main(int argc, char *argv[])
 	};
 	const char *error;
 
-	master_service = master_service_init("dict", 0, &argc, &argv, NULL);
+	master_service = master_service_init("dict", 0, &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 

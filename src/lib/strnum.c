@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "strnum.h"
@@ -24,7 +24,7 @@ int str_to_uint(const char *str, unsigned int *num_r)
 	if (str_to_uintmax(str, &l) < 0)
 		return -1;
 
-	if (l > (unsigned int)-1)
+	if (l > UINT_MAX)
 		return -1;
 	*num_r = (unsigned int)l;
 	return 0;

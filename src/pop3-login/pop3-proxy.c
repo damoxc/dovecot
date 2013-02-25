@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "ioloop.h"
@@ -37,13 +37,15 @@ static void proxy_send_login(struct pop3_client *client, struct ostream *output)
 {
 	string_t *str;
 
+	i_assert(client->common.proxy_ttl > 1);
 	if (client->proxy_xclient) {
 		/* remote supports XCLIENT, send it */
-		(void)o_stream_send_str(output, t_strdup_printf(
-			"XCLIENT ADDR=%s PORT=%u SESSION=%s\r\n",
+		o_stream_nsend_str(output, t_strdup_printf(
+			"XCLIENT ADDR=%s PORT=%u SESSION=%s TTL=%u\r\n",
 			net_ip2addr(&client->common.ip),
 			client->common.remote_port,
-			client_get_session_id(&client->common)));
+			client_get_session_id(&client->common),
+			client->common.proxy_ttl - 1));
 		client->common.proxy_state = POP3_PROXY_XCLIENT;
 	} else {
 		client->common.proxy_state = POP3_PROXY_LOGIN1;
@@ -59,7 +61,7 @@ static void proxy_send_login(struct pop3_client *client, struct ostream *output)
 		/* master user login - use AUTH PLAIN. */
 		str_append(str, "AUTH PLAIN\r\n");
 	}
-	(void)o_stream_send(output, str_data(str), str_len(str));
+	o_stream_nsend(output, str_data(str), str_len(str));
 }
 
 int pop3_proxy_parse_line(struct client *client, const char *line)
@@ -89,7 +91,7 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 		if ((ssl_flags & PROXY_SSL_FLAG_STARTTLS) == 0) {
 			proxy_send_login(pop3_client, output);
 		} else {
-			(void)o_stream_send_str(output, "STLS\r\n");
+			o_stream_nsend_str(output, "STLS\r\n");
 			client->proxy_state = POP3_PROXY_STARTTLS;
 		}
 		return 0;
@@ -136,7 +138,7 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 			get_plain_auth(client, str);
 			str_append(str, "\r\n");
 		}
-		(void)o_stream_send(output, str_data(str), str_len(str));
+		o_stream_nsend(output, str_data(str), str_len(str));
 		proxy_free_password(client);
 		client->proxy_state = POP3_PROXY_LOGIN2;
 		return 0;
@@ -146,7 +148,7 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 
 		/* Login successful. Send this line to client. */
 		line = t_strconcat(line, "\r\n", NULL);
-		(void)o_stream_send_str(client->output, line);
+		o_stream_nsend_str(client->output, line);
 
 		client_proxy_finish_destroy_client(client);
 		return 1;
@@ -168,8 +170,8 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 	   shouldn't be a real problem since of course everyone will
 	   be using only Dovecot as their backend :) */
 	if (strncmp(line, "-ERR ", 5) != 0) {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-				 AUTH_FAILED_MSG);
+		client_send_reply(client, POP3_CMD_REPLY_ERROR,
+				  AUTH_FAILED_MSG);
 	} else {
 		client_send_raw(client, t_strconcat(line, "\r\n", NULL));
 	}
@@ -187,4 +189,9 @@ int pop3_proxy_parse_line(struct client *client, const char *line)
 void pop3_proxy_reset(struct client *client)
 {
 	client->proxy_state = POP3_PROXY_BANNER;
+}
+
+void pop3_proxy_error(struct client *client, const char *text)
+{
+	client_send_reply(client, POP3_CMD_REPLY_ERROR, text);
 }

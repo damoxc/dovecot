@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -19,8 +19,7 @@ mailbox_list_check_root_delete(struct mailbox_list *list, const char *name,
 {
 	const char *root_dir;
 
-	root_dir = mailbox_list_get_path(list, NULL,
-					 MAILBOX_LIST_PATH_TYPE_DIR);
+	root_dir = mailbox_list_get_root_forced(list, MAILBOX_LIST_PATH_TYPE_DIR);
 	if (strcmp(root_dir, path) != 0)
 		return 0;
 
@@ -52,7 +51,9 @@ int mailbox_list_delete_maildir_via_trash(struct mailbox_list *list,
 	const char *src, *trash_dest;
 	unsigned int count;
 
-	src = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	if (mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				  &src) <= 0)
+		i_unreached();
 	if (mailbox_list_check_root_delete(list, name, src) < 0)
 		return -1;
 
@@ -118,13 +119,8 @@ int mailbox_list_delete_maildir_via_trash(struct mailbox_list *list,
 }
 
 int mailbox_list_delete_mailbox_file(struct mailbox_list *list,
-				     const char *name)
+				     const char *name, const char *path)
 {
-	const char *path;
-
-	path = mailbox_list_get_path(list, name,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-
 	/* we can simply unlink() the file */
 	if (unlink(path) == 0)
 		return 0;
@@ -242,7 +238,7 @@ void mailbox_list_delete_until_root(struct mailbox_list *list, const char *path,
 	const char *root_dir, *p;
 	unsigned int len;
 
-	root_dir = mailbox_list_get_path(list, NULL, type);
+	root_dir = mailbox_list_get_root_forced(list, type);
 	if (strncmp(path, root_dir, strlen(root_dir)) != 0) {
 		/* mbox workaround: name=child/box, root_dir=mail/.imap/,
 		   path=mail/child/.imap/box. we'll want to try to delete
@@ -282,10 +278,10 @@ static void mailbox_list_try_delete(struct mailbox_list *list, const char *name,
 {
 	const char *mailbox_path, *path;
 
-	mailbox_path = mailbox_list_get_path(list, name,
-					     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	path = mailbox_list_get_path(list, name, type);
-	if (path == NULL || *path == '\0' || strcmp(path, mailbox_path) == 0)
+	if (mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				  &mailbox_path) <= 0 ||
+	    mailbox_list_get_path(list, name, type, &path) <= 0 ||
+	    strcmp(path, mailbox_path) == 0)
 		return;
 
 	if (*list->set.maildir_name == '\0' &&
@@ -317,7 +313,7 @@ void mailbox_list_delete_finish(struct mailbox_list *list, const char *name)
 
 int mailbox_list_delete_trash(const char *path)
 {
-	if (unlink_directory(path, TRUE) < 0) {
+	if (unlink_directory(path, UNLINK_DIRECTORY_FLAG_RMDIR) < 0) {
 		if (errno == ELOOP) {
 			/* it's a symlink? try just deleting it */
 			if (unlink(path) == 0)
@@ -333,8 +329,14 @@ int mailbox_list_delete_symlink_default(struct mailbox_list *list,
 					const char *name)
 {
 	const char *path;
+	int ret;
 
-	path = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR);
+	ret = mailbox_list_get_path(list, name, MAILBOX_LIST_PATH_TYPE_DIR,
+				    &path);
+	if (ret < 0)
+		return -1;
+	i_assert(ret > 0);
+
 	if (unlink(path) == 0)
 		return 0;
 

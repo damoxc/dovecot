@@ -44,6 +44,7 @@ libpassword_a_SOURCES = \
 	password-scheme.c \
 	password-scheme-crypt.c \
 	password-scheme-md5crypt.c \
+	password-scheme-scram.c \
 	password-scheme-otp.c \
 	password-scheme-rpa.c
 
@@ -53,7 +54,7 @@ auth_libs = \
 	../lib-otp/libotp.a \
 	$(LIBDOVECOT_SQL)
 
-auth_LDADD = $(auth_libs) $(LIBDOVECOT) $(AUTH_LIBS) $(MODULE_LIBS)
+auth_LDADD = $(auth_libs) $(LIBDOVECOT) $(AUTH_LIBS)
 auth_DEPENDENCIES = $(auth_libs) $(LIBDOVECOT_DEPS)
 
 ldap_sources = db-ldap.c passdb-ldap.c userdb-ldap.c
@@ -70,7 +71,8 @@ auth_SOURCES = \
 	auth-request.c \
 	auth-request-handler.c \
 	auth-settings.c \
-	auth-stream.c \
+	auth-fields.c \
+	auth-token.c \
 	auth-worker-client.c \
 	auth-worker-server.c \
 	db-checkpassword.c \
@@ -93,6 +95,7 @@ auth_SOURCES = \
 	mech-rpa.c \
 	mech-apop.c \
 	mech-winbind.c \
+	mech-dovecot-token.c \
 	passdb.c \
 	passdb-blocking.c \
 	passdb-bsdauth.c \
@@ -135,7 +138,8 @@ headers = \
 	auth-request.h \
 	auth-request-handler.h \
 	auth-settings.h \
-	auth-stream.h \
+	auth-fields.h \
+	auth-token.h \
 	auth-worker-client.h \
 	auth-worker-server.h \
 	db-dict.h \
@@ -172,8 +176,7 @@ endif
 libauthdb_imap_la_LDFLAGS = -module -avoid-version
 libauthdb_imap_la_LIBADD = \
 	../lib-imap-client/libimap_client.la \
-	../lib-ssl-iostream/libssl_iostream.la \
-	$(LIBDOVECOT) $(SSL_LIBS)
+	$(LIBDOVECOT)
 libauthdb_imap_la_CPPFLAGS = \
 	$(AM_CPPFLAGS) \
 	-I$(top_srcdir)/src/lib-imap \
@@ -200,7 +203,7 @@ test_libs = \
 
 test_auth_cache_SOURCES = test-auth-cache.c
 test_auth_cache_LDADD = auth-cache.o $(test_libs)
-test_auth_cache_DEPENDENCIES = auth-cache.o $(test_libs)
+test_auth_cache_DEPENDENCIES = $(pkglibexec_PROGRAMS) $(test_libs)
 
 check: check-am check-test
 check-test: all-am

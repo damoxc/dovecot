@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "dbox-attachment.h"
@@ -110,6 +110,7 @@ static int sdbox_sync_index(struct sdbox_sync_context *ctx)
 		mail_storage_set_critical(box->storage,
 			"sdbox %s: Broken index: missing UIDVALIDITY",
 			mailbox_get_path(box));
+		sdbox_set_mailbox_corrupted(box);
 		return 0;
 	}
 
@@ -170,7 +171,7 @@ sdbox_refresh_header(struct sdbox_mailbox *mbox, bool retry, bool log_error)
 	mail_index_view_close(&view);
 
 	if (ret < 0 && retry) {
-		(void)mail_index_refresh(mbox->box.index);
+		mail_index_refresh(mbox->box.index);
 		return sdbox_refresh_header(mbox, FALSE, log_error);
 	}
 	return ret;
@@ -213,7 +214,7 @@ int sdbox_sync_begin(struct sdbox_mailbox *mbox, enum sdbox_sync_flags flags,
 			sdbox_set_mailbox_corrupted(&mbox->box);
 		if (ret <= 0) {
 			if (ret < 0)
-				mail_storage_set_index_error(&mbox->box);
+				mailbox_set_index_error(&mbox->box);
 			array_free(&ctx->expunged_uids);
 			i_free(ctx);
 			*ctx_r = NULL;
@@ -264,7 +265,7 @@ int sdbox_sync_finish(struct sdbox_sync_context **_ctx, bool success)
 	if (success) {
 		mail_index_view_ref(ctx->sync_view);
 		if (mail_index_sync_commit(&ctx->index_sync_ctx) < 0) {
-			mail_storage_set_index_error(&ctx->mbox->box);
+			mailbox_set_index_error(&ctx->mbox->box);
 			ret = -1;
 		} else {
 			dbox_sync_expunge_files(ctx);

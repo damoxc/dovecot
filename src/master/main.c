@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "ioloop.h"
@@ -155,8 +155,8 @@ master_fatal_callback(const struct failure_context *ctx,
 		if (fd != -1) {
 			VA_COPY(args2, args);
 			str = t_strdup_vprintf(format, args2);
-			write_full(fd, str, strlen(str));
-			(void)close(fd);
+			(void)write_full(fd, str, strlen(str));
+			i_close_fd(&fd);
 		}
 	}
 
@@ -222,6 +222,8 @@ static bool pid_file_read(const char *path, pid_t *pid_r)
 	ssize_t ret;
 	bool found;
 
+	*pid_r = (pid_t)-1;
+
 	fd = open(path, O_RDONLY);
 	if (fd == -1) {
 		if (errno == ENOENT)
@@ -245,7 +247,7 @@ static bool pid_file_read(const char *path, pid_t *pid_r)
 		found = !(*pid_r == getpid() ||
 			  (kill(*pid_r, 0) < 0 && errno == ESRCH));
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 	return found;
 }
 
@@ -272,7 +274,7 @@ static void create_pid_file(const char *path)
 		i_fatal("open(%s) failed: %m", path);
 	if (write_full(fd, pid, strlen(pid)) < 0)
 		i_fatal("write() failed in %s: %m", path);
-	(void)close(fd);
+	i_close_fd(&fd);
 }
 
 static void create_config_symlink(const struct master_settings *set)
@@ -311,7 +313,7 @@ static void mountpoints_update(const struct master_settings *set)
 	struct mountpoint_list *mountpoints;
 	const char *perm_path, *state_path;
 
-	perm_path = t_strconcat(PKG_STATEDIR"/"MOUNTPOINT_LIST_FNAME, NULL);
+	perm_path = t_strconcat(set->state_dir, "/"MOUNTPOINT_LIST_FNAME, NULL);
 	state_path = t_strconcat(set->base_dir, "/"MOUNTPOINT_LIST_FNAME, NULL);
 	mountpoints = mountpoint_list_init(perm_path, state_path);
 
@@ -331,7 +333,7 @@ static void instance_update_now(struct master_instance_list *list)
 					    services->set->instance_name);
 	if (ret == 0) {
 		/* duplicate instance names. allow without warning.. */
-		master_instance_list_update(list, services->set->base_dir);
+		(void)master_instance_list_update(list, services->set->base_dir);
 	}
 	
 	if (to_instance != NULL)
@@ -340,9 +342,12 @@ static void instance_update_now(struct master_instance_list *list)
 				  instance_update_now, list);
 }
 
-static void instance_update(void)
+static void instance_update(const struct master_settings *set)
 {
-	instances = master_instance_list_init(MASTER_INSTANCE_PATH);
+	const char *path;
+
+	path = t_strconcat(set->state_dir, "/"MASTER_INSTANCE_FNAME, NULL);
+	instances = master_instance_list_init(path);
 	instance_update_now(instances);
 }
 
@@ -473,7 +478,7 @@ static void master_set_import_environment(const struct master_settings *set)
 		}
 		array_append(&keys, &key, 1);
 	}
-	(void)array_append_space(&keys);
+	array_append_zero(&keys);
 
 	value = t_strarray_join(array_idx(&keys, 0), " ");
 	env_put(t_strconcat(DOVECOT_PRESERVE_ENVS_ENV"=", value, NULL));
@@ -538,7 +543,7 @@ static void main_init(const struct master_settings *set)
 	create_pid_file(pidfile_path);
 	create_config_symlink(set);
 	mountpoints_update(set);
-	instance_update();
+	instance_update(set);
 
 	services_monitor_start(services);
 }
@@ -765,7 +770,7 @@ int main(int argc, char *argv[])
 				MASTER_SERVICE_FLAG_STANDALONE |
 				MASTER_SERVICE_FLAG_DONT_LOG_TO_STDERR,
 				&argc, &argv, "+Fanp");
-	i_set_failure_prefix("");
+	i_unset_failure_prefix();
 
 	io_loop_set_time_moved_callback(current_ioloop, master_time_moved);
 
@@ -889,12 +894,6 @@ int main(int argc, char *argv[])
 	if (chdir(set->base_dir) < 0)
 		i_fatal("chdir(%s) failed: %m", set->base_dir);
 
-	if (strcmp(services->service_set->log_path, "/dev/stderr") != 0 &&
-	    strcmp(services->service_set->info_log_path, "/dev/stderr") != 0 &&
-	    strcmp(services->service_set->debug_log_path, "/dev/stderr") != 0) {
-		if (dup2(null_fd, STDERR_FILENO) < 0)
-			i_fatal("dup2(null_fd) failed: %m");
-	}
 	i_set_fatal_handler(master_fatal_callback);
 	i_set_error_handler(orig_error_callback);
 

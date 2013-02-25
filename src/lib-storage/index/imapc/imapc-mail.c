@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -100,8 +100,8 @@ static int imapc_mail_get_save_date(struct mail *_mail, time_t *date_r)
 	struct index_mail_data *data = &mail->data;
 
 	if (data->save_date == (time_t)-1) {
-		/* FIXME */
-		return -1;
+		/* FIXME: we could use a value stored in cache */
+		return imapc_mail_get_received_date(_mail, date_r);
 	}
 	*date_r = data->save_date;
 	return 0;
@@ -176,7 +176,8 @@ imapc_mail_get_stream(struct mail *_mail, bool get_body,
 	if (data->stream == NULL) {
 		if (!data->initialized) {
 			/* coming here from mail_set_seq() */
-			return mail_set_aborted(_mail);
+			mail_set_aborted(_mail);
+			return -1;
 		}
 		fetch_field = get_body ||
 			(data->access_part & READ_BODY) != 0 ?
@@ -196,7 +197,7 @@ imapc_mail_get_stream(struct mail *_mail, bool get_body,
 			   return them as empty mails instead of disconnecting
 			   the client. */
 			mail->body_fetched = TRUE;
-			data->stream = i_stream_create_from_data(NULL, 0);
+			data->stream = i_stream_create_from_data(&uchar_nul, 0);
 			imapc_mail_init_stream(mail, TRUE);
 		}
 	}
@@ -332,7 +333,7 @@ static int imapc_mail_get_hdr_hash(struct index_mail *imail)
 	sha1_result(&sha1_ctx, sha1_output);
 
 	sha1_str = binary_to_hex(sha1_output, sizeof(sha1_output));
-	imail->data.guid = p_strdup(imail->data_pool, sha1_str);
+	imail->data.guid = p_strdup(imail->mail.data_pool, sha1_str);
 	return 0;
 }
 
@@ -349,7 +350,7 @@ static int imapc_mail_get_guid(struct mail *_mail, const char **value_r)
 		return 0;
 	}
 
-	str = str_new(imail->data_pool, 64);
+	str = str_new(imail->mail.data_pool, 64);
 	if (mail_cache_lookup_field(_mail->transaction->cache_view,
 				    str, imail->mail.mail.seq, cache_idx) > 0) {
 		*value_r = str_c(str);
@@ -412,6 +413,7 @@ struct mail_vfuncs imapc_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	imapc_mail_get_received_date,
@@ -422,11 +424,13 @@ struct mail_vfuncs imapc_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	imapc_mail_get_stream,
+	index_mail_get_binary_stream,
 	imapc_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
 	index_mail_set_cache_corrupted,

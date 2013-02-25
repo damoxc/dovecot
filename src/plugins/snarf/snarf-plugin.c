@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -23,7 +23,7 @@ struct snarf_mailbox {
 	struct mailbox *snarf_box;
 };
 
-const char *snarf_plugin_version = DOVECOT_VERSION;
+const char *snarf_plugin_version = DOVECOT_ABI_VERSION;
 
 static MODULE_CONTEXT_DEFINE_INIT(snarf_storage_module,
 				  &mail_storage_module_register);
@@ -133,11 +133,6 @@ snarf_box_find(struct mail_user *user, struct mailbox_list **list_r,
 	}
 
 	snarf_ns = mail_namespace_find(user->namespaces, snarf_name);
-	if (snarf_ns == NULL) {
-		i_error("snarf: Namespace not found for mailbox: %s",
-			snarf_name);
-		return FALSE;
-	}
 	*list_r = snarf_ns->list;
 	*name_r = snarf_name;
 	return TRUE;

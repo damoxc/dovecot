@@ -1,7 +1,7 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
-#include "network.h"
+#include "net.h"
 
 struct test_net_is_in_network_input {
 	const char *ip;
@@ -39,8 +39,8 @@ static void test_net_is_in_network(void)
 	bool success;
 
 	for (i = 0; i < N_ELEMENTS(input); i++) {
-		net_addr2ip(input[i].ip, &ip);
-		net_addr2ip(input[i].net, &net_ip);
+		test_assert(net_addr2ip(input[i].ip, &ip) == 0);
+		test_assert(net_addr2ip(input[i].net, &net_ip) == 0);
 		success = net_is_in_network(&ip, &net_ip, input[i].bits) ==
 			input[i].ret;
 		test_out(t_strdup_printf("net_is_in_network(%u)", i), success);
