@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -9,24 +9,25 @@
 #include "message-decoder.h"
 #include "test-common.h"
 
-bool message_header_decode_utf8(const unsigned char *data, size_t size,
-				buffer_t *dest, bool dtcase ATTR_UNUSED)
+void message_header_decode_utf8(const unsigned char *data, size_t size,
+				buffer_t *dest,
+				normalizer_func_t *normalizer ATTR_UNUSED)
 {
 	buffer_append(dest, data, size);
-	return FALSE;
 }
 
-void quoted_printable_decode(const unsigned char *src, size_t src_size,
-			     size_t *src_pos_r, buffer_t *dest)
+int quoted_printable_decode(const unsigned char *src, size_t src_size,
+			    size_t *src_pos_r, buffer_t *dest)
 {
 	while (src_size > 0 && src[src_size-1] == ' ')
 		src_size--;
 	buffer_append(dest, src, src_size);
 	*src_pos_r = src_size;
+	return 0;
 }
 
 int charset_to_utf8_begin(const char *charset ATTR_UNUSED,
-			  enum charset_flags flags ATTR_UNUSED,
+			  normalizer_func_t *normalizer ATTR_UNUSED,
 			  struct charset_translation **t_r)
 {
 	*t_r = NULL;
@@ -57,7 +58,7 @@ static void test_message_decoder(void)
 	memset(&output, 0, sizeof(output));
 	input.part = &part;
 
-	ctx = message_decoder_init(0);
+	ctx = message_decoder_init(NULL, 0);
 
 	memset(&hdr, 0, sizeof(hdr));
 	hdr.name = "Content-Transfer-Encoding";

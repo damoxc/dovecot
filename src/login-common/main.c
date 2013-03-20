@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "ioloop.h"
@@ -13,6 +13,7 @@
 #include "access-lookup.h"
 #include "anvil-client.h"
 #include "auth-client.h"
+#include "master-service-ssl-settings.h"
 #include "ssl-proxy.h"
 #include "login-proxy.h"
 
@@ -20,7 +21,6 @@
 #include <unistd.h>
 #include <syslog.h>
 
-#define DEFAULT_LOGIN_SOCKET "login"
 #define AUTH_CLIENT_IDLE_TIMEOUT_MSECS (1000*60)
 
 struct login_access_lookup {
@@ -40,6 +40,7 @@ const char *login_rawlog_dir = NULL;
 unsigned int initial_service_count;
 
 const struct login_settings *global_login_settings;
+const struct master_service_ssl_settings *global_ssl_settings;
 void **global_other_settings;
 
 static struct timeout *auth_client_to;
@@ -105,6 +106,7 @@ client_connected_finish(const struct master_service_connection *conn)
 	struct ssl_proxy *proxy;
 	struct ip_addr local_ip;
 	const struct login_settings *set;
+	const struct master_service_ssl_settings *ssl_set;
 	unsigned int local_port;
 	pool_t pool;
 	int fd_ssl;
@@ -117,14 +119,15 @@ client_connected_finish(const struct master_service_connection *conn)
 
 	pool = pool_alloconly_create("login client", 8*1024);
 	set = login_settings_read(pool, &local_ip,
-				  &conn->remote_ip, NULL, &other_sets);
+				  &conn->remote_ip, NULL, &ssl_set, &other_sets);
 
 	if (!ssl_connections && !conn->ssl) {
-		client = client_create(conn->fd, FALSE, pool, set, other_sets,
+		client = client_create(conn->fd, FALSE, pool,
+				       set, ssl_set, other_sets,
 				       &local_ip, &conn->remote_ip);
 	} else {
-		fd_ssl = ssl_proxy_alloc(conn->fd, &conn->remote_ip, pool, set,
-					 &proxy);
+		fd_ssl = ssl_proxy_alloc(conn->fd, &conn->remote_ip, pool,
+					 set, ssl_set, &proxy);
 		if (fd_ssl == -1) {
 			net_disconnect(conn->fd);
 			pool_unref(&pool);
@@ -132,15 +135,16 @@ client_connected_finish(const struct master_service_connection *conn)
 			return;
 		}
 
-		client = client_create(fd_ssl, TRUE, pool, set, other_sets,
+		client = client_create(fd_ssl, TRUE, pool,
+				       set, ssl_set, other_sets,
 				       &local_ip, &conn->remote_ip);
 		client->ssl_proxy = proxy;
 		ssl_proxy_set_client(proxy, client);
 		ssl_proxy_start(proxy);
 	}
 
-	client->remote_port = conn->remote_port;
-	client->local_port = local_port;
+	client->real_remote_port = client->remote_port = conn->remote_port;
+	client->real_local_port = client->local_port = local_port;
 
 	if (auth_client_to != NULL)
 		timeout_remove(&auth_client_to);
@@ -294,7 +298,7 @@ static void main_preinit(bool allow_core_dumps)
 	restrict_fd_limit(max_fds);
 	io_loop_set_max_fd_count(current_ioloop, max_fds);
 
-	i_assert(strcmp(global_login_settings->ssl, "no") == 0 ||
+	i_assert(strcmp(global_ssl_settings->ssl, "no") == 0 ||
 		 ssl_initialized);
 
 	if (global_login_settings->mail_max_userip_connections > 0) {
@@ -360,13 +364,17 @@ int login_binary_run(const struct login_binary *binary,
 {
 	enum master_service_flags service_flags =
 		MASTER_SERVICE_FLAG_KEEP_CONFIG_OPEN |
-		MASTER_SERVICE_FLAG_TRACK_LOGIN_STATE;
+		MASTER_SERVICE_FLAG_TRACK_LOGIN_STATE |
+		MASTER_SERVICE_FLAG_USE_SSL_SETTINGS |
+		MASTER_SERVICE_FLAG_NO_SSL_INIT;
 	pool_t set_pool;
 	bool allow_core_dumps = FALSE;
-	const char *login_socket = DEFAULT_LOGIN_SOCKET;
+	const char *login_socket;
 	int c;
 
 	login_binary = binary;
+	login_socket = binary->default_login_socket != NULL ?
+		binary->default_login_socket : LOGIN_DEFAULT_SOCKET;
 
 	master_service = master_service_init(login_binary->process_name,
 					     service_flags, &argc, &argv,
@@ -397,6 +405,7 @@ int login_binary_run(const struct login_binary *binary,
 	set_pool = pool_alloconly_create("global login settings", 4096);
 	global_login_settings =
 		login_settings_read(set_pool, NULL, NULL, NULL,
+				    &global_ssl_settings,
 				    &global_other_settings);
 
 	main_preinit(allow_core_dumps);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -161,6 +161,7 @@ static int virtual_backend_box_open(struct virtual_mailbox *mbox,
 {
 	struct mail_user *user = mbox->storage->storage.user;
 	struct mail_namespace *ns;
+	struct mailbox_status status;
 	const char *mailbox;
 
 	i_assert(bbox->box == NULL);
@@ -177,6 +178,10 @@ static int virtual_backend_box_open(struct virtual_mailbox *mbox,
 	i_array_init(&bbox->uids, 64);
 	i_array_init(&bbox->sync_pending_removes, 64);
 	mail_search_args_init(bbox->search_args, bbox->box, FALSE, NULL);
+
+	mailbox_get_open_status(bbox->box, 0, &status);
+	if (!status.have_guids)
+		mbox->have_guids = FALSE;
 	return 1;
 }
 
@@ -186,6 +191,8 @@ static int virtual_mailboxes_open(struct virtual_mailbox *mbox,
 	struct virtual_backend_box *const *bboxes;
 	unsigned int i, count;
 	int ret;
+
+	mbox->have_guids = TRUE;
 
 	bboxes = array_get(&mbox->backend_boxes, &count);
 	for (i = 0; i < count; ) {
@@ -229,8 +236,7 @@ virtual_mailbox_alloc(struct mail_storage *_storage, struct mailbox_list *list,
 	mbox->box.mail_vfuncs = &virtual_mail_vfuncs;
 	mbox->vfuncs = virtual_mailbox_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, vname, flags,
-				    VIRTUAL_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	mbox->storage = storage;
 	mbox->virtual_ext_id = (uint32_t)-1;
@@ -340,6 +346,8 @@ virtual_storage_get_status(struct mailbox *box,
 			   enum mailbox_status_items items,
 			   struct mailbox_status *status_r)
 {
+	struct virtual_mailbox *mbox = (struct virtual_mailbox *)box;
+
 	if ((items & STATUS_LAST_CACHED_SEQ) != 0)
 		items |= STATUS_MESSAGES;
 
@@ -355,6 +363,8 @@ virtual_storage_get_status(struct mailbox *box,
 		   indexed. */
 		status_r->last_cached_seq = status_r->messages;
 	}
+	if (mbox->have_guids)
+		status_r->have_guids = TRUE;
 	return 0;
 }
 
@@ -391,10 +401,8 @@ static void virtual_notify_changes(struct mailbox *box)
 
 		if (box->notify_callback == NULL)
 			mailbox_notify_changes_stop(bbox);
-		else {
-			mailbox_notify_changes(bbox, box->notify_min_interval,
-					       virtual_notify_callback, box);
-		}
+		else
+			mailbox_notify_changes(bbox, virtual_notify_callback, box);
 	}
 }
 
@@ -426,7 +434,7 @@ virtual_get_virtual_uids(struct mailbox *box,
 	while (seq_range_array_iter_nth(&iter, n++, &uid)) {
 		while (i < count && uids[i].real_uid < uid) i++;
 		if (i < count && uids[i].real_uid == uid) {
-			seq_range_array_add(virtual_uids_r, 0,
+			seq_range_array_add(virtual_uids_r, 
 					    uids[i].virtual_uid);
 			i++;
 		}
@@ -505,7 +513,7 @@ struct mail_storage virtual_storage = {
 		NULL,
 		virtual_storage_alloc,
 		NULL,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		virtual_storage_get_list_settings,
 		NULL,
@@ -529,6 +537,11 @@ struct mailbox virtual_mailbox = {
 		virtual_storage_get_status,
 		virtual_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		NULL,
 		NULL,
 		virtual_storage_sync_init,

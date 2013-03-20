@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -28,7 +28,7 @@ static void index_sync_uidify_array(struct index_mailbox_sync_context *ctx,
 	array_foreach(changes, range) {
 		for (seq = range->seq1; seq <= range->seq2; seq++) {
 			mail_index_lookup_uid(ctx->ctx.box->view, seq, &uid);
-			seq_range_array_add(&ctx->all_flag_update_uids, 0, uid);
+			seq_range_array_add(&ctx->all_flag_update_uids, uid);
 		}
 	}
 }

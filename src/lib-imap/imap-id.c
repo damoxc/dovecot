@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -70,7 +70,7 @@ imap_id_reply_generate_from_imap_args(const struct imap_arg *args)
 			/* key */
 			if (str_len(str) > 1)
 				str_append_c(str, ' ');
-			imap_dquote_append(str, key);
+			imap_append_quoted(str, key);
 			str_append_c(str, ' ');
 			/* value */
 			if (IMAP_ARG_IS_EOL(&args[1])) {
@@ -84,11 +84,7 @@ imap_id_reply_generate_from_imap_args(const struct imap_arg *args)
 				if (strcmp(value, "*") == 0)
 					value = imap_id_get_default(key);
 			}
-
-			if (value == NULL)
-				str_append(str, "NIL");
-			else
-				imap_quote_append_string(str, value, FALSE);
+			imap_append_nstring(str, value);
 		}
 	}
 	if (str_len(str) == 1) {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -10,7 +10,7 @@
 bool charset_is_utf8(const char *charset ATTR_UNUSED) { return TRUE; }
 
 int charset_to_utf8_begin(const char *charset ATTR_UNUSED,
-			  enum charset_flags flags ATTR_UNUSED,
+			  normalizer_func_t *normalizer ATTR_UNUSED,
 			  struct charset_translation **t_r ATTR_UNUSED) { return 0; }
 void charset_to_utf8_end(struct charset_translation **t ATTR_UNUSED) {}
 
@@ -40,9 +40,8 @@ static void test_message_header_decode(void)
 	dest = t_str_new(256);
 	for (i = 0; i < N_ELEMENTS(data); i += 2) {
 		str_truncate(dest, 0);
-		test_assert(message_header_decode_utf8((const unsigned char *)data[i],
-						       strlen(data[i]),
-						       dest, FALSE));
+		message_header_decode_utf8((const unsigned char *)data[i],
+					   strlen(data[i]), dest, FALSE);
 		test_assert(strcmp(str_c(dest), data[i+1]) == 0);
 	}
 	test_end();

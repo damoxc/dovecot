@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "settings-parser.h"
@@ -22,11 +22,9 @@ static const struct setting_define pop3c_setting_defines[] = {
 	DEF(SET_STR, pop3c_password),
 
 	DEF(SET_ENUM, pop3c_ssl),
-	DEF(SET_STR, pop3c_ssl_ca_dir),
 	DEF(SET_BOOL, pop3c_ssl_verify),
 
 	DEF(SET_STR, pop3c_rawlog_dir),
-	DEF(SET_STR, ssl_crypto_device),
 
 	SETTING_DEFINE_LIST_END
 };
@@ -40,11 +38,9 @@ static const struct pop3c_settings pop3c_default_settings = {
 	.pop3c_password = "",
 
 	.pop3c_ssl = "no:pop3s:starttls",
-	.pop3c_ssl_ca_dir = "",
 	.pop3c_ssl_verify = TRUE,
 
-	.pop3c_rawlog_dir = "",
-	.ssl_crypto_device = ""
+	.pop3c_rawlog_dir = ""
 };
 
 static const struct setting_parser_info pop3c_setting_parser_info = {
@@ -76,14 +72,5 @@ static bool pop3c_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 		*error_r = "invalid pop3c_port";
 		return FALSE;
 	}
-#ifndef CONFIG_BINARY
-	if (*set->pop3c_ssl_ca_dir != '\0' &&
-	    access(set->pop3c_ssl_ca_dir, X_OK) < 0) {
-		*error_r = t_strdup_printf(
-			"pop3c_ssl_ca_dir: access(%s) failed: %m",
-			set->pop3c_ssl_ca_dir);
-		return FALSE;
-	}
-#endif
 	return TRUE;
 }

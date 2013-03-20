@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -113,7 +113,7 @@ static void client_connected(struct master_service_connection *conn)
 int main(int argc, char *argv[])
 {
 	master_service = master_service_init("tcpwrap", 0,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 

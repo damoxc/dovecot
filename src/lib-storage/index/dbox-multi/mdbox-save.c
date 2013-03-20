@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -32,6 +32,7 @@ struct mdbox_save_context {
 	struct mdbox_mailbox *mbox;
 	struct mdbox_sync_context *sync_ctx;
 
+	struct dbox_file *cur_file;
 	struct dbox_file_append_context *cur_file_append;
 	struct mdbox_map_append_context *append_ctx;
 
@@ -39,7 +40,7 @@ struct mdbox_save_context {
 	struct mdbox_map_atomic_context *atomic;
 	struct mdbox_map_transaction_context *map_trans;
 
-	ARRAY_DEFINE(mails, struct dbox_save_mail);
+	ARRAY(struct dbox_save_mail) mails;
 };
 
 static struct dbox_file *
@@ -50,11 +51,9 @@ mdbox_copy_file_get_file(struct mailbox_transaction_context *t,
 		(struct mdbox_save_context *)t->save_ctx;
 	const struct mdbox_mail_index_record *rec;
 	const void *data;
-	bool expunged;
 	uint32_t file_id;
 
-	mail_index_lookup_ext(t->view, seq, ctx->mbox->ext_id,
-			      &data, &expunged);
+	mail_index_lookup_ext(t->view, seq, ctx->mbox->ext_id, &data, NULL);
 	rec = data;
 
 	if (mdbox_map_lookup(ctx->mbox->storage->map, rec->map_uid,
@@ -105,9 +104,9 @@ mdbox_save_alloc(struct mailbox_transaction_context *t)
 
 	if (ctx != NULL) {
 		/* use the existing allocated structure */
+		ctx->cur_file = NULL;
 		ctx->ctx.failed = FALSE;
 		ctx->ctx.finished = FALSE;
-		ctx->ctx.cur_file = NULL;
 		ctx->ctx.dbox_output = NULL;
 		ctx->cur_file_append = NULL;
 		return &ctx->ctx.ctx;
@@ -132,14 +131,12 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 
 	/* get the size of the mail to be saved, if possible */
 	if (i_stream_get_size(input, TRUE, &mail_size) <= 0) {
-		const struct stat *st;
-
 		/* we couldn't find out the exact size. fallback to non-exact,
 		   maybe it'll give something useful. the mail size is used
 		   only to figure out if it's causing mdbox file to grow
 		   too large. */
-		st = i_stream_stat(input, FALSE);
-		mail_size = st->st_size > 0 ? st->st_size : 0;
+		if (i_stream_get_size(input, FALSE, &mail_size) <= 0)
+			mail_size = 0;
 	}
 	if (mdbox_map_append_next(ctx->append_ctx, mail_size, 0,
 				  &ctx->cur_file_append,
@@ -150,7 +147,7 @@ int mdbox_save_begin(struct mail_save_context *_ctx, struct istream *input)
 	i_assert(ctx->ctx.dbox_output->offset <= (uint32_t)-1);
 	append_offset = ctx->ctx.dbox_output->offset;
 
-	ctx->ctx.cur_file = ctx->cur_file_append->file;
+	ctx->cur_file = ctx->cur_file_append->file;
 	dbox_save_begin(&ctx->ctx, input);
 
 	save_mail = array_append_space(&ctx->mails);
@@ -252,7 +249,6 @@ mdbox_save_set_map_uids(struct mdbox_save_context *ctx,
 	const struct dbox_save_mail *mails;
 	unsigned int i, count;
 	const void *data;
-	bool expunged;
 	uint32_t next_map_uid = first_map_uid;
 
 	mdbox_update_header(mbox, ctx->ctx.trans, NULL);
@@ -262,7 +258,7 @@ mdbox_save_set_map_uids(struct mdbox_save_context *ctx,
 	mails = array_get(&ctx->mails, &count);
 	for (i = 0; i < count; i++) {
 		mail_index_lookup_ext(view, mails[i].seq, mbox->ext_id,
-				      &data, &expunged);
+				      &data, NULL);
 		old_rec = data;
 		if (old_rec != NULL && old_rec->map_uid != 0) {
 			/* message was copied. keep the existing map uid */
@@ -414,7 +410,6 @@ int mdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 	struct mdbox_mail_index_record rec;
 	const void *guid_data;
 	guid_128_t wanted_guid;
-	bool expunged;
 
 	ctx->ctx.finished = TRUE;
 
@@ -432,13 +427,13 @@ int mdbox_copy(struct mail_save_context *_ctx, struct mail *mail)
 	}
 
 	mail_index_lookup_ext(mail->transaction->view, mail->seq,
-			      src_mbox->guid_ext_id, &guid_data, &expunged);
+			      src_mbox->guid_ext_id, &guid_data, NULL);
 	if (guid_data == NULL || guid_128_is_empty(guid_data)) {
 		/* missing GUID, something's broken. don't copy using
 		   refcounting. */
 		return mail_storage_copy(_ctx, mail);
-	} else if (_ctx->guid != NULL &&
-		   (guid_128_from_string(_ctx->guid, wanted_guid) < 0 ||
+	} else if (_ctx->data.guid != NULL &&
+		   (guid_128_from_string(_ctx->data.guid, wanted_guid) < 0 ||
 		    memcmp(guid_data, wanted_guid, sizeof(wanted_guid)) != 0)) {
 		/* GUID change requested. we can't do it with refcount
 		   copying */

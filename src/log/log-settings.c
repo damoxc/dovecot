@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -37,7 +37,7 @@ struct service_settings log_service_settings = {
 	.process_limit = 1,
 	.client_limit = 0,
 	.service_count = 0,
-	.idle_kill = -1U,
+	.idle_kill = UINT_MAX,
 	.vsz_limit = (uoff_t)-1,
 
 	.unix_listeners = { { &log_unix_listeners_buf,

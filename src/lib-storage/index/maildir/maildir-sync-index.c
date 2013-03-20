@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -132,8 +132,8 @@ static int maildir_sync_flags(struct maildir_mailbox *mbox, const char *path,
 	ctx->flags = flags8;
 
 	/* and try renaming with the new name */
-	newfname = maildir_filename_flags_set(ctx->keywords_sync_ctx, fname,
-					      ctx->flags, &ctx->keywords);
+	newfname = maildir_filename_flags_kw_set(ctx->keywords_sync_ctx, fname,
+						 ctx->flags, &ctx->keywords);
 	newpath = t_strconcat(dir, newfname, NULL);
 	if (strcmp(path, newpath) == 0) {
 		/* just make sure that the file still exists. avoid rename()
@@ -229,7 +229,7 @@ int maildir_sync_index_begin(struct maildir_mailbox *mbox,
 
 	if (mail_index_sync_begin(_box->index, &sync_ctx, &view,
 				  &trans, sync_flags) < 0) {
-		mail_storage_set_index_error(_box);
+		mailbox_set_index_error(_box);
 		return -1;
 	}
 
@@ -328,7 +328,7 @@ static int maildir_sync_index_finish(struct maildir_index_sync_context *ctx,
 		   start a second index sync and crash. */
 		mbox->syncing_commit = TRUE;
 		if (mail_index_sync_commit(&ctx->sync_ctx) < 0) {
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 			ret = -1;
 		}
 		mbox->syncing_commit = FALSE;
@@ -356,10 +356,8 @@ void maildir_sync_index_rollback(struct maildir_index_sync_context **_ctx)
 	(void)maildir_sync_index_finish(ctx, FALSE);
 }
 
-static int uint_cmp(const void *p1, const void *p2)
+static int uint_cmp(const unsigned int *i1, const unsigned int *i2)
 {
-	const unsigned int *i1 = p1, *i2 = p2;
-
 	if (*i1 < *i2)
 		return -1;
 	else if (*i1 > *i2)
@@ -730,8 +728,11 @@ int maildir_list_index_has_changed(struct mailbox *box,
 		return 1;
 	}
 
-	root_dir = mailbox_list_get_path(box->list, box->name,
-					 MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	ret = mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				  &root_dir);
+	if (ret < 0)
+		return ret;
+	i_assert(ret > 0);
 
 	/* check if new/ changed */
 	new_dir = t_strconcat(root_dir, "/new", NULL);

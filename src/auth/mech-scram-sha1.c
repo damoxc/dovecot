@@ -1,23 +1,27 @@
 /*
  * SCRAM-SHA-1 SASL authentication, see RFC-5802
  *
- * Copyright (c) 2011 Florian Zeitz <florob@babelmonkeys.de>
+ * Copyright (c) 2011-2012 Florian Zeitz <florob@babelmonkeys.de>
  *
  * This software is released under the MIT license.
  */
 
+#include <stdlib.h>
+#include <limits.h>
+
 #include "auth-common.h"
 #include "base64.h"
 #include "buffer.h"
-#include "hmac-sha1.h"
+#include "hmac.h"
+#include "sha1.h"
 #include "randgen.h"
 #include "safe-memset.h"
 #include "str.h"
 #include "strfuncs.h"
+#include "strnum.h"
+#include "password-scheme.h"
 #include "mech.h"
 
-/* SCRAM hash iteration count. RFC says it SHOULD be at least 4096 */
-#define SCRAM_ITERATE_COUNT 4096
 /* s-nonce length */
 #define SCRAM_SERVER_NONCE_LEN 64
 
@@ -28,45 +32,22 @@ struct scram_auth_request {
 
 	/* sent: */
 	const char *server_first_message;
-	unsigned char salt[16];
-	unsigned char salted_password[SHA1_RESULTLEN];
+	const char *snonce;
 
 	/* received: */
 	const char *gs2_cbind_flag;
 	const char *cnonce;
-	const char *snonce;
 	const char *client_first_message_bare;
 	const char *client_final_message_without_proof;
 	buffer_t *proof;
+
+	/* stored */
+	unsigned char stored_key[SHA1_RESULTLEN];
+	unsigned char server_key[SHA1_RESULTLEN];
 };
 
-static void Hi(const unsigned char *str, size_t str_size,
-	       const unsigned char *salt, size_t salt_size, unsigned int i,
-	       unsigned char result[SHA1_RESULTLEN])
-{
-	struct hmac_sha1_context ctx;
-	unsigned char U[SHA1_RESULTLEN];
-	unsigned int j, k;
-
-	/* Calculate U1 */
-	hmac_sha1_init(&ctx, str, str_size);
-	hmac_sha1_update(&ctx, salt, salt_size);
-	hmac_sha1_update(&ctx, "\0\0\0\1", 4);
-	hmac_sha1_final(&ctx, U);
-
-	memcpy(result, U, SHA1_RESULTLEN);
-
-	/* Calculate U2 to Ui and Hi */
-	for (j = 2; j <= i; j++) {
-		hmac_sha1_init(&ctx, str, str_size);
-		hmac_sha1_update(&ctx, U, sizeof(U));
-		hmac_sha1_final(&ctx, U);
-		for (k = 0; k < SHA1_RESULTLEN; k++)
-			result[k] ^= U[k];
-	}
-}
-
-static const char *get_scram_server_first(struct scram_auth_request *request)
+static const char *get_scram_server_first(struct scram_auth_request *request,
+					  int iter, const char *salt)
 {
 	unsigned char snonce[SCRAM_SERVER_NONCE_LEN+1];
 	string_t *str;
@@ -83,20 +64,16 @@ static const char *get_scram_server_first(struct scram_auth_request *request)
 	snonce[sizeof(snonce)-1] = '\0';
 	request->snonce = p_strndup(request->pool, snonce, sizeof(snonce));
 
-	random_fill(request->salt, sizeof(request->salt));
-
-	str = t_str_new(MAX_BASE64_ENCODED_SIZE(sizeof(request->salt)));
-	str_printfa(str, "r=%s%s,s=", request->cnonce, request->snonce);
-	base64_encode(request->salt, sizeof(request->salt), str);
-	str_printfa(str, ",i=%d", SCRAM_ITERATE_COUNT);
+	str = t_str_new(sizeof(snonce));
+	str_printfa(str, "r=%s%s,s=%s,i=%d", request->cnonce, request->snonce,
+		    salt, iter);
 	return str_c(str);
 }
 
 static const char *get_scram_server_final(struct scram_auth_request *request)
 {
-	struct hmac_sha1_context ctx;
+	struct hmac_context ctx;
 	const char *auth_message;
-	unsigned char server_key[SHA1_RESULTLEN];
 	unsigned char server_signature[SHA1_RESULTLEN];
 	string_t *str;
 
@@ -104,17 +81,10 @@ static const char *get_scram_server_final(struct scram_auth_request *request)
 			request->server_first_message, ",",
 			request->client_final_message_without_proof, NULL);
 
-	hmac_sha1_init(&ctx, request->salted_password,
-		       sizeof(request->salted_password));
-	hmac_sha1_update(&ctx, "Server Key", 10);
-	hmac_sha1_final(&ctx, server_key);
-
-	safe_memset(request->salted_password, 0,
-		    sizeof(request->salted_password));
-
-	hmac_sha1_init(&ctx, server_key, sizeof(server_key));
-	hmac_sha1_update(&ctx, auth_message, strlen(auth_message));
-	hmac_sha1_final(&ctx, server_signature);
+	hmac_init(&ctx, request->server_key, sizeof(request->server_key),
+		  &hash_method_sha1);
+	hmac_update(&ctx, auth_message, strlen(auth_message));
+	hmac_final(&ctx, server_signature);
 
 	str = t_str_new(MAX_BASE64_ENCODED_SIZE(sizeof(server_signature)));
 	str_append(str, "v=");
@@ -250,43 +220,34 @@ static bool parse_scram_client_first(struct scram_auth_request *request,
 	return TRUE;
 }
 
-static bool verify_credentials(struct scram_auth_request *request,
-			       const unsigned char *credentials, size_t size)
+static bool verify_credentials(struct scram_auth_request *request)
 {
-	struct hmac_sha1_context ctx;
+	struct hmac_context ctx;
 	const char *auth_message;
 	unsigned char client_key[SHA1_RESULTLEN];
 	unsigned char client_signature[SHA1_RESULTLEN];
 	unsigned char stored_key[SHA1_RESULTLEN];
 	size_t i;
 
-	/* FIXME: credentials should be SASLprepped UTF8 data here */
-	Hi(credentials, size, request->salt, sizeof(request->salt),
-	   SCRAM_ITERATE_COUNT, request->salted_password);
-
-	hmac_sha1_init(&ctx, request->salted_password,
-			sizeof(request->salted_password));
-	hmac_sha1_update(&ctx, "Client Key", 10);
-	hmac_sha1_final(&ctx, client_key);
-
-	sha1_get_digest(client_key, sizeof(client_key), stored_key);
-
 	auth_message = t_strconcat(request->client_first_message_bare, ",",
 			request->server_first_message, ",",
 			request->client_final_message_without_proof, NULL);
 
-	hmac_sha1_init(&ctx, stored_key, sizeof(stored_key));
-	hmac_sha1_update(&ctx, auth_message, strlen(auth_message));
-	hmac_sha1_final(&ctx, client_signature);
+	hmac_init(&ctx, request->stored_key, sizeof(request->stored_key),
+		  &hash_method_sha1);
+	hmac_update(&ctx, auth_message, strlen(auth_message));
+	hmac_final(&ctx, client_signature);
 
 	for (i = 0; i < sizeof(client_signature); i++)
-		client_signature[i] ^= client_key[i];
+		client_key[i] =
+			((char*)request->proof->data)[i] ^ client_signature[i];
+
+	sha1_get_digest(client_key, sizeof(client_key), stored_key);
 
 	safe_memset(client_key, 0, sizeof(client_key));
-	safe_memset(stored_key, 0, sizeof(stored_key));
+	safe_memset(client_signature, 0, sizeof(client_signature));
 
-	return memcmp(client_signature, request->proof->data,
-		      request->proof->used) == 0;
+	return memcmp(stored_key, request->stored_key, sizeof(stored_key)) == 0;
 }
 
 static void credentials_callback(enum passdb_result result,
@@ -295,19 +256,26 @@ static void credentials_callback(enum passdb_result result,
 {
 	struct scram_auth_request *request =
 		(struct scram_auth_request *)auth_request;
-	const char *server_final_message;
+	const char *salt, *error;
+	unsigned int iter_count;
 
 	switch (result) {
 	case PASSDB_RESULT_OK:
-		if (!verify_credentials(request, credentials, size)) {
+		if (scram_sha1_scheme_parse(credentials, size, &iter_count,
+					    &salt, request->stored_key,
+					    request->server_key, &error) < 0) {
 			auth_request_log_info(auth_request, "scram-sha-1",
-					      "password mismatch");
+					      "%s", error);
 			auth_request_fail(auth_request);
-		} else {
-			server_final_message = get_scram_server_final(request);
-			auth_request_success(auth_request, server_final_message,
-					     strlen(server_final_message));
+			break;
 		}
+
+		request->server_first_message = p_strdup(request->pool,
+			get_scram_server_first(request, iter_count, salt));
+
+		auth_request_handler_reply_continue(auth_request,
+					request->server_first_message,
+					strlen(request->server_first_message));
 		break;
 	case PASSDB_RESULT_INTERNAL_FAILURE:
 		auth_request_internal_failure(auth_request);
@@ -368,12 +336,10 @@ static bool parse_scram_client_final(struct scram_auth_request *request,
 		return FALSE;
 	}
 
-	str_array_remove(fields, fields[field_count-1]);
+	(void)str_array_remove(fields, fields[field_count-1]);
 	request->client_final_message_without_proof =
 		p_strdup(request->pool, t_strarray_join(fields, ","));
 
-	auth_request_lookup_credentials(&request->auth_request, "PLAIN",
-					credentials_callback);
 	return TRUE;
 }
 
@@ -384,22 +350,35 @@ static void mech_scram_sha1_auth_continue(struct auth_request *auth_request,
 	struct scram_auth_request *request =
 		(struct scram_auth_request *)auth_request;
 	const char *error = NULL;
+	const char *server_final_message;
+	int len;
 
 	if (!request->client_first_message_bare) {
 		/* Received client-first-message */
 		if (parse_scram_client_first(request, data,
 					     data_size, &error)) {
-			request->server_first_message = p_strdup(request->pool,
-					get_scram_server_first(request));
-			auth_request_handler_reply_continue(auth_request,
-					request->server_first_message,
-					strlen(request->server_first_message));
+			auth_request_lookup_credentials(&request->auth_request,
+							"SCRAM-SHA-1",
+							credentials_callback);
 			return;
 		}
 	} else {
 		/* Received client-final-message */
-		if (parse_scram_client_final(request, data, data_size, &error))
-			return;
+		if (parse_scram_client_final(request, data, data_size,
+					     &error)) {
+			if (!verify_credentials(request)) {
+				auth_request_log_info(auth_request,
+						      "scram-sha-1",
+						      "password mismatch");
+			} else {
+				server_final_message =
+					get_scram_server_final(request);
+				len = strlen(server_final_message);
+				auth_request_success(auth_request,
+						     server_final_message, len);
+				return;
+			}
+		}
 	}
 
 	if (error != NULL)

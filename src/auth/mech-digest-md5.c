@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* Digest-MD5 SASL authentication, see RFC-2831 */
 
@@ -78,7 +78,7 @@ static string_t *get_digest_challenge(struct digest_auth_request *request)
 	/* get 128bit of random data as nonce */
 	random_fill(nonce, sizeof(nonce));
 
-	buffer_create_data(&buf, nonce_base64, sizeof(nonce_base64));
+	buffer_create_from_data(&buf, nonce_base64, sizeof(nonce_base64));
 	base64_encode(nonce, sizeof(nonce), &buf);
 	buffer_append_c(&buf, '\0');
 	request->nonce = p_strdup(request->pool, buf.data);
@@ -283,7 +283,7 @@ static bool auth_handle_response(struct digest_auth_request *request,
 {
 	unsigned int i;
 
-	str_lcase(key);
+	(void)str_lcase(key);
 
 	if (strcmp(key, "realm") == 0) {
 		if (request->auth_request.realm == NULL && *value != '\0')

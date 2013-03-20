@@ -10,8 +10,10 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
 	-I$(top_srcdir)/src/lib-settings \
 	-I$(top_srcdir)/src/lib-auth \
+	-I$(top_srcdir)/src/lib-compression \
 	-I$(top_srcdir)/src/lib-dict \
 	-I$(top_srcdir)/src/lib-fs \
+	-I$(top_srcdir)/src/lib-ssl-iostream \
 	-I$(top_srcdir)/src/lib-master \
 	-I$(top_srcdir)/src/lib-mail \
 	-I$(top_srcdir)/src/lib-imap \
@@ -26,29 +28,21 @@ AM_CPPFLAGS = \
 	-DBINDIR=\""$(bindir)"\" \
 	-DMANDIR=\""$(mandir)"\"
 
-if !BUILD_SHARED_LIBS
-unused_objects = \
-	../lib/mountpoint.o \
-	../lib-imap/imap-util.o \
-	../lib-storage/mail-search-parser-imap.o
-endif
-
 cmd_pw_libs = \
 	../auth/libpassword.a \
 	../lib-ntlm/libntlm.a \
 	../lib-otp/libotp.a
 
 libs = \
-	dsync/libdsync.a \
-	$(unused_objects)
+	dsync/libdsync.la \
+	../lib-compression/libcompression.la
 
 doveadm_LDADD = \
 	$(libs) \
 	$(cmd_pw_libs) \
 	$(CRYPT_LIBS) \
 	$(LIBDOVECOT_STORAGE) \
-	$(LIBDOVECOT) \
-	$(MODULE_LIBS)
+	$(LIBDOVECOT)
 doveadm_DEPENDENCIES = \
 	$(libs) \
 	$(cmd_pw_libs) \
@@ -58,8 +52,7 @@ doveadm_DEPENDENCIES = \
 doveadm_server_LDADD = \
 	$(libs) \
 	$(LIBDOVECOT_STORAGE) \
-	$(LIBDOVECOT) \
-	$(MODULE_LIBS)
+	$(LIBDOVECOT)
 doveadm_server_DEPENDENCIES = \
 	$(libs) \
 	$(LIBDOVECOT_STORAGE_DEPS) \
@@ -110,7 +103,8 @@ doveadm_SOURCES = \
 	doveadm-pw.c \
 	doveadm-sis.c \
 	doveadm-stats.c \
-	doveadm-who.c
+	doveadm-who.c \
+	doveadm-zlib.c
 
 doveadm_server_SOURCES = \
 	$(common) \
@@ -118,9 +112,8 @@ doveadm_server_SOURCES = \
 	doveadm-print-server.c \
 	main.c
 
-noinst_HEADERS = \
-	client-connection.h \
-	server-connection.h \
+pkginc_libdir = $(pkgincludedir)
+pkginc_lib_HEADERS = \
 	doveadm.h \
 	doveadm-dump.h \
 	doveadm-mail.h \
@@ -128,9 +121,13 @@ noinst_HEADERS = \
 	doveadm-mailbox-list-iter.h \
 	doveadm-print.h \
 	doveadm-print-private.h \
-	doveadm-server.h \
 	doveadm-settings.h \
-	doveadm-util.h \
+	doveadm-util.h
+
+noinst_HEADERS = \
+	client-connection.h \
+	server-connection.h \
+	doveadm-server.h \
 	doveadm-who.h
 
 install-exec-local:

@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -75,9 +75,6 @@ mail_index_sync_move_to_private_memory(struct mail_index_sync_map_ctx *ctx)
 {
 	struct mail_index_map *map = ctx->view->map;
 
-	i_assert(MAIL_INDEX_MAP_IS_IN_MEMORY(map) ||
-		 map->rec_map->lock_id != 0);
-
 	if (map->refcount > 1) {
 		map = mail_index_map_clone(map);
 		mail_index_sync_replace_map(ctx, map);
@@ -92,10 +89,9 @@ mail_index_sync_move_to_private_memory(struct mail_index_sync_map_ctx *ctx)
 struct mail_index_map *
 mail_index_sync_get_atomic_map(struct mail_index_sync_map_ctx *ctx)
 {
-	mail_index_sync_move_to_private_memory(ctx);
+	(void)mail_index_sync_move_to_private_memory(ctx);
 	mail_index_record_map_move_to_private(ctx->view->map);
 	mail_index_modseq_sync_map_replaced(ctx->modseq_ctx);
-	ctx->view->map->write_atomic = TRUE;
 	return ctx->view->map;
 }
 
@@ -344,18 +340,6 @@ sync_modseq_update(struct mail_index_sync_map_ctx *ctx,
 	return 1;
 }
 
-void mail_index_sync_write_seq_update(struct mail_index_sync_map_ctx *ctx,
-				      uint32_t seq1, uint32_t seq2)
-{
-	struct mail_index_map *map = ctx->view->map;
-
-	if (map->rec_map->write_seq_first == 0 ||
-	    map->rec_map->write_seq_first > seq1)
-		map->rec_map->write_seq_first = seq1;
-	if (map->rec_map->write_seq_last < seq2)
-		map->rec_map->write_seq_last = seq2;
-}
-
 static int sync_append(const struct mail_index_record *rec,
 		       struct mail_index_sync_map_ctx *ctx)
 {
@@ -396,9 +380,7 @@ static int sync_append(const struct mail_index_record *rec,
 		map->rec_map->last_appended_uid = rec->uid;
 		new_flags = rec->flags;
 
-		mail_index_sync_write_seq_update(ctx,
-						 map->rec_map->records_count,
-						 map->rec_map->records_count);
+		map->rec_map->records_changed = TRUE;
 		mail_index_modseq_append(ctx->modseq_ctx,
 					 map->rec_map->records_count);
 	}
@@ -426,7 +408,7 @@ static int sync_flag_update(const struct mail_transaction_flag_update *u,
 	if (!mail_index_lookup_seq_range(view, u->uid1, u->uid2, &seq1, &seq2))
 		return 1;
 
-	mail_index_sync_write_seq_update(ctx, seq1, seq2);
+	view->map->rec_map->records_changed = TRUE;
 	if (!MAIL_TRANSACTION_FLAG_UPDATE_IS_INTERNAL(u)) {
 		mail_index_modseq_update_flags(ctx->modseq_ctx,
 					       u->add_flags | u->remove_flags,
@@ -471,7 +453,6 @@ static int sync_header_update(const struct mail_transaction_header_update *u,
 	struct mail_index_map *map = ctx->view->map;
 	uint32_t orig_log_file_tail_offset = map->hdr.log_file_tail_offset;
 	uint32_t orig_next_uid = map->hdr.next_uid;
-	uint32_t orig_uid_validity = map->hdr.uid_validity;
 
 	if (u->offset >= map->hdr.base_header_size ||
 	    u->offset + u->size > map->hdr.base_header_size) {
@@ -483,7 +464,7 @@ static int sync_header_update(const struct mail_transaction_header_update *u,
 
 	buffer_write(map->hdr_copy_buf, u->offset, u + 1, u->size);
 	map->hdr_base = map->hdr_copy_buf->data;
-	map->write_base_header = TRUE;
+	map->header_changed = TRUE;
 
 	/* @UNSAFE */
 	if ((uint32_t)(u->offset + u->size) <= sizeof(map->hdr)) {
@@ -494,15 +475,6 @@ static int sync_header_update(const struct mail_transaction_header_update *u,
 		       u + 1, sizeof(map->hdr) - u->offset);
 	}
 
-	/* UIDVALIDITY can be changed only by resetting the index */
-	if (orig_uid_validity != 0 &&
-	    MAIL_INDEX_HEADER_UPDATE_FIELD_IN_RANGE(u, uid_validity)) {
-		mail_index_sync_set_corrupted(ctx,
-			"uid_validity updated unexpectedly: %u -> %u",
-			orig_uid_validity, map->hdr.uid_validity);
-		/* let it through anyway, although this could give wrong
-		   "next_uid shrank" errors if the value actually changed.. */
-	}
 	if (map->hdr.next_uid < orig_next_uid) {
 		mail_index_sync_set_corrupted(ctx,
 			"next_uid shrank ignored: %u -> %u",
@@ -523,6 +495,7 @@ mail_index_sync_record_real(struct mail_index_sync_map_ctx *ctx,
 			    const struct mail_transaction_header *hdr,
 			    const void *data)
 {
+	uint64_t modseq;
 	int ret = 0;
 
 	switch (hdr->type & MAIL_TRANSACTION_TYPE_MASK) {
@@ -564,13 +537,8 @@ mail_index_sync_record_real(struct mail_index_sync_map_ctx *ctx,
 		t_array_init(&uids, 64);
 		end = CONST_PTR_OFFSET(data, hdr->size);
 		for (; rec != end; rec++) {
-			if (rec->uid == 0) {
-				mail_index_sync_set_corrupted(ctx,
-					"Expunge-guid for invalid uid=%u",
-					rec->uid);
-				break;
-			}
-			seq_range_array_add(&uids, 0, rec->uid);
+			i_assert(rec->uid != 0);
+			seq_range_array_add(&uids, rec->uid);
 		}
 
 		/* do this in reverse so the memmove()s are smaller */
@@ -626,12 +594,8 @@ mail_index_sync_record_real(struct mail_index_sync_map_ctx *ctx,
 			}
 
 			rec = CONST_PTR_OFFSET(data, i);
-			if (i + sizeof(*rec) + rec->name_size > hdr->size) {
-				mail_index_sync_set_corrupted(ctx,
-					"ext intro: name_size too large");
-				ret = -1;
-				break;
-			}
+			/* name_size checked by _log_view_next() */
+			i_assert(i + sizeof(*rec) + rec->name_size <= hdr->size);
 
 			ret = mail_index_sync_ext_intro(ctx, rec);
 			if (ret <= 0)
@@ -803,6 +767,10 @@ mail_index_sync_record_real(struct mail_index_sync_map_ctx *ctx,
 		ctx->view->index->index_delete_requested = FALSE;
 		break;
 	case MAIL_TRANSACTION_BOUNDARY:
+		break;
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE:
+		modseq = mail_transaction_log_view_get_prev_modseq(ctx->view->log_view);
+		mail_index_modseq_update_highest(ctx->modseq_ctx, modseq);
 		break;
 	default:
 		mail_index_sync_set_corrupted(ctx,
@@ -979,7 +947,7 @@ int mail_index_sync_map(struct mail_index_map **_map,
 	had_dirty = (map->hdr.flags & MAIL_INDEX_HDR_FLAG_HAVE_DIRTY) != 0;
 	if (had_dirty) {
 		map->hdr.flags &= ~MAIL_INDEX_HDR_FLAG_HAVE_DIRTY;
-		map->write_base_header = TRUE;
+		map->header_changed = TRUE;
 	}
 
 	if (map->hdr_base != map->hdr_copy_buf->data) {

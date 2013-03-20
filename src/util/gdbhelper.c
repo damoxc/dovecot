@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 
@@ -65,7 +65,7 @@ int main(int argc, char *argv[])
 			}
 			if (ret < 0)
 				i_fatal("read(pipe) failed: %m");
-			(void)close(fd_log);
+			i_close_fd(&fd_log);
 		}
 	}
 	return 0;

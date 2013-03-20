@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -12,7 +12,8 @@ struct cmp_ostream {
 	bool equals;
 };
 
-static void o_stream_cmp_close(struct iostream_private *stream)
+static void o_stream_cmp_close(struct iostream_private *stream,
+			       bool close_parent)
 {
 	struct cmp_ostream *cstream = (struct cmp_ostream *)stream;
 
@@ -20,7 +21,9 @@ static void o_stream_cmp_close(struct iostream_private *stream)
 		return;
 
 	i_stream_unref(&cstream->input);
-	o_stream_flush(&cstream->ostream.ostream);
+	(void)o_stream_flush(&cstream->ostream.ostream);
+	if (close_parent)
+		o_stream_close(cstream->ostream.parent);
 }
 
 bool stream_cmp_block(struct istream *input,
@@ -80,7 +83,8 @@ o_stream_create_cmp(struct ostream *output, struct istream *input)
 	cstream->equals = TRUE;
 	i_stream_ref(input);
 
-	return o_stream_create(&cstream->ostream, output);
+	return o_stream_create(&cstream->ostream, output,
+			       o_stream_get_fd(output));
 }
 
 bool o_stream_cmp_equals(struct ostream *_output)

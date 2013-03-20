@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -7,7 +7,7 @@
 #include "ioloop.h"
 #include "istream.h"
 #include "ostream.h"
-#include "network.h"
+#include "net.h"
 #include "eacces-error.h"
 #include "auth-client-private.h"
 #include "auth-client-request.h"
@@ -303,7 +303,7 @@ auth_server_connection_init(struct auth_client *client)
 
 	conn->client = client;
 	conn->fd = -1;
-	conn->requests = hash_table_create(default_pool, pool, 100, NULL, NULL);
+	hash_table_create_direct(&conn->requests, pool, 100);
 	i_array_init(&conn->available_auth_mechs, 8);
 	return conn;
 }
@@ -314,7 +314,8 @@ auth_server_connection_remove_requests(struct auth_server_connection *conn,
 {
 	static const char *const temp_failure_args[] = { "temp", NULL };
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct auth_client_request *request;
 	time_t created, oldest = 0;
 	unsigned int request_count = 0;
 
@@ -322,9 +323,7 @@ auth_server_connection_remove_requests(struct auth_server_connection *conn,
 		return;
 
 	iter = hash_table_iterate_init(conn->requests);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct auth_client_request *request = value;
-
+	while (hash_table_iterate(iter, conn->requests, &key, &request)) {
 		if (!auth_client_request_is_aborted(request)) {
 			request_count++;
 			created = auth_client_request_get_create_time(request);

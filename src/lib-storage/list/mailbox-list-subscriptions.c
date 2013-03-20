@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -27,7 +27,7 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 	struct mail_namespace *ns, *default_ns = list->ns;
 	struct mail_namespace *namespaces = default_ns->user->namespaces;
 	struct mailbox_node *node;
-	const char *vname, *ns_name, *list_name;
+	const char *vname, *ns_name, *error;
 	unsigned int len;
 	bool created;
 
@@ -44,8 +44,13 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 		ns_name = t_strconcat(src_list->ns->prefix, name, NULL);
 	}
 	ns = mail_namespace_find_unsubscribable(namespaces, ns_name);
-	if (ns != NULL && ns != default_ns)
-		return 0;
+	if (ns != NULL && ns != default_ns) {
+		if (ns->prefix_len > 0)
+			return 0;
+		/* prefix="" namespace=no : catching this is basically the
+		   same as not finding any namespace. */
+		ns = NULL;
+	}
 
 	/* 2) when listing pub/ namespace, skip over entries that don't
 	   begin with pub/. */
@@ -56,13 +61,12 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 	/* When listing shared namespace's subscriptions, we need to
 	   autocreate all the visible child namespaces. their subscriptions
 	   are listed later. */
-	if (ns != NULL && ns->type == NAMESPACE_SHARED &&
+	if (ns != NULL && ns->type == MAIL_NAMESPACE_TYPE_SHARED &&
 	    (ns->flags & NAMESPACE_FLAG_AUTOCREATED) == 0) {
 		/* we'll need to get the namespace autocreated.
-		   one easy way is to just ask if a mailbox name under
-		   it is valid, and it gets created */
-		list_name = ns_name + ns->prefix_len;
-		(void)mailbox_list_is_valid_existing_name(list, list_name);
+		   one easy way is to just ask to join a reference and
+		   pattern */
+		(void)mailbox_list_join_refpattern(ns->list, ns_name, "");
 	}
 
 	/* When listing pub/ namespace, skip over the namespace
@@ -88,7 +92,7 @@ mailbox_list_subscription_fill_one(struct mailbox_list *list,
 		name = t_strndup(name, len-1);
 	}
 
-	if (!mailbox_list_is_valid_existing_name(list, name)) {
+	if (!mailbox_list_is_valid_name(list, name, &error)) {
 		/* we'll only get into trouble if we show this */
 		return -1;
 	} else {
@@ -106,6 +110,7 @@ int mailbox_list_subscriptions_refresh(struct mailbox_list *src_list,
 {
 	struct subsfile_list_context *subsfile_ctx;
 	struct stat st;
+	enum mailbox_list_path_type type;
 	const char *path, *name;
 	char sep;
 	int ret;
@@ -118,8 +123,10 @@ int mailbox_list_subscriptions_refresh(struct mailbox_list *src_list,
 		sep = mail_namespace_get_sep(src_list->ns);
 		dest_list->subscriptions = mailbox_tree_init(sep);
 	}
-	path = t_strconcat(src_list->set.control_dir != NULL ?
-			   src_list->set.control_dir : src_list->set.root_dir,
+
+	type = src_list->set.control_dir != NULL ?
+		MAILBOX_LIST_PATH_TYPE_CONTROL : MAILBOX_LIST_PATH_TYPE_DIR;
+	path = t_strconcat(mailbox_list_get_root_forced(src_list, type),
 			   "/", src_list->set.subscription_fname, NULL);
 	if (stat(path, &st) < 0) {
 		if (errno == ENOENT) {
@@ -249,14 +256,14 @@ mailbox_list_subscriptions_iter_next(struct mailbox_list_iterate_context *_ctx)
 	struct mailbox_list *list = _ctx->list;
 	struct mailbox_node *node;
 	enum mailbox_info_flags subs_flags;
-	const char *vname, *storage_name;
+	const char *vname, *storage_name, *error;
 	int ret;
 
 	node = mailbox_tree_iterate_next(ctx->iter, &vname);
 	if (node == NULL)
 		return NULL;
 
-	ctx->info.name = vname;
+	ctx->info.vname = vname;
 	subs_flags = node->flags & (MAILBOX_SUBSCRIBED |
 				    MAILBOX_CHILD_SUBSCRIBED);
 
@@ -268,7 +275,7 @@ mailbox_list_subscriptions_iter_next(struct mailbox_list_iterate_context *_ctx)
 	}
 
 	storage_name = mailbox_list_get_storage_name(list, vname);
-	if (!mailbox_list_is_valid_pattern(list, storage_name)) {
+	if (!mailbox_list_is_valid_name(list, storage_name, &error)) {
 		/* broken entry in subscriptions file */
 		ctx->info.flags = MAILBOX_NONEXISTENT;
 	} else if (mailbox_list_mailbox(list, storage_name,

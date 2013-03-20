@@ -1,18 +1,18 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "base64.h"
 #include "buffer.h"
-#include "hostpid.h"
 #include "ioloop.h"
 #include "istream.h"
 #include "ostream.h"
 #include "safe-memset.h"
 #include "str.h"
 #include "str-sanitize.h"
-#include "time-util.h"
+#include "net.h"
 #include "imap-resp-code.h"
 #include "imap-parser.h"
+#include "imap-url.h"
 #include "auth-client.h"
 #include "client.h"
 #include "client-authenticate.h"
@@ -33,14 +33,20 @@ void client_authenticate_get_capabilities(struct client *client, string_t *str)
 	}
 }
 
-bool imap_client_auth_handle_reply(struct client *client,
-				   const struct client_auth_reply *reply)
+void imap_client_auth_result(struct client *client,
+			     enum client_auth_result result,
+			     const struct client_auth_reply *reply,
+			     const char *text)
 {
-	struct imap_client *imap_client = (struct imap_client *)client;
-	string_t *str;
-	const char *timestamp, *msg;
+	struct imap_url url;
+	string_t *referral;
 
-	if (reply->host != NULL) {
+	switch (result) {
+	case CLIENT_AUTH_RESULT_SUCCESS:
+		/* nothing to be done for IMAP */
+		break;
+	case CLIENT_AUTH_RESULT_REFERRAL_SUCCESS:
+	case CLIENT_AUTH_RESULT_REFERRAL_NOLOGIN:
 		/* IMAP referral
 
 		   [nologin] referral host=.. [port=..] [destuser=..]
@@ -50,55 +56,51 @@ bool imap_client_auth_handle_reply(struct client *client,
 		   OK [...] Logged in, but you should use this server instead.
 		   .. [REFERRAL ..] (Reason from auth server)
 		*/
-		str = t_str_new(128);
-		str_append(str, imap_client->cmd_tag);
-		str_append_c(str, ' ');
-		str_append(str, reply->nologin ? "NO " : "OK ");
-		str_printfa(str, "[REFERRAL imap://%s;AUTH=%s@%s",
-			    reply->destuser, client->auth_mech_name,
-			    reply->host);
-		if (reply->port != 143)
-			str_printfa(str, ":%u", reply->port);
-		str_append(str, "/] ");
-		if (reply->reason != NULL)
-			str_append(str, reply->reason);
-		else if (reply->nologin)
-			str_append(str, "Try this server instead.");
-		else {
-			str_append(str, "Logged in, but you should use "
-				   "this server instead.");
+		referral = t_str_new(128);
+
+		memset(&url, 0, sizeof(url));
+		url.userid = reply->destuser;
+		url.auth_type = client->auth_mech_name;
+		url.host_name = reply->host;
+		if (reply->port != 143) {
+			url.have_port = TRUE;
+			url.port = reply->port;
 		}
-		str_append(str, "\r\n");
-		client_send_raw(client, str_c(str));
-		if (!reply->nologin) {
-			client_destroy_success(client, "Login with referral");
-			return TRUE;
+		str_append(referral, "REFERRAL ");
+		str_append(referral, imap_url_create(&url));
+
+		if (result == CLIENT_AUTH_RESULT_REFERRAL_SUCCESS) {
+			client_send_reply_code(client, IMAP_CMD_REPLY_OK,
+					       str_c(referral), text);
+		} else {
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       str_c(referral), text);
 		}
-	} else if (!reply->nologin) {
-		/* normal login/failure */
-		return FALSE;
-	} else if (reply->reason != NULL) {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAIL_REASON,
-				 reply->reason);
-	} else if (reply->temp) {
-		timestamp = t_strflocaltime("%Y-%m-%d %H:%M:%S", ioloop_time);
-		msg = t_strdup_printf(AUTH_TEMP_FAILED_MSG" [%s:%s]",
-				      my_hostname, timestamp);
-		client_send_line(client,
-				 CLIENT_CMD_REPLY_AUTH_FAIL_TEMP, msg);
-	} else if (reply->authz_failure) {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTHZ_FAILED,
-				 "Authorization failed");
-	} else {
-		client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-				 AUTH_FAILED_MSG);
+		break;
+	case CLIENT_AUTH_RESULT_ABORTED:
+		client_send_reply(client, IMAP_CMD_REPLY_BAD, text);
+		break;
+	case CLIENT_AUTH_RESULT_AUTHFAILED_REASON:
+		client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+				       "ALERT", text);
+		break;
+	case CLIENT_AUTH_RESULT_AUTHZFAILED:
+		client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+				       IMAP_RESP_CODE_AUTHZFAILED, text);
+		break;
+	case CLIENT_AUTH_RESULT_TEMPFAIL:
+		client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+				       IMAP_RESP_CODE_UNAVAILABLE, text);
+		break;
+	case CLIENT_AUTH_RESULT_SSL_REQUIRED:
+		client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+				       IMAP_RESP_CODE_PRIVACYREQUIRED, text);
+		break;
+	case CLIENT_AUTH_RESULT_AUTHFAILED:
+		client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+				       IMAP_RESP_CODE_AUTHFAILED, text);
+		break;
 	}
-
-	i_assert(reply->nologin);
-
-	if (!client->destroyed)
-		client_auth_failed(client);
-	return TRUE;
 }
 
 static int

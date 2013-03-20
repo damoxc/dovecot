@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -6,6 +6,29 @@
 #include "mail-storage.h"
 #include "mailbox-list-subscriptions.h"
 #include "mailbox-list-index.h"
+
+static bool iter_use_index(struct mailbox_list_index_iterate_context *ctx)
+{
+	struct mailbox_list_index *ilist = INDEX_LIST_CONTEXT(ctx->ctx.list);
+
+	if ((ctx->ctx.flags & MAILBOX_LIST_ITER_SELECT_SUBSCRIBED) != 0) {
+		/* for now we don't use indexes when listing subscriptions,
+		   because it needs to list also the nonexistent subscribed
+		   mailboxes, which don't exist in the index. */
+		return FALSE;
+	}
+	if ((ctx->ctx.flags & MAILBOX_LIST_ITER_RAW_LIST) != 0 &&
+	    ilist->has_backing_store) {
+		/* no indexing wanted with raw lists */
+		return FALSE;
+	}
+	if (mailbox_list_index_refresh(ctx->ctx.list) < 0 &&
+	    ilist->has_backing_store) {
+		/* refresh failed */
+		return FALSE;
+	}
+	return TRUE;
+}
 
 struct mailbox_list_iterate_context *
 mailbox_list_index_iter_init(struct mailbox_list *list,
@@ -17,7 +40,7 @@ mailbox_list_index_iter_init(struct mailbox_list *list,
 	pool_t pool;
 	char ns_sep = mail_namespace_get_sep(list->ns);
 
-	pool = pool_alloconly_create("mailbox list index iter", 1024);
+	pool = pool_alloconly_create("mailbox list index iter", 2048);
 	ctx = p_new(pool, struct mailbox_list_index_iterate_context, 1);
 	ctx->ctx.pool = pool;
 	ctx->ctx.list = list;
@@ -27,7 +50,7 @@ mailbox_list_index_iter_init(struct mailbox_list *list,
 	ctx->sep = ns_sep;
 	ctx->info_pool = pool_alloconly_create("mailbox list index iter info", 128);
 
-	if (mailbox_list_index_refresh(ctx->ctx.list) < 0) {
+	if (!iter_use_index(ctx)) {
 		/* no indexing */
 		ctx->backend_ctx = ilist->module_ctx.super.
 			iter_init(list, patterns, flags);
@@ -54,8 +77,8 @@ mailbox_list_index_update_info(struct mailbox_list_index_iterate_context *ctx)
 		str_append_c(ctx->path, ctx->sep);
 	str_append(ctx->path, node->name);
 
-	ctx->info.name = mailbox_list_get_vname(ctx->ctx.list, str_c(ctx->path));
-	ctx->info.name = p_strdup(ctx->info_pool, ctx->info.name);
+	ctx->info.vname = mailbox_list_get_vname(ctx->ctx.list, str_c(ctx->path));
+	ctx->info.vname = p_strdup(ctx->info_pool, ctx->info.vname);
 	ctx->info.flags = 0;
 	if ((node->flags & MAILBOX_LIST_INDEX_FLAG_NONEXISTENT) != 0)
 		ctx->info.flags |= MAILBOX_NONEXISTENT;
@@ -69,11 +92,11 @@ mailbox_list_index_update_info(struct mailbox_list_index_iterate_context *ctx)
 	if ((ctx->ctx.flags & (MAILBOX_LIST_ITER_SELECT_SUBSCRIBED |
 			       MAILBOX_LIST_ITER_RETURN_SUBSCRIBED)) != 0) {
 		mailbox_list_set_subscription_flags(ctx->ctx.list,
-						    ctx->info.name,
+						    ctx->info.vname,
 						    &ctx->info.flags);
 	}
 
-	box = mailbox_alloc(ctx->ctx.list, ctx->info.name, 0);
+	box = mailbox_alloc(ctx->ctx.list, ctx->info.vname, 0);
 	mailbox_list_index_status_set_info_flags(box, node->uid,
 						 &ctx->info.flags);
 	mailbox_free(&box);
@@ -138,7 +161,7 @@ mailbox_list_index_iter_next(struct mailbox_list_iterate_context *_ctx)
 	/* listing mailboxes from index */
 	while (ctx->next_node != NULL) {
 		mailbox_list_index_update_info(ctx);
-		match = imap_match(_ctx->glob, ctx->info.name);
+		match = imap_match(_ctx->glob, ctx->info.vname);
 
 		follow_children = (match & (IMAP_MATCH_YES |
 					    IMAP_MATCH_CHILDREN)) != 0;

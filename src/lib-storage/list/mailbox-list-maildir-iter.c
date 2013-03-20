@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -496,7 +496,7 @@ maildir_list_iter_next(struct mailbox_list_iterate_context *_ctx)
 	if (_ctx->failed)
 		return NULL;
 
-	node = mailbox_tree_iterate_next(ctx->tree_iter, &ctx->info.name);
+	node = mailbox_tree_iterate_next(ctx->tree_iter, &ctx->info.vname);
 	if (node == NULL)
 		return NULL;
 
@@ -505,7 +505,7 @@ maildir_list_iter_next(struct mailbox_list_iterate_context *_ctx)
 	    (_ctx->flags & MAILBOX_LIST_ITER_SELECT_SUBSCRIBED) == 0) {
 		/* we're listing all mailboxes but we want to know
 		   \Subscribed flags */
-		mailbox_list_set_subscription_flags(_ctx->list, ctx->info.name,
+		mailbox_list_set_subscription_flags(_ctx->list, ctx->info.vname,
 						    &ctx->info.flags);
 	}
 	return &ctx->info;

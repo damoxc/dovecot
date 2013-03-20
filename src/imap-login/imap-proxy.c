@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "login-common.h"
 #include "array.h"
@@ -29,17 +29,21 @@ enum imap_proxy_state {
 
 static void proxy_write_id(struct imap_client *client, string_t *str)
 {
+	i_assert(client->common.proxy_ttl > 1);
+
 	str_printfa(str, "I ID ("
 		    "\"x-session-id\" \"%s\" "
 		    "\"x-originating-ip\" \"%s\" "
 		    "\"x-originating-port\" \"%u\" "
 		    "\"x-connected-ip\" \"%s\" "
-		    "\"x-connected-port\" \"%u\")\r\n",
+		    "\"x-connected-port\" \"%u\" "
+		    "\"x-proxy-ttl\" \"%u\")\r\n",
 		    client_get_session_id(&client->common),
 		    net_ip2addr(&client->common.ip),
 		    client->common.remote_port,
 		    net_ip2addr(&client->common.local_ip),
-		    client->common.local_port);
+		    client->common.local_port,
+		    client->common.proxy_ttl - 1);
 }
 
 static void proxy_free_password(struct client *client)
@@ -71,10 +75,9 @@ static void proxy_write_login(struct imap_client *client, string_t *str)
 	if (client->common.proxy_master_user == NULL) {
 		/* logging in normally - use LOGIN command */
 		str_append(str, "L LOGIN ");
-		imap_quote_append_string(str, client->common.proxy_user, FALSE);
+		imap_append_string(str, client->common.proxy_user);
 		str_append_c(str, ' ');
-		imap_quote_append_string(str, client->common.proxy_password,
-					 FALSE);
+		imap_append_string(str, client->common.proxy_password);
 
 		proxy_free_password(&client->common);
 	} else if (client->proxy_sasl_ir) {
@@ -126,7 +129,7 @@ static int proxy_input_banner(struct imap_client *client,
 		proxy_write_login(client, str);
 	}
 
-	(void)o_stream_send(output, str_data(str), str_len(str));
+	o_stream_nsend(output, str_data(str), str_len(str));
 	return 0;
 }
 
@@ -197,7 +200,7 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 		str_append(str, "\r\n");
 		proxy_free_password(client);
 
-		(void)o_stream_send(output, str_data(str), str_len(str));
+		o_stream_nsend(output, str_data(str), str_len(str));
 		return 0;
 	} else if (strncmp(line, "S ", 2) == 0) {
 		if (strncmp(line, "S OK ", 5) != 0) {
@@ -218,15 +221,14 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 		output = login_proxy_get_ostream(client->login_proxy);
 		str = t_str_new(128);
 		proxy_write_login(imap_client, str);
-		(void)o_stream_send(output, str_data(str), str_len(str));
+		o_stream_nsend(output, str_data(str), str_len(str));
 		return 1;
 	} else if (strncmp(line, "L OK ", 5) == 0) {
 		/* Login successful. Send this line to client. */
 		client->proxy_state = IMAP_PROXY_STATE_LOGIN;
 		str = t_str_new(128);
 		client_send_login_reply(imap_client, str, line + 5);
-		(void)o_stream_send(client->output,
-				    str_data(str), str_len(str));
+		o_stream_nsend(client->output, str_data(str), str_len(str));
 
 		(void)client_skip_line(imap_client);
 		client_proxy_finish_destroy_client(client);
@@ -248,8 +250,9 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 			   the remote is sending a different error message
 			   an attacker can't find out what users exist in
 			   the system. */
-			client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-					 AUTH_FAILED_MSG);
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       IMAP_RESP_CODE_AUTHFAILED,
+					       AUTH_FAILED_MSG);
 		} else if (strncmp(line, "NO [", 4) == 0) {
 			/* remote sent some other resp-code. forward it. */
 			client_send_raw(client, t_strconcat(
@@ -262,8 +265,9 @@ int imap_proxy_parse_line(struct client *client, const char *line)
 			   failures. since other errors are pretty rare,
 			   it's safer to just hide them. they're still
 			   available in logs though. */
-			client_send_line(client, CLIENT_CMD_REPLY_AUTH_FAILED,
-					 AUTH_FAILED_MSG);
+			client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+					       IMAP_RESP_CODE_AUTHFAILED,
+					       AUTH_FAILED_MSG);
 		}
 
 		client->proxy_auth_failed = TRUE;
@@ -303,4 +307,10 @@ void imap_proxy_reset(struct client *client)
 	imap_client->proxy_seen_banner = FALSE;
 	imap_client->proxy_wait_auth_continue = FALSE;
 	client->proxy_state = IMAP_PROXY_STATE_NONE;
+}
+
+void imap_proxy_error(struct client *client, const char *text)
+{
+	client_send_reply_code(client, IMAP_CMD_REPLY_NO,
+			       IMAP_RESP_CODE_UNAVAILABLE, text);
 }

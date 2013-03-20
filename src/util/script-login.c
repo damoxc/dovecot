@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "env-util.h"
@@ -170,7 +170,7 @@ static void script_execute_finish(void)
 		value = getenv(t_str_ucase(*keys));
 		if (value != NULL) {
 			str_append_c(reply, '\t');
-			str_tabescape_write(reply,
+			str_append_tabescaped(reply,
 					    t_strconcat(t_str_lcase(*keys), "=",
 							value, NULL));
 		}

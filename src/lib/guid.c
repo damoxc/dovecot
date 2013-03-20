@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -34,12 +34,23 @@ const char *guid_generate(void)
 			       pid, my_hostname);
 }
 
+void guid_128_host_hash_get(const char *host,
+			    unsigned char hash_r[GUID_128_HOST_HASH_SIZE])
+{
+	unsigned char full_hash[SHA1_RESULTLEN];
+
+	sha1_get_digest(host, strlen(host), full_hash);
+	memcpy(hash_r, full_hash + sizeof(full_hash)-GUID_128_HOST_HASH_SIZE,
+	       GUID_128_HOST_HASH_SIZE);
+}
+
 void guid_128_generate(guid_128_t guid_r)
 {
+#if GUID_128_HOST_HASH_SIZE != 4
+#  error GUID_128_HOST_HASH_SIZE must be 4
+#endif
 	static struct timespec ts = { 0, 0 };
 	static uint8_t guid_static[8];
-	unsigned char hostdomain_hash[SHA1_RESULTLEN];
-	const char *hostdomain;
 	uint32_t pid;
 
 	/* we'll use the current time in nanoseconds as the initial 64bit
@@ -48,16 +59,12 @@ void guid_128_generate(guid_128_t guid_r)
 		if (clock_gettime(CLOCK_REALTIME, &ts) < 0)
 			i_fatal("clock_gettime() failed: %m");
 		pid = getpid();
-		hostdomain = my_hostdomain();
-		sha1_get_digest(hostdomain, strlen(hostdomain),
-				hostdomain_hash);
 
 		guid_static[0] = (pid & 0x000000ff);
 		guid_static[1] = (pid & 0x0000ff00) >> 8;
 		guid_static[2] = (pid & 0x00ff0000) >> 16;
 		guid_static[3] = (pid & 0xff000000) >> 24;
-		memcpy(guid_static+4,
-		       hostdomain_hash+sizeof(hostdomain_hash)-4, 4);
+		guid_128_host_hash_get(my_hostdomain(), guid_static+4);
 	} else if ((uint32_t)ts.tv_nsec < (uint32_t)-1) {
 		ts.tv_nsec++;
 	} else {
@@ -87,11 +94,16 @@ bool guid_128_is_empty(const guid_128_t guid)
 	return TRUE;
 }
 
+bool guid_128_equals(const guid_128_t guid1, const guid_128_t guid2)
+{
+	return memcmp(guid1, guid2, GUID_128_SIZE) == 0;
+}
+
 int guid_128_from_string(const char *str, guid_128_t guid_r)
 {
 	buffer_t buf;
 
-	buffer_create_data(&buf, guid_r, GUID_128_SIZE);
+	buffer_create_from_data(&buf, guid_r, GUID_128_SIZE);
 	return strlen(str) == GUID_128_SIZE*2 &&
 		hex_to_binary(str, &buf) == 0 &&
 		buf.used == GUID_128_SIZE ? 0 : -1;
@@ -102,16 +114,12 @@ const char *guid_128_to_string(const guid_128_t guid)
 	return binary_to_hex(guid, GUID_128_SIZE);
 }
 
-unsigned int guid_128_hash(const void *p)
+unsigned int guid_128_hash(const uint8_t *guid)
 {
-	const uint8_t *guid = p;
-
 	return mem_hash(guid, GUID_128_SIZE);
 }
 
-int guid_128_cmp(const void *p1, const void *p2)
+int guid_128_cmp(const uint8_t *guid1, const uint8_t *guid2)
 {
-	const uint8_t *g1 = p1, *g2 = p2;
-
-	return memcmp(g1, g2, GUID_128_SIZE);
+	return memcmp(guid1, guid2, GUID_128_SIZE);
 }

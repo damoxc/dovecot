@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -30,6 +30,7 @@ static const struct setting_define mail_storage_setting_defines[] = {
 	DEF(SET_STR_VARS, mail_attachment_dir),
 	DEF(SET_STR, mail_attachment_hash),
 	DEF(SET_SIZE, mail_attachment_min_size),
+	DEF(SET_STR_VARS, mail_attribute_dict),
 	DEF(SET_UINT, mail_prefetch_count),
 	DEF(SET_STR, mail_cache_fields),
 	DEF(SET_STR, mail_never_cache_fields),
@@ -52,6 +53,9 @@ static const struct setting_define mail_storage_setting_defines[] = {
 	DEF(SET_ENUM, lock_method),
 	DEF(SET_STR, pop3_uidl_format),
 
+	DEF(SET_STR, ssl_client_ca_dir),
+	DEF(SET_STR, ssl_crypto_device),
+
 	SETTING_DEFINE_LIST_END
 };
 
@@ -61,6 +65,7 @@ const struct mail_storage_settings mail_storage_default_settings = {
 	.mail_attachment_dir = "",
 	.mail_attachment_hash = "%{sha1}",
 	.mail_attachment_min_size = 1024*128,
+	.mail_attribute_dict = "",
 	.mail_prefetch_count = 0,
 	.mail_cache_fields = "flags",
 	.mail_never_cache_fields = "imap.envelope",
@@ -79,9 +84,12 @@ const struct mail_storage_settings mail_storage_default_settings = {
 	.mail_debug = FALSE,
 	.mail_full_filesystem_access = FALSE,
 	.maildir_stat_dirs = FALSE,
-	.mail_shared_explicit_inbox = TRUE,
+	.mail_shared_explicit_inbox = FALSE,
 	.lock_method = "fcntl:flock:dotlock",
-	.pop3_uidl_format = "%08Xu%08Xv"
+	.pop3_uidl_format = "%08Xu%08Xv",
+
+	.ssl_client_ca_dir = "",
+	.ssl_crypto_device = ""
 };
 
 const struct setting_parser_info mail_storage_setting_parser_info = {
@@ -298,22 +306,6 @@ const void *mail_storage_get_driver_settings(struct mail_storage *storage)
 						 storage->name);
 }
 
-enum mail_index_open_flags
-mail_storage_settings_to_index_flags(const struct mail_storage_settings *set)
-{
-	enum mail_index_open_flags index_flags = 0;
-
-#ifndef MMAP_CONFLICTS_WRITE
-	if (set->mmap_disable)
-#endif
-		index_flags |= MAIL_INDEX_OPEN_FLAG_MMAP_DISABLE;
-	if (set->dotlock_use_excl)
-		index_flags |= MAIL_INDEX_OPEN_FLAG_DOTLOCK_USE_EXCL;
-	if (set->mail_nfs_index)
-		index_flags |= MAIL_INDEX_OPEN_FLAG_NFS_FLUSH;
-	return index_flags;
-}
-
 const struct dynamic_settings_parser *
 mail_storage_get_dynamic_parsers(pool_t pool)
 {
@@ -353,6 +345,11 @@ static bool mail_storage_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 	const char *p, *error;
 	bool uidl_format_ok;
 	char c;
+
+	if (set->mailbox_idle_check_interval == 0) {
+		*error_r = "mailbox_idle_check_interval must not be 0";
+		return FALSE;
+	}
 
 	if (strcmp(set->mail_fsync, "optimized") == 0)
 		set->parsed_fsync_mode = FSYNC_MODE_OPTIMIZED;
@@ -427,6 +424,15 @@ static bool mail_storage_settings_check(void *_set, pool_t pool ATTR_UNUSED,
 		return FALSE;
 	}
 	hash_format_deinit_free(&format);
+#ifndef CONFIG_BINARY
+	if (*set->ssl_client_ca_dir != '\0' &&
+	    access(set->ssl_client_ca_dir, X_OK) < 0) {
+		*error_r = t_strdup_printf(
+			"ssl_client_ca_dir: access(%s) failed: %m",
+			set->ssl_client_ca_dir);
+		return FALSE;
+	}
+#endif
 	return TRUE;
 }
 

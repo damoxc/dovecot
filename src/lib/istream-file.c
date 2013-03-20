@@ -1,11 +1,11 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "istream-private.h"
-#include "network.h"
+#include "net.h"
 
 #include <time.h>
 #include <unistd.h>
@@ -22,7 +22,8 @@ struct file_istream {
 	unsigned int seen_eof:1;
 };
 
-static void i_stream_file_close(struct iostream_private *stream)
+static void i_stream_file_close(struct iostream_private *stream,
+				bool close_parent ATTR_UNUSED)
 {
 	struct file_istream *fstream = (struct file_istream *)stream;
 	struct istream_private *_stream = (struct istream_private *)stream;
@@ -55,7 +56,7 @@ static ssize_t i_stream_file_read(struct istream_private *stream)
 	size_t size;
 	ssize_t ret;
 
-	if (!i_stream_get_buffer_space(stream, 1, &size))
+	if (!i_stream_try_alloc(stream, 1, &size))
 		return -2;
 
 	if (stream->fd == -1) {
@@ -142,9 +143,10 @@ static void i_stream_file_sync(struct istream_private *stream)
 	}
 
 	stream->skip = stream->pos = 0;
+	stream->istream.eof = FALSE;
 }
 
-static const struct stat *
+static int
 i_stream_file_stat(struct istream_private *stream, bool exact ATTR_UNUSED)
 {
 	struct file_istream *fstream = (struct file_istream *) stream;
@@ -155,22 +157,22 @@ i_stream_file_stat(struct istream_private *stream, bool exact ATTR_UNUSED)
 	} else if (stream->fd != -1) {
 		if (fstat(stream->fd, &stream->statbuf) < 0) {
 			i_error("file_istream.fstat(%s) failed: %m", name);
-			return NULL;
+			return -1;
 		}
 	} else {
 		if (stat(name, &stream->statbuf) < 0) {
 			i_error("file_istream.stat(%s) failed: %m", name);
-			return NULL;
+			return -1;
 		}
 	}
-
-	return &stream->statbuf;
+	return 0;
 }
 
 static struct istream *
 i_stream_create_file_common(int fd, size_t max_buffer_size, bool autoclose_fd)
 {
 	struct file_istream *fstream;
+	struct istream *input;
 	struct stat st;
 	bool is_file;
 
@@ -206,7 +208,9 @@ i_stream_create_file_common(int fd, size_t max_buffer_size, bool autoclose_fd)
 	}
 	fstream->istream.istream.readable_fd = TRUE;
 
-	return i_stream_create(&fstream->istream, NULL, fd);
+	input = i_stream_create(&fstream->istream, NULL, fd);
+	i_stream_set_name(input, is_file ? "(file)" : "(fd)");
+	return input;
 }
 
 struct istream *i_stream_create_fd(int fd, size_t max_buffer_size,

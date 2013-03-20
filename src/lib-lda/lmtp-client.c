@@ -1,11 +1,12 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
+#include "str.h"
 #include "dns-lookup.h"
 #include "lmtp-client.h"
 
@@ -20,7 +21,8 @@ enum lmtp_input_state {
 	LMTP_INPUT_STATE_MAIL_FROM,
 	LMTP_INPUT_STATE_RCPT_TO,
 	LMTP_INPUT_STATE_DATA_CONTINUE,
-	LMTP_INPUT_STATE_DATA
+	LMTP_INPUT_STATE_DATA,
+	LMTP_INPUT_STATE_XCLIENT
 };
 
 struct lmtp_rcpt {
@@ -44,7 +46,10 @@ struct lmtp_client {
 	enum lmtp_client_protocol protocol;
 	enum lmtp_input_state input_state;
 	const char *global_fail_string;
+	string_t *input_multiline;
+	const char **xclient_args;
 
+	struct dns_lookup *dns_lookup;
 	struct istream *input;
 	struct ostream *output;
 	struct io *io;
@@ -57,13 +62,14 @@ struct lmtp_client {
 	void *finish_context;
 
 	const char *data_header;
-	ARRAY_DEFINE(recipients, struct lmtp_rcpt);
+	ARRAY(struct lmtp_rcpt) recipients;
 	unsigned int rcpt_next_receive_idx;
 	unsigned int rcpt_next_data_idx;
 	unsigned int rcpt_next_send_idx;
 	struct istream *data_input;
 	unsigned char output_last;
 
+	unsigned int xclient_sent:1;
 	unsigned int rcpt_to_successes:1;
 	unsigned int output_finished:1;
 	unsigned int finish_called:1;
@@ -89,15 +95,22 @@ lmtp_client_init(const struct lmtp_client_settings *set,
 	client->set.my_hostname = p_strdup(pool, set->my_hostname);
 	client->set.dns_client_socket_path =
 		p_strdup(pool, set->dns_client_socket_path);
+	client->set.source_ip = set->source_ip;
+	client->set.source_port = set->source_port;
+	client->set.proxy_ttl = set->proxy_ttl;
+	client->set.proxy_timeout_secs = set->proxy_timeout_secs;
 	client->finish_callback = finish_callback;
 	client->finish_context = context;
 	client->fd = -1;
+	client->input_multiline = str_new(default_pool, 128);
 	p_array_init(&client->recipients, pool, 16);
 	return client;
 }
 
 void lmtp_client_close(struct lmtp_client *client)
 {
+	if (client->dns_lookup != NULL)
+		dns_lookup_abort(&client->dns_lookup);
 	if (client->io != NULL)
 		io_remove(&client->io);
 	if (client->input != NULL)
@@ -138,6 +151,7 @@ static void lmtp_client_unref(struct lmtp_client **_client)
 		i_stream_unref(&client->input);
 	if (client->output != NULL)
 		o_stream_unref(&client->output);
+	str_free(&client->input_multiline);
 	pool_unref(&client->pool);
 }
 
@@ -177,6 +191,8 @@ const char *lmtp_client_state_to_string(struct lmtp_client *client)
 			return t_strdup_printf("DATA (%"PRIuUOFF_T"/?)",
 					       client->data_input->v_offset);
 		}
+	case LMTP_INPUT_STATE_XCLIENT:
+		return "XCLIENT";
 	}
 	return "??";
 }
@@ -237,7 +253,7 @@ static int lmtp_client_send_data_cmd(struct lmtp_client *client)
 		return -1;
 	} else {
 		client->input_state++;
-		o_stream_send_str(client->output, "DATA\r\n");
+		o_stream_nsend_str(client->output, "DATA\r\n");
 		return 0;
 	}
 }
@@ -261,9 +277,10 @@ lmtp_client_data_next(struct lmtp_client *client, const char *line)
 		if (client->protocol == LMTP_CLIENT_PROTOCOL_LMTP)
 			break;
 	}
-	if (i < count)
+	if (client->rcpt_next_data_idx < count)
 		return 0;
 
+	o_stream_send_str(client->output, "QUIT\r\n");
 	lmtp_client_close(client);
 	return -1;
 }
@@ -334,9 +351,9 @@ static void lmtp_client_send_data(struct lmtp_client *client)
 
 	if (client->output_last != '\n') {
 		/* didn't end with CRLF */
-		(void)o_stream_send(client->output, "\r\n", 2);
+		o_stream_nsend(client->output, "\r\n", 2);
 	}
-	(void)o_stream_send(client->output, ".\r\n", 3);
+	o_stream_nsend(client->output, ".\r\n", 3);
 	client->output_finished = TRUE;
 }
 
@@ -344,19 +361,20 @@ static void lmtp_client_send_handshake(struct lmtp_client *client)
 {
 	switch (client->protocol) {
 	case LMTP_CLIENT_PROTOCOL_LMTP:
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			t_strdup_printf("LHLO %s\r\n",
 					client->set.my_hostname));
 		break;
 	case LMTP_CLIENT_PROTOCOL_SMTP:
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			t_strdup_printf("EHLO %s\r\n",
 					client->set.my_hostname));
 		break;
 	}
 }
 
-static int lmtp_input_get_reply_code(const char *line, int *reply_code_r)
+static int lmtp_input_get_reply_code(const char *line, int *reply_code_r,
+				     string_t *multiline)
 {
 	if (!i_isdigit(line[0]) || !i_isdigit(line[1]) || !i_isdigit(line[2]))
 		return -1;
@@ -369,7 +387,9 @@ static int lmtp_input_get_reply_code(const char *line, int *reply_code_r)
 		/* final reply */
 		return 1;
 	} else if (line[3] == '-') {
-		/* multiline reply. just ignore it. */
+		/* multiline reply. */
+		str_append(multiline, line);
+		str_append_c(multiline, '\n');
 		return 0;
 	} else {
 		/* invalid input */
@@ -377,11 +397,64 @@ static int lmtp_input_get_reply_code(const char *line, int *reply_code_r)
 	}
 }
 
+static void
+lmtp_client_parse_capabilities(struct lmtp_client *client, const char *lines)
+{
+	const char *const *linep;
+
+	for (linep = t_strsplit(lines, "\n"); *linep != NULL; linep++) {
+		const char *line = *linep;
+
+		line += 4; /* already checked this is valid */
+		if (strncasecmp(line, "XCLIENT ", 8) == 0) {
+			client->xclient_args =
+				(void *)p_strsplit(client->pool, line + 8, " ");
+		}
+	}
+}
+
+static bool lmtp_client_send_xclient(struct lmtp_client *client)
+{
+	string_t *str;
+	unsigned int empty_len;
+
+	if (client->xclient_args == NULL) {
+		/* not supported */
+		return FALSE;
+	}
+	if (client->xclient_sent)
+		return FALSE;
+
+	str = t_str_new(64);
+	str_append(str, "XCLIENT");
+	empty_len = str_len(str);
+	if (client->set.source_ip.family != 0 &&
+	    str_array_icase_find(client->xclient_args, "ADDR"))
+		str_printfa(str, " ADDR=%s", net_ip2addr(&client->set.source_ip));
+	if (client->set.source_port != 0 &&
+	    str_array_icase_find(client->xclient_args, "PORT"))
+		str_printfa(str, " PORT=%u", client->set.source_port);
+	if (client->set.proxy_ttl != 0 &&
+	    str_array_icase_find(client->xclient_args, "TTL"))
+		str_printfa(str, " TTL=%u", client->set.proxy_ttl);
+	if (client->set.proxy_timeout_secs != 0 &&
+	    str_array_icase_find(client->xclient_args, "TIMEOUT"))
+		str_printfa(str, " TIMEOUT=%u", client->set.proxy_timeout_secs);
+
+	if (str_len(str) == empty_len)
+		return FALSE;
+
+	str_append(str, "\r\n");
+	o_stream_nsend(client->output, str_data(str), str_len(str));
+	return TRUE;
+}
+
 static int lmtp_client_input_line(struct lmtp_client *client, const char *line)
 {
 	int ret, reply_code = 0;
 
-	if ((ret = lmtp_input_get_reply_code(line, &reply_code)) <= 0) {
+	if ((ret = lmtp_input_get_reply_code(line, &reply_code,
+					     client->input_multiline)) <= 0) {
 		if (ret == 0)
 			return 0;
 		lmtp_client_fail(client, line);
@@ -390,12 +463,13 @@ static int lmtp_client_input_line(struct lmtp_client *client, const char *line)
 
 	switch (client->input_state) {
 	case LMTP_INPUT_STATE_GREET:
+	case LMTP_INPUT_STATE_XCLIENT:
 		if (reply_code != 220) {
 			lmtp_client_fail(client, line);
 			return -1;
 		}
 		lmtp_client_send_handshake(client);
-		client->input_state++;
+		client->input_state = LMTP_INPUT_STATE_LHLO;
 		break;
 	case LMTP_INPUT_STATE_LHLO:
 	case LMTP_INPUT_STATE_MAIL_FROM:
@@ -403,8 +477,17 @@ static int lmtp_client_input_line(struct lmtp_client *client, const char *line)
 			lmtp_client_fail(client, line);
 			return -1;
 		}
+		str_append(client->input_multiline, line);
+		lmtp_client_parse_capabilities(client,
+			str_c(client->input_multiline));
+		if (client->input_state == LMTP_INPUT_STATE_LHLO &&
+		    lmtp_client_send_xclient(client)) {
+			client->input_state = LMTP_INPUT_STATE_XCLIENT;
+			client->xclient_sent = TRUE;
+			break;
+		}
 		if (client->input_state == LMTP_INPUT_STATE_LHLO) {
-			o_stream_send_str(client->output,
+			o_stream_nsend_str(client->output,
 				t_strdup_printf("MAIL FROM:%s\r\n",
 						client->set.mail_from));
 		}
@@ -426,7 +509,7 @@ static int lmtp_client_input_line(struct lmtp_client *client, const char *line)
 		}
 		client->input_state++;
 		if (client->data_header != NULL)
-			o_stream_send_str(client->output, client->data_header);
+			o_stream_nsend_str(client->output, client->data_header);
 		lmtp_client_send_data(client);
 		break;
 	case LMTP_INPUT_STATE_DATA:
@@ -435,24 +518,33 @@ static int lmtp_client_input_line(struct lmtp_client *client, const char *line)
 			return -1;
 		break;
 	}
-	return 0;
+	return 1;
 }
 
 static void lmtp_client_input(struct lmtp_client *client)
 {
 	const char *line;
+	int ret;
 
 	lmtp_client_ref(client);
 	o_stream_cork(client->output);
 	while ((line = i_stream_read_next_line(client->input)) != NULL) {
-		if (lmtp_client_input_line(client, line) < 0) {
+		T_BEGIN {
+			ret = lmtp_client_input_line(client, line);
+		} T_END;
+		if (ret < 0) {
 			o_stream_uncork(client->output);
 			lmtp_client_unref(&client);
 			return;
 		}
+		if (ret > 0)
+			str_truncate(client->input_multiline, 0);
 	}
 
-	if (client->input->stream_errno != 0) {
+	if (client->input->stream_errno == ENOBUFS) {
+		lmtp_client_fail(client,
+				 "501 5.5.4 Command reply line too long");
+	} else if (client->input->stream_errno != 0) {
 		errno = client->input->stream_errno;
 		i_error("lmtp client: read() failed: %m");
 		lmtp_client_fail(client, ERRSTR_TEMP_REMOTE_FAILURE
@@ -509,6 +601,7 @@ static int lmtp_client_connect(struct lmtp_client *client)
 	client->input =
 		i_stream_create_fd(client->fd, LMTP_MAX_LINE_LEN, FALSE);
 	client->output = o_stream_create_fd(client->fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 	o_stream_set_flush_callback(client->output, lmtp_client_output, client);
 	/* we're already sending data in ostream, so can't use IO_WRITE here */
 	client->io = io_add(client->fd, IO_READ,
@@ -519,6 +612,8 @@ static int lmtp_client_connect(struct lmtp_client *client)
 static void lmtp_client_dns_done(const struct dns_lookup_result *result,
 				 struct lmtp_client *client)
 {
+	client->dns_lookup = NULL;
+
 	if (result->ret != 0) {
 		i_error("lmtp client: DNS lookup of %s failed: %s",
 			client->host, result->error);
@@ -570,7 +665,8 @@ int lmtp_client_connect_tcp(struct lmtp_client *client,
 		client->ip = ips[0];
 	} else {
 		if (dns_lookup(host, &dns_lookup_set,
-			       lmtp_client_dns_done, client) < 0)
+			       lmtp_client_dns_done, client,
+			       &client->dns_lookup) < 0)
 			return -1;
 		return 0;
 	}
@@ -592,7 +688,7 @@ static void lmtp_client_send_rcpts(struct lmtp_client *client)
 
 	rcpt = array_get(&client->recipients, &count);
 	for (i = client->rcpt_next_send_idx; i < count; i++) {
-		o_stream_send_str(client->output,
+		o_stream_nsend_str(client->output,
 			t_strdup_printf("RCPT TO:<%s>\r\n", rcpt[i].address));
 	}
 	client->rcpt_next_send_idx = i;

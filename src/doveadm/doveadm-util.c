@@ -1,8 +1,8 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
-#include "network.h"
+#include "net.h"
 #include "time-util.h"
 #include "master-service.h"
 #include "module-dir.h"
@@ -25,7 +25,7 @@ void doveadm_load_modules(void)
 	   only those whose dependencies have been loaded earlier, the rest are
 	   ignored. */
 	memset(&mod_set, 0, sizeof(mod_set));
-	mod_set.version = master_service_get_version_string(master_service);
+	mod_set.abi_version = DOVECOT_ABI_VERSION;
 	mod_set.require_init_funcs = TRUE;
 	mod_set.debug = doveadm_debug;
 	mod_set.ignore_dlopen_errors = TRUE;
@@ -97,47 +97,74 @@ const char *doveadm_plugin_getenv(const char *name)
 }
 
 static bool
-parse_hostport(const char *str, const char **host_r, unsigned int *port_r)
+parse_hostport(const char *str, unsigned int default_port,
+	       const char **host_r, unsigned int *port_r)
 {
 	const char *p;
 
 	/* host:port */
 	p = strrchr(str, ':');
-	if (p == NULL || str_to_uint(p+1, port_r) < 0)
-		return FALSE;
-	*host_r = t_strdup_until(str, p);
-
-	/* there is any '/' character (unlikely to be found from host names),
-	   assume ':' is part of a file path */
-	if (strchr(str, '/') != NULL)
-		return FALSE;
+	if (p == NULL && default_port != 0) {
+		*host_r = str;
+		*port_r = default_port;
+	} else {
+		if (p == NULL || str_to_uint(p+1, port_r) < 0)
+			return FALSE;
+		*host_r = t_strdup_until(str, p);
+	}
 	return TRUE;
 }
 
-int doveadm_connect(const char *path)
+static int
+doveadm_tcp_connect_port(const char *host, unsigned int port)
 {
-	struct stat st;
-	const char *host;
 	struct ip_addr *ips;
-	unsigned int port, ips_count;
-	int fd, ret;
+	unsigned int ips_count;
+	int ret, fd;
 
-	if (parse_hostport(path, &host, &port) && stat(path, &st) < 0) {
-		/* it's a host:port, connect via TCP */
-		ret = net_gethostbyname(host, &ips, &ips_count);
-		if (ret != 0) {
-			i_fatal("Lookup of host %s failed: %s",
-				host, net_gethosterror(ret));
-		}
-		fd = net_connect_ip_blocking(&ips[0], port, NULL);
-		if (fd == -1) {
-			i_fatal("connect(%s:%u) failed: %m",
-				net_ip2addr(&ips[0]), port);
-		}
-	} else {
+	ret = net_gethostbyname(host, &ips, &ips_count);
+	if (ret != 0) {
+		i_fatal("Lookup of host %s failed: %s",
+			host, net_gethosterror(ret));
+	}
+	fd = net_connect_ip_blocking(&ips[0], port, NULL);
+	if (fd == -1) {
+		i_fatal("connect(%s:%u) failed: %m",
+			net_ip2addr(&ips[0]), port);
+	}
+	return fd;
+}
+
+int doveadm_tcp_connect(const char *target, unsigned int default_port)
+{
+	const char *host;
+	unsigned int port;
+
+	if (!parse_hostport(target, default_port, &host, &port)) {
+		i_fatal("Port not known for %s. Either set proxy_port "
+			"or use %s:port", target, target);
+	}
+	return doveadm_tcp_connect_port(host, port);
+}
+
+int doveadm_connect_with_default_port(const char *path,
+				      unsigned int default_port)
+{
+	int fd;
+
+	/* we'll assume UNIX sockets typically have an absolute path,
+	   or at the very least '/' somewhere. */
+	if (strchr(path, '/') == NULL)
+		fd = doveadm_tcp_connect(path, default_port);
+	else {
 		fd = net_connect_unix(path);
 		if (fd == -1)
 			i_fatal("net_connect_unix(%s) failed: %m", path);
 	}
 	return fd;
+}
+
+int doveadm_connect(const char *path)
+{
+	return doveadm_connect_with_default_port(path, 0);
 }

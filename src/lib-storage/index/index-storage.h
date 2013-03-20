@@ -62,7 +62,8 @@ void index_storage_mailbox_alloc(struct mailbox *box, const char *vname,
 int index_storage_mailbox_exists(struct mailbox *box, bool auto_boxes,
 				 enum mailbox_existence *existence_r);
 int index_storage_mailbox_exists_full(struct mailbox *box, const char *subdir,
-				      enum mailbox_existence *existence_r);
+				      enum mailbox_existence *existence_r)
+	ATTR_NULL(2);
 int index_storage_mailbox_open(struct mailbox *box, bool move_to_memory);
 int index_storage_mailbox_enable(struct mailbox *box,
 				 enum mailbox_feature feature);
@@ -70,12 +71,12 @@ void index_storage_mailbox_close(struct mailbox *box);
 void index_storage_mailbox_free(struct mailbox *box);
 int index_storage_mailbox_update(struct mailbox *box,
 				 const struct mailbox_update *update);
-void index_storage_mailbox_update_cache(struct mailbox *box,
+int index_storage_mailbox_update_common(struct mailbox *box,
 					const struct mailbox_update *update);
+int index_storage_mailbox_create(struct mailbox *box, bool directory);
 int index_storage_mailbox_delete(struct mailbox *box);
 int index_storage_mailbox_delete_dir(struct mailbox *box, bool mailbox_deleted);
-int index_storage_mailbox_rename(struct mailbox *src, struct mailbox *dest,
-				 bool rename_children);
+int index_storage_mailbox_rename(struct mailbox *src, struct mailbox *dest);
 
 bool index_storage_is_readonly(struct mailbox *box);
 bool index_storage_is_inconsistent(struct mailbox *box);
@@ -108,9 +109,26 @@ void index_sync_update_recent_count(struct mailbox *box);
 int index_storage_get_status(struct mailbox *box,
 			     enum mailbox_status_items items,
 			     struct mailbox_status *status_r);
+void index_storage_get_open_status(struct mailbox *box,
+				   enum mailbox_status_items items,
+				   struct mailbox_status *status_r);
 int index_mailbox_get_metadata(struct mailbox *box,
 			       enum mailbox_metadata_items items,
 			       struct mailbox_metadata *metadata_r);
+
+int index_storage_attribute_set(struct mailbox_transaction_context *t,
+				enum mail_attribute_type type, const char *key,
+				const struct mail_attribute_value *value);
+int index_storage_attribute_get(struct mailbox_transaction_context *t,
+				enum mail_attribute_type type, const char *key,
+				struct mail_attribute_value *value_r);
+struct mailbox_attribute_iter *
+index_storage_attribute_iter_init(struct mailbox *box,
+				  enum mail_attribute_type type,
+				  const char *prefix);
+const char *
+index_storage_attribute_iter_next(struct mailbox_attribute_iter *iter);
+int index_storage_attribute_iter_deinit(struct mailbox_attribute_iter *iter);
 
 struct mail_search_context *
 index_storage_search_init(struct mailbox_transaction_context *t,
@@ -129,6 +147,7 @@ index_transaction_begin(struct mailbox *box,
 void index_transaction_init(struct mailbox_transaction_context *t,
 			    struct mailbox *box,
 			    enum mailbox_transaction_flags flags);
+void index_transaction_init_pvt(struct mailbox_transaction_context *t);
 int index_transaction_commit(struct mailbox_transaction_context *t,
 			     struct mail_transaction_commit_changes *changes_r);
 void index_transaction_rollback(struct mailbox_transaction_context *t);
@@ -136,6 +155,7 @@ void index_save_context_free(struct mail_save_context *ctx);
 void index_copy_cache_fields(struct mail_save_context *ctx,
 			     struct mail *src_mail, uint32_t dest_seq);
 int index_storage_set_subscribed(struct mailbox *box, bool set);
+void index_storage_destroy(struct mail_storage *storage);
 
 bool index_keyword_array_cmp(const ARRAY_TYPE(keyword_indexes) *k1,
 			     const ARRAY_TYPE(keyword_indexes) *k2);

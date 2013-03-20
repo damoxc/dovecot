@@ -1,12 +1,15 @@
 #ifndef MASTER_SERVICE_SETTINGS_H
 #define MASTER_SERVICE_SETTINGS_H
 
-#include "network.h"
+#include "net.h"
 
 struct setting_parser_info;
+struct setting_parser_context;
 struct master_service;
 
 struct master_service_settings {
+	const char *base_dir;
+	const char *state_dir;
 	const char *log_path;
 	const char *info_log_path;
 	const char *debug_log_path;
@@ -59,7 +62,7 @@ int master_service_settings_read(struct master_service *service,
 				 const char **error_r);
 int master_service_settings_read_simple(struct master_service *service,
 					const struct setting_parser_info **roots,
-					const char **error_r);
+					const char **error_r) ATTR_NULL(2);
 /* destroy settings parser and clear service's set_pool, so that
    master_service_settings_read*() can be called without freeing memory used
    by existing settings structures. */
@@ -68,6 +71,8 @@ pool_t master_service_settings_detach(struct master_service *service);
 const struct master_service_settings *
 master_service_settings_get(struct master_service *service);
 void **master_service_settings_get_others(struct master_service *service);
+void **master_service_settings_parser_get_others(struct master_service *service,
+						 const struct setting_parser_context *set_parser);
 struct setting_parser_context *
 master_service_get_settings_parser(struct master_service *service);
 

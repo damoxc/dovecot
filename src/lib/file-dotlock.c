@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -105,7 +105,7 @@ static pid_t read_local_pid(const char *lock_path)
 
 	/* read line */
 	ret = read(fd, buf, sizeof(buf)-1);
-	(void)close(fd);
+	i_close_fd(&fd);
 	if (ret <= 0)
 		return -1;
 
@@ -364,8 +364,7 @@ static int try_create_lock_hardlink(struct lock_info *lock_info, bool write_pid,
 			if (file_write_pid(lock_info->fd,
 					   str_c(tmp_path),
 					   lock_info->set->nfs_flush) < 0) {
-				(void)close(lock_info->fd);
-				lock_info->fd = -1;
+				i_close_fd(&lock_info->fd);
 				return -1;
 			}
 		}
@@ -418,7 +417,7 @@ static int try_create_lock_excl(struct lock_info *lock_info, bool write_pid)
 	if (write_pid) {
 		if (file_write_pid(fd, lock_info->lock_path,
 				   lock_info->set->nfs_flush) < 0) {
-			(void)close(fd);
+			i_close_fd(&fd);
 			return -1;
 		}
 	}
@@ -800,7 +799,7 @@ int file_dotlock_open(const struct dotlock_settings *set, const char *path,
 	return dotlock->fd;
 }
 
-static int
+static int ATTR_NULL(7)
 file_dotlock_open_mode_full(const struct dotlock_settings *set, const char *path,
 			    enum dotlock_create_flags flags,
 			    mode_t mode, uid_t uid, gid_t gid,

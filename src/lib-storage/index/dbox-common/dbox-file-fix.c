@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -30,7 +30,7 @@ dbox_file_find_next_magic(struct dbox_file *file, uoff_t *offset_r, bool *pre_r)
 	/* \n isn't part of the DBOX_MAGIC_PRE, but it always preceds it.
 	   assume that at this point we've already just read the \n. when
 	   scanning for it later we'll need to find the \n though. */
-	str_find_more(pre_ctx, (const unsigned char *)"\n", 1);
+	(void)str_find_more(pre_ctx, (const unsigned char *)"\n", 1);
 
 	orig_offset = input->v_offset;
 	while ((ret = i_stream_read_data(input, &data, &size, 0)) > 0) {
@@ -79,26 +79,32 @@ dbox_file_find_next_magic(struct dbox_file *file, uoff_t *offset_r, bool *pre_r)
 
 static int
 stream_copy(struct dbox_file *file, struct ostream *output,
-	    const char *path, uoff_t count)
+	    const char *out_path, uoff_t count)
 {
 	struct istream *input;
 	off_t bytes;
 
 	input = i_stream_create_limit(file->input, count);
 	bytes = o_stream_send_istream(output, input);
+	errno = input->stream_errno;
 	i_stream_unref(&input);
 
-	if (bytes < 0) {
+	if (errno != 0) {
 		mail_storage_set_critical(&file->storage->storage,
-			"o_stream_send_istream(%s, %s) failed: %m",
-			file->cur_path, path);
+			"read(%s) failed: %m", file->cur_path);
 		return -1;
 	}
+	if (o_stream_nfinish(output) < 0) {
+		mail_storage_set_critical(&file->storage->storage,
+			"write(%s) failed: %m", out_path);
+		return -1;
+	}
+	i_assert(bytes >= 0);
 	if ((uoff_t)bytes != count) {
 		mail_storage_set_critical(&file->storage->storage,
 			"o_stream_send_istream(%s) copied only %"
 			PRIuUOFF_T" of %"PRIuUOFF_T" bytes",
-			path, bytes, count);
+			out_path, bytes, count);
 		return -1;
 	}
 	return 0;
@@ -151,8 +157,8 @@ dbox_file_copy_metadata(struct dbox_file *file, struct ostream *output,
 		}
 		if (*line == DBOX_METADATA_GUID)
 			*have_guid_r = TRUE;
-		o_stream_send_str(output, line);
-		o_stream_send_str(output, "\n");
+		o_stream_nsend_str(output, line);
+		o_stream_nsend_str(output, "\n");
 	}
 }
 
@@ -164,6 +170,7 @@ dbox_file_fix_write_stream(struct dbox_file *file, uoff_t start_offset,
 	uoff_t offset, msg_size, hdr_offset, body_offset;
 	bool pre, write_header, have_guid;
 	struct message_size body;
+	bool has_nuls;
 	struct istream *body_input;
 	guid_128_t guid_128;
 	int ret;
@@ -237,7 +244,7 @@ dbox_file_fix_write_stream(struct dbox_file *file, uoff_t start_offset,
 		/* write msg header */
 		if (write_header) {
 			dbox_msg_header_fill(&msg_hdr, msg_size);
-			(void)o_stream_send(output, &msg_hdr, sizeof(msg_hdr));
+			o_stream_nsend(output, &msg_hdr, sizeof(msg_hdr));
 		}
 		/* write msg body */
 		i_assert(file->input->v_offset == body_offset);
@@ -248,10 +255,10 @@ dbox_file_fix_write_stream(struct dbox_file *file, uoff_t start_offset,
 		/* get message body size */
 		i_stream_seek(file->input, body_offset);
 		body_input = i_stream_create_limit(file->input, msg_size);
-		ret = message_get_body_size(body_input, &body, NULL);
+		ret = message_get_body_size(body_input, &body, &has_nuls);
 		i_stream_unref(&body_input);
 		if (ret < 0) {
-			errno = output->stream_errno;
+			errno = body_input->stream_errno;
 			mail_storage_set_critical(&file->storage->storage,
 				"read(%s) failed: %m", file->cur_path);
 			return -1;
@@ -262,27 +269,28 @@ dbox_file_fix_write_stream(struct dbox_file *file, uoff_t start_offset,
 		ret = dbox_file_metadata_skip_header(file);
 		if (ret < 0)
 			return -1;
-		o_stream_send_str(output, DBOX_MAGIC_POST);
+		o_stream_nsend_str(output, DBOX_MAGIC_POST);
 		if (ret == 0)
 			have_guid = FALSE;
 		else
 			dbox_file_copy_metadata(file, output, &have_guid);
 		if (!have_guid) {
 			guid_128_generate(guid_128);
-			o_stream_send_str(output,
+			o_stream_nsend_str(output,
 				t_strdup_printf("%c%s\n", DBOX_METADATA_GUID,
 				guid_128_to_string(guid_128)));
 		}
-		o_stream_send_str(output,
+		o_stream_nsend_str(output,
 			t_strdup_printf("%c%llx\n", DBOX_METADATA_VIRTUAL_SIZE,
 					(unsigned long long)body.virtual_size));
-		o_stream_send_str(output, "\n");
-		if (output->stream_errno != 0) {
-			errno = output->stream_errno;
-			mail_storage_set_critical(&file->storage->storage,
-				"write(%s) failed: %m", temp_path);
-			return -1;
-		}
+		o_stream_nsend_str(output, "\n");
+		if (output->stream_errno != 0)
+			break;
+	}
+	if (o_stream_nfinish(output) < 0) {
+		mail_storage_set_critical(&file->storage->storage,
+					  "write(%s) failed: %m", temp_path);
+		ret = -1;
 	}
 	return ret;
 }
@@ -306,7 +314,10 @@ int dbox_file_fix(struct dbox_file *file, uoff_t start_offset)
 		return -1;
 
 	output = o_stream_create_fd_file(fd, 0, FALSE);
+	o_stream_cork(output);
 	ret = dbox_file_fix_write_stream(file, start_offset, temp_path, output);
+	if (ret < 0)
+		o_stream_ignore_last_errors(output);
 	have_messages = output->offset > file->file_header_size;
 	o_stream_unref(&output);
 	if (close(fd) < 0) {

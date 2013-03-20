@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -24,7 +24,7 @@ static int raw_sync(struct raw_mailbox *mbox)
 				    &sync_view, &trans, sync_flags);
 	if (ret <= 0) {
 		if (ret < 0)
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 		return ret;
 	}
 
@@ -38,7 +38,7 @@ static int raw_sync(struct raw_mailbox *mbox)
 	index_mailbox_set_recent_uid(&mbox->box, 1);
 
 	if (mail_index_sync_commit(&index_sync_ctx) < 0) {
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 		return -1;
 	}
 	mbox->synced = TRUE;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "lib-signals.h"
@@ -6,6 +6,7 @@
 #include "ostream.h"
 #include "restrict-access.h"
 #include "master-service.h"
+#include "master-service-settings.h"
 #include "ssl-params-settings.h"
 #include "ssl-params.h"
 
@@ -19,7 +20,7 @@ struct client {
 	struct ostream *output;
 };
 
-static ARRAY_DEFINE(delayed_fds, int);
+static ARRAY(int) delayed_fds;
 struct ssl_params *param;
 static buffer_t *ssl_params;
 static struct timeout *to_startup;
@@ -46,9 +47,8 @@ static void client_handle(int fd)
 	struct ostream *output;
 
 	output = o_stream_create_fd(fd, (size_t)-1, TRUE);
-	o_stream_send(output, ssl_params->data, ssl_params->used);
-
-	if (o_stream_get_buffer_used_size(output) == 0)
+	if (o_stream_send(output, ssl_params->data, ssl_params->used) < 0 ||
+	    o_stream_get_buffer_used_size(output) == 0)
 		client_deinit(output);
 	else {
 		o_stream_set_flush_callback(output, client_output_flush,
@@ -112,11 +112,16 @@ static void sig_chld(const siginfo_t *si ATTR_UNUSED, void *context ATTR_UNUSED)
 
 static void main_init(const struct ssl_params_settings *set)
 {
+	const struct master_service_settings *service_set;
+	const char *filename;
+
 	lib_signals_set_handler(SIGCHLD, LIBSIG_FLAGS_SAFE, sig_chld, NULL);
 
 	ssl_params = buffer_create_dynamic(default_pool, 1024);
-	param = ssl_params_init(PKG_STATEDIR"/"SSL_BUILD_PARAM_FNAME,
-				ssl_params_callback, set);
+	service_set = master_service_settings_get(master_service);
+	filename = t_strconcat(service_set->state_dir,
+			       "/"SSL_BUILD_PARAM_FNAME, NULL);
+	param = ssl_params_init(filename, ssl_params_callback, set);
 }
 
 static void main_deinit(void)
@@ -132,8 +137,7 @@ int main(int argc, char *argv[])
 {
 	const struct ssl_params_settings *set;
 
-	master_service = master_service_init("ssl-params", 0,
-					     &argc, &argv, NULL);
+	master_service = master_service_init("ssl-params", 0, &argc, &argv, "");
 	master_service_init_log(master_service, "ssl-params: ");
 
 	if (master_getopt(master_service) > 0)

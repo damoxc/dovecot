@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -72,7 +72,7 @@ level_scores_add_vuids(struct virtual_mailbox *vbox,
 	t_array_init(&vuids_arr, count);
 	t_array_init(&backend_uids, 64);
 	for (i = 0; i < count; i++)
-		seq_range_array_add(&backend_uids, 0, scores[i].uid);
+		seq_range_array_add(&backend_uids, scores[i].uid);
 	vbox->vfuncs.get_virtual_uid_map(&vbox->box, br->box,
 					 &backend_uids, &vuids_arr);
 
@@ -181,7 +181,7 @@ static int fts_search_lookup_level_multi(struct fts_search_context *fctx,
 				break;
 			array_append(&tmp_mailboxes, &mailboxes[j], 1);
 		}
-		(void)array_append_space(&tmp_mailboxes);
+		array_append_zero(&tmp_mailboxes);
 
 		mail_search_args_reset(args, TRUE);
 		if (fts_backend_lookup_multi(backend,

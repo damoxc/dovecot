@@ -1,10 +1,10 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "md5.h"
 #include "hash.h"
 #include "str.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "write-full.h"
 #include "master-service.h"
@@ -28,6 +28,8 @@ struct user_list {
 	struct user_list *next;
 	const char *name;
 };
+
+HASH_TABLE_DEFINE_TYPE(user_list, void *, struct user_list *);
 
 extern struct doveadm_cmd doveadm_cmd_director[];
 
@@ -190,7 +192,8 @@ static unsigned int director_username_hash(const char *username)
 }
 
 static void
-user_list_add(const char *username, pool_t pool, struct hash_table *users)
+user_list_add(const char *username, pool_t pool,
+	      HASH_TABLE_TYPE(user_list) users)
 {
 	struct user_list *user, *old_user;
 	unsigned int user_hash;
@@ -205,9 +208,9 @@ user_list_add(const char *username, pool_t pool, struct hash_table *users)
 	hash_table_insert(users, POINTER_CAST(user_hash), user);
 }
 
-static void
+static void ATTR_NULL(1)
 userdb_get_user_list(const char *auth_socket_path, pool_t pool,
-		     struct hash_table *users)
+		     HASH_TABLE_TYPE(user_list) users)
 {
 	struct auth_master_user_list_ctx *ctx;
 	struct auth_master_connection *conn;
@@ -219,7 +222,7 @@ userdb_get_user_list(const char *auth_socket_path, pool_t pool,
 	}
 
 	conn = auth_master_init(auth_socket_path, 0);
-	ctx = auth_master_user_list_init(conn, NULL, NULL);
+	ctx = auth_master_user_list_init(conn, "", NULL);
 	while ((username = auth_master_user_list_next(ctx)) != NULL)
 		user_list_add(username, pool, users);
 	if (auth_master_user_list_deinit(&ctx) < 0) {
@@ -230,7 +233,8 @@ userdb_get_user_list(const char *auth_socket_path, pool_t pool,
 }
 
 static void
-user_file_get_user_list(const char *path, pool_t pool, struct hash_table *users)
+user_file_get_user_list(const char *path, pool_t pool,
+			HASH_TABLE_TYPE(user_list) users)
 {
 	struct istream *input;
 	const char *username;
@@ -282,7 +286,7 @@ static void cmd_director_map(int argc, char *argv[])
 	const char *line, *const *args;
 	struct ip_addr *ips, user_ip;
 	pool_t pool;
-	struct hash_table *users;
+	HASH_TABLE_TYPE(user_list) users;
 	struct user_list *user;
 	unsigned int ips_count, user_hash, expires;
 
@@ -295,7 +299,7 @@ static void cmd_director_map(int argc, char *argv[])
 		director_get_host(argv[optind], &ips, &ips_count);
 
 	pool = pool_alloconly_create("director map users", 1024*128);
-	users = hash_table_create(default_pool, pool, 0, NULL, NULL);
+	hash_table_create_direct(&users, pool, 0);
 	if (ctx->users_path == NULL)
 		userdb_get_user_list(NULL, pool, users);
 	else
@@ -326,7 +330,7 @@ static void cmd_director_map(int argc, char *argv[])
 			} else if (ips_count == 0 ||
 				 ip_find(ips, ips_count, &user_ip)) {
 				user = hash_table_lookup(users,
-						POINTER_CAST(user_hash));
+							 POINTER_CAST(user_hash));
 				if (user == NULL) {
 					doveadm_print("<unknown>");
 					doveadm_print(args[2]);
@@ -353,7 +357,7 @@ static void cmd_director_add(int argc, char *argv[])
 {
 	struct director_context *ctx;
 	struct ip_addr *ips;
-	unsigned int i, ips_count, vhost_count = -1U;
+	unsigned int i, ips_count, vhost_count = UINT_MAX;
 	const char *host, *cmd, *line;
 
 	ctx = cmd_director_init(argc, argv, "a:", cmd_director_add);
@@ -369,7 +373,7 @@ static void cmd_director_add(int argc, char *argv[])
 
 	director_get_host(host, &ips, &ips_count);
 	for (i = 0; i < ips_count; i++) {
-		cmd = vhost_count == -1U ?
+		cmd = vhost_count == UINT_MAX ?
 			t_strdup_printf("HOST-SET\t%s\n",
 					net_ip2addr(&ips[i])) :
 			t_strdup_printf("HOST-SET\t%s\t%u\n",

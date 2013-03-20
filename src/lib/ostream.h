@@ -36,13 +36,18 @@ struct ostream *
 o_stream_create_fd_file(int fd, uoff_t offset, bool autoclose_fd);
 /* Create an output stream to a buffer. */
 struct ostream *o_stream_create_buffer(buffer_t *buf);
+/* Create an output streams that always fails the writes. */
+struct ostream *o_stream_create_error(int stream_errno);
 
 /* Set name (e.g. path) for output stream. */
 void o_stream_set_name(struct ostream *stream, const char *name);
 /* Get output stream's name. Returns "" if stream has no name. */
 const char *o_stream_get_name(struct ostream *stream);
 
-/* o_stream_close() + o_stream_unref() */
+/* Return file descriptor for stream, or -1 if none is available. */
+int o_stream_get_fd(struct ostream *stream);
+
+/* Close this stream (but not its parents) and unreference it. */
 void o_stream_destroy(struct ostream **stream);
 /* Reference counting. References start from 1, so calling o_stream_unref()
    destroys the stream if o_stream_ref() is never used. */
@@ -50,17 +55,19 @@ void o_stream_ref(struct ostream *stream);
 /* Unreferences the stream and sets stream pointer to NULL. */
 void o_stream_unref(struct ostream **stream);
 
-/* Mark the stream closed. Nothing will be sent after this call. */
+/* Mark the stream and all of its parent streams closed. Nothing will be
+   sent after this call. */
 void o_stream_close(struct ostream *stream);
 
 /* Set IO_WRITE callback. Default will just try to flush the output and
    finishes when the buffer is empty.  */
 void o_stream_set_flush_callback(struct ostream *stream,
 				 stream_flush_callback_t *callback,
-				 void *context);
+				 void *context) ATTR_NULL(3);
 #define o_stream_set_flush_callback(stream, callback, context) \
-	CONTEXT_CALLBACK(o_stream_set_flush_callback, stream_flush_callback_t, \
-			 callback, context, stream)
+	o_stream_set_flush_callback(stream + \
+		CALLBACK_TYPECHECK(callback, int (*)(typeof(context))), \
+		(stream_flush_callback_t *)callback, context)
 void o_stream_unset_flush_callback(struct ostream *stream);
 /* Change the maximum size for stream's output buffer to grow. */
 void o_stream_set_max_buffer_size(struct ostream *stream, size_t max_size);
@@ -88,6 +95,26 @@ ssize_t o_stream_send(struct ostream *stream, const void *data, size_t size);
 ssize_t o_stream_sendv(struct ostream *stream, const struct const_iovec *iov,
 		       unsigned int iov_count);
 ssize_t o_stream_send_str(struct ostream *stream, const char *str);
+/* Send with delayed error handling. o_stream_has_errors() or
+   o_stream_ignore_last_errors() must be called after these functions before
+   the stream is destroyed. */
+void o_stream_nsend(struct ostream *stream, const void *data, size_t size);
+void o_stream_nsendv(struct ostream *stream, const struct const_iovec *iov,
+		     unsigned int iov_count);
+void o_stream_nsend_str(struct ostream *stream, const char *str);
+void o_stream_nflush(struct ostream *stream);
+/* Flushes the stream and returns -1 if stream->last_failed_errno is
+   non-zero. Marks the stream's error handling as completed. errno is also set
+   to last_failed_errno. */
+int o_stream_nfinish(struct ostream *stream);
+/* Marks the stream's error handling as completed to avoid i_panic() on
+   destroy. */
+void o_stream_ignore_last_errors(struct ostream *stream);
+/* If error handling is disabled, the i_panic() on destroy is never called.
+   This function can be called immediately after the stream is created.
+   When creating wrapper streams, they copy this behavior from the parent
+   stream. */
+void o_stream_set_no_error_handling(struct ostream *stream, bool set);
 /* Send data from input stream. Returns number of bytes sent, or -1 if error.
    Note that this function may block if either instream or outstream is
    blocking.

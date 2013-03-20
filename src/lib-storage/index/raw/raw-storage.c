@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -19,6 +19,7 @@ raw_storage_create_from_set(const struct setting_parser_info *set_info,
 	struct mail_user *user;
 	struct mail_namespace *ns;
 	struct mail_namespace_settings *ns_set;
+	struct mail_storage_settings *mail_set;
 	const char *error;
 
 	user = mail_user_alloc("raw mail user", set_info, set);
@@ -33,14 +34,23 @@ raw_storage_create_from_set(const struct setting_parser_info *set_info,
 	ns_set->separator = "/";
 
 	ns = mail_namespaces_init_empty(user);
+	/* raw storage doesn't have INBOX. We especially don't want LIST to
+	   return INBOX. */
+	ns->flags &= ~NAMESPACE_FLAG_INBOX_USER;
 	ns->flags |= NAMESPACE_FLAG_NOQUOTA | NAMESPACE_FLAG_NOACL;
 	ns->set = ns_set;
+	/* absolute paths are ok with raw storage */
+	mail_set = p_new(user->pool, struct mail_storage_settings, 1);
+	*mail_set = *ns->mail_set;
+	mail_set->mail_full_filesystem_access = TRUE;
+	ns->mail_set = mail_set;
+
 	if (mail_storage_create(ns, "raw", 0, &error) < 0)
 		i_fatal("Couldn't create internal raw storage: %s", error);
 	return user;
 }
 
-static int
+static int ATTR_NULL(2, 3)
 raw_mailbox_alloc_common(struct mail_user *user, struct istream *input,
 			 const char *path, time_t received_time,
 			 const char *envelope_sender, struct mailbox **box_r)
@@ -125,7 +135,7 @@ raw_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &raw_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, vname, flags, NULL);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, "dovecot.index");
 
 	mbox->mtime = mbox->ctime = (time_t)-1;
 	mbox->storage = (struct raw_storage *)storage;
@@ -196,7 +206,7 @@ struct mail_storage raw_storage = {
 		NULL,
 		raw_storage_alloc,
 		NULL,
-		NULL,
+		index_storage_destroy,
 		NULL,
 		raw_storage_get_list_settings,
 		NULL,
@@ -220,6 +230,11 @@ struct mailbox raw_mailbox = {
 		index_storage_get_status,
 		index_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		index_storage_list_index_has_changed,
 		index_storage_list_index_update_sync,
 		raw_storage_sync_init,

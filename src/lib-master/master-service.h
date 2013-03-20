@@ -1,7 +1,10 @@
 #ifndef MASTER_SERVICE_H
 #define MASTER_SERVICE_H
 
-#include "network.h"
+#include "net.h"
+
+#include <unistd.h> /* for getopt() opt* variables */
+#include <stdio.h> /* for getopt() opt* variables in Solaris */
 
 enum master_service_flags {
 	/* stdin/stdout already contains a client which we want to serve */
@@ -22,7 +25,13 @@ enum master_service_flags {
 	MASTER_SERVICE_FLAG_NO_IDLE_DIE		= 0x80,
 	/* Show number of connections in process title
 	   (only if verbose_proctitle setting is enabled) */
-	MASTER_SERVICE_FLAG_UPDATE_PROCTITLE	= 0x100
+	MASTER_SERVICE_FLAG_UPDATE_PROCTITLE	= 0x100,
+	/* SSL settings are always looked up when we have ssl listeners.
+	   This flag enables looking up SSL settings even without ssl
+	   listeners (i.e. the service does STARTTLS). */
+	MASTER_SERVICE_FLAG_USE_SSL_SETTINGS	= 0x200,
+	/* Don't initialize SSL context automatically. */
+	MASTER_SERVICE_FLAG_NO_SSL_INIT		= 0x400
 };
 
 struct master_service_connection {
@@ -121,7 +130,8 @@ const char *master_service_get_name(struct master_service *service);
 
 /* Start the service. Blocks until finished */
 void master_service_run(struct master_service *service,
-			master_service_connection_callback_t *callback);
+			master_service_connection_callback_t *callback)
+	ATTR_NULL(2);
 /* Stop a running service. */
 void master_service_stop(struct master_service *service);
 /* Stop once we're done serving existing new connections, but don't accept
@@ -148,5 +158,9 @@ void master_service_deinit(struct master_service **service);
    VERSION <tab> service_name <tab> major version <tab> minor version */
 bool version_string_verify(const char *line, const char *service_name,
 			   unsigned major_version);
+/* Same as version_string_verify(), but return the minor version. */
+bool version_string_verify_full(const char *line, const char *service_name,
+				unsigned major_version,
+				unsigned int *minor_version_r);
 
 #endif

@@ -1,10 +1,11 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 
 #if defined(PASSDB_CHECKPASSWORD) || defined(USERDB_CHECKPASSWORD)
 
 #include "lib-signals.h"
+#include "array.h"
 #include "buffer.h"
 #include "str.h"
 #include "ioloop.h"
@@ -45,22 +46,20 @@ struct chkpw_auth_request {
 struct db_checkpassword {
 	char *checkpassword_path, *checkpassword_reply_path;
 
-	struct hash_table *clients;
+	HASH_TABLE(void *, struct chkpw_auth_request *) clients;
 	struct child_wait *child_wait;
 };
 
-static void env_put_extra_fields(const char *extra_fields)
+static void
+env_put_extra_fields(const ARRAY_TYPE(auth_field) *extra_fields)
 {
-	const char *const *tmp;
-	const char *key, *p;
+	const struct auth_field *field;
+	const char *key, *value;
 
-	for (tmp = t_strsplit_tab(extra_fields); *tmp != NULL; tmp++) {
-		key = t_str_ucase(t_strcut(*tmp, '='));
-		p = strchr(*tmp, '=');
-		if (p == NULL)
-			env_put(t_strconcat(key, "=1", NULL));
-		else
-			env_put(t_strconcat(key, p, NULL));
+	array_foreach(extra_fields, field) {
+		key = t_str_ucase(field->key);
+		value = field->value != NULL ? field->value : "1";
+		env_put(t_strconcat(key, "=", value, NULL));
 	}
 }
 
@@ -270,9 +269,9 @@ static void checkpassword_setup_env(struct auth_request *request)
 		env_put(t_strconcat("MASTER_USER=",
 				    request->master_user, NULL));
 	}
-	if (request->extra_fields != NULL) {
-		const char *fields =
-			auth_stream_reply_export(request->extra_fields);
+	if (!auth_fields_is_empty(request->extra_fields)) {
+		const ARRAY_TYPE(auth_field) *fields =
+			auth_fields_export(request->extra_fields);
 
 		/* extra fields could come from master db */
 		env_put_extra_fields(fields);
@@ -473,8 +472,8 @@ void db_checkpassword_call(struct db_checkpassword *db,
 		auth_request_log_error(request, "checkpassword",
 				       "pipe() failed: %m");
 		if (fd_in[0] != -1) {
-			(void)close(fd_in[0]);
-			(void)close(fd_in[1]);
+			i_close_fd(&fd_in[0]);
+			i_close_fd(&fd_in[1]);
 		}
 		callback(request, DB_CHECKPASSWORD_STATUS_INTERNAL_FAILURE,
 			 NULL, request_callback);
@@ -485,10 +484,10 @@ void db_checkpassword_call(struct db_checkpassword *db,
 	if (pid == -1) {
 		auth_request_log_error(request, "checkpassword",
 				       "fork() failed: %m");
-		(void)close(fd_in[0]);
-		(void)close(fd_in[1]);
-		(void)close(fd_out[0]);
-		(void)close(fd_out[1]);
+		i_close_fd(&fd_in[0]);
+		i_close_fd(&fd_in[1]);
+		i_close_fd(&fd_out[0]);
+		i_close_fd(&fd_out[1]);
 		callback(request, DB_CHECKPASSWORD_STATUS_INTERNAL_FAILURE,
 			 NULL, request_callback);
 		return;
@@ -496,8 +495,8 @@ void db_checkpassword_call(struct db_checkpassword *db,
 
 	if (pid == 0) {
 		/* child */
-		(void)close(fd_in[0]);
-		(void)close(fd_out[1]);
+		i_close_fd(&fd_in[0]);
+		i_close_fd(&fd_out[1]);
 		checkpassword_exec(db, request, fd_in[1], fd_out[0],
 				   auth_password != NULL);
 		/* not reached */
@@ -545,8 +544,7 @@ db_checkpassword_init(const char *checkpassword_path,
 	db = i_new(struct db_checkpassword, 1);
 	db->checkpassword_path = i_strdup(checkpassword_path);
 	db->checkpassword_reply_path = i_strdup(checkpassword_reply_path);
-	db->clients = hash_table_create(default_pool, default_pool, 0,
-					NULL, NULL);
+	hash_table_create_direct(&db->clients, default_pool, 0);
 	db->child_wait =
 		child_wait_new_with_pid((pid_t)-1, sigchld_handler, db);
 	return db;
@@ -556,15 +554,14 @@ void db_checkpassword_deinit(struct db_checkpassword **_db)
 {
 	struct db_checkpassword *db = *_db;
 	struct hash_iterate_context *iter;
-	void *key, *value;
+	void *key;
+	struct chkpw_auth_request *request;
 
 	*_db = NULL;
 
 	iter = hash_table_iterate_init(db->clients);
-	while (hash_table_iterate(iter, &key, &value)) {
-		struct chkpw_auth_request *request = value;
+	while (hash_table_iterate(iter, db->clients, &key, &request))
 		checkpassword_internal_failure(&request);
-	}
 	hash_table_iterate_deinit(&iter);
 
 	child_wait_free(&db->child_wait);

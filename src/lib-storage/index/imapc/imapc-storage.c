@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -52,6 +52,8 @@ static struct imapc_resp_code_map imapc_resp_code_map[] = {
 
 static void imapc_untagged_status(const struct imapc_untagged_reply *reply,
 				  struct imapc_storage *storage);
+static void imapc_untagged_namespace(const struct imapc_untagged_reply *reply,
+				     struct imapc_storage *storage);
 
 static bool
 imap_resp_text_code_parse(const char *str, enum mail_error *error_r)
@@ -241,7 +243,7 @@ imapc_storage_create(struct mail_storage *_storage,
 	mail_user_set_get_temp_prefix(str, _storage->user->set);
 	set.temp_path_prefix = str_c(str);
 
-	set.ssl_ca_dir = storage->set->imapc_ssl_ca_dir;
+	set.ssl_ca_dir = _storage->set->ssl_client_ca_dir;
 	set.ssl_verify = storage->set->imapc_ssl_verify;
 	if (strcmp(storage->set->imapc_ssl, "imaps") == 0)
 		set.ssl_mode = IMAPC_CLIENT_SSL_MODE_IMMEDIATE;
@@ -249,18 +251,21 @@ imapc_storage_create(struct mail_storage *_storage,
 		set.ssl_mode = IMAPC_CLIENT_SSL_MODE_STARTTLS;
 	else
 		set.ssl_mode = IMAPC_CLIENT_SSL_MODE_NONE;
-	set.ssl_crypto_device = storage->set->ssl_crypto_device;
+	set.ssl_crypto_device = _storage->set->ssl_crypto_device;
 
 	storage->list = (struct imapc_mailbox_list *)ns->list;
 	storage->list->storage = storage;
 	storage->client = imapc_client_init(&set);
 
+	p_array_init(&storage->remote_namespaces, _storage->pool, 4);
 	p_array_init(&storage->untagged_callbacks, _storage->pool, 16);
 	imapc_client_register_untagged(storage->client,
 				       imapc_storage_untagged_cb, storage);
 	imapc_list_register_callbacks(storage->list);
 	imapc_storage_register_untagged(storage, "STATUS",
 					imapc_untagged_status);
+	imapc_storage_register_untagged(storage, "NAMESPACE",
+					imapc_untagged_namespace);
 	/* connect to imap server and get the hierarchy separator. */
 	if (imapc_storage_get_hierarchy_sep(storage, error_r) < 0) {
 		imapc_client_deinit(&storage->client);
@@ -274,6 +279,7 @@ static void imapc_storage_destroy(struct mail_storage *_storage)
 	struct imapc_storage *storage = (struct imapc_storage *)_storage;
 
 	imapc_client_deinit(&storage->client);
+	index_storage_destroy(_storage);
 }
 
 static void imapc_storage_add_list(struct mail_storage *_storage,
@@ -323,8 +329,7 @@ imapc_mailbox_alloc(struct mail_storage *storage, struct mailbox_list *list,
 	mbox->box.list = list;
 	mbox->box.mail_vfuncs = &imapc_mail_vfuncs;
 
-	index_storage_mailbox_alloc(&mbox->box, vname, flags,
-				    IMAPC_INDEX_PREFIX);
+	index_storage_mailbox_alloc(&mbox->box, vname, flags, MAIL_INDEX_PREFIX);
 
 	mbox->storage = (struct imapc_storage *)storage;
 
@@ -521,7 +526,7 @@ static void imapc_mailbox_close(struct mailbox *box)
 		mail_index_view_close(&mbox->delayed_sync_view);
 	if (mbox->delayed_sync_trans != NULL) {
 		if (mail_index_transaction_commit(&mbox->delayed_sync_trans) < 0)
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 	}
 	if (mbox->sync_view != NULL)
 		mail_index_view_close(&mbox->sync_view);
@@ -556,11 +561,15 @@ imapc_mailbox_create(struct mailbox *box,
 }
 
 static int imapc_mailbox_update(struct mailbox *box,
-				const struct mailbox_update *update ATTR_UNUSED)
+				const struct mailbox_update *update)
 {
-	mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
-			       "Not supported");
-	return -1;
+	if (!guid_128_is_empty(update->mailbox_guid) ||
+	    update->uid_validity != 0 || update->min_next_uid != 0 ||
+	    update->min_first_recent_uid != 0) {
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
+				       "Not supported");
+	}
+	return index_storage_mailbox_update(box, update);
 }
 
 static void imapc_untagged_status(const struct imapc_untagged_reply *reply,
@@ -600,11 +609,45 @@ static void imapc_untagged_status(const struct imapc_untagged_reply *reply,
 	}
 }
 
+static void imapc_untagged_namespace(const struct imapc_untagged_reply *reply,
+				     struct imapc_storage *storage)
+{
+	static enum mail_namespace_type ns_types[] = {
+		MAIL_NAMESPACE_TYPE_PRIVATE,
+		MAIL_NAMESPACE_TYPE_SHARED,
+		MAIL_NAMESPACE_TYPE_PUBLIC
+	};
+	struct imapc_namespace *ns;
+	const struct imap_arg *list, *list2;
+	const char *prefix, *sep;
+	unsigned int i;
+
+	array_clear(&storage->remote_namespaces);
+	for (i = 0; i < N_ELEMENTS(ns_types); i++) {
+		if (reply->args[i].type == IMAP_ARG_NIL)
+			continue;
+		if (!imap_arg_get_list(&reply->args[i], &list))
+			break;
+
+		for (; list->type != IMAP_ARG_EOL; list++) {
+			if (!imap_arg_get_list(list, &list2) ||
+			    !imap_arg_get_astring(&list2[0], &prefix) ||
+			    !imap_arg_get_nstring(&list2[1], &sep))
+				break;
+
+			ns = array_append_space(&storage->remote_namespaces);
+			ns->prefix = p_strdup(storage->storage.pool, prefix);
+			ns->separator = sep == NULL ? '\0' : sep[0];
+			ns->type = ns_types[i];
+		}
+	}
+}
+
 static void imapc_mailbox_get_selected_status(struct imapc_mailbox *mbox,
 					      enum mailbox_status_items items,
 					      struct mailbox_status *status_r)
 {
-	index_storage_get_status(&mbox->box, items, status_r);
+	index_storage_get_open_status(&mbox->box, items, status_r);
 	if ((items & STATUS_PERMANENT_FLAGS) != 0)
 		status_r->permanent_flags = mbox->permanent_flags;
 }
@@ -618,7 +661,9 @@ static int imapc_mailbox_get_status(struct mailbox *box,
 	struct imapc_simple_context sctx;
 	string_t *str;
 
-	memset(status_r, 0, sizeof(*status_r));
+	if (mbox->guid_fetch_field_name != NULL ||
+	    IMAPC_BOX_HAS_FEATURE(mbox, IMAPC_FEATURE_GUID_FORCED))
+		status_r->have_guids = TRUE;
 
 	if (box->opened) {
 		imapc_mailbox_get_selected_status(mbox, items, status_r);
@@ -664,16 +709,78 @@ static int imapc_mailbox_get_status(struct mailbox *box,
 	return sctx.ret;
 }
 
+static int imapc_mailbox_get_namespaces(struct imapc_storage *storage)
+{
+	enum imapc_capability capa;
+	struct imapc_command *cmd;
+	struct imapc_simple_context sctx;
+
+	if (storage->namespaces_requested)
+		return 0;
+
+	capa = imapc_client_get_capabilities(storage->client);
+	if ((capa & IMAPC_CAPABILITY_NAMESPACE) == 0) {
+		/* NAMESPACE capability not supported */
+		return 0;
+	}
+
+	imapc_simple_context_init(&sctx, storage);
+	cmd = imapc_client_cmd(storage->client,
+			       imapc_simple_callback, &sctx);
+	imapc_command_send(cmd, "NAMESPACE");
+	imapc_simple_run(&sctx);
+
+	if (sctx.ret < 0)
+		return -1;
+	storage->namespaces_requested = TRUE;
+	return 0;
+}
+
+static const struct imapc_namespace *
+imapc_namespace_find_mailbox(struct imapc_storage *storage, const char *name)
+{
+	const struct imapc_namespace *ns, *best_ns = NULL;
+	unsigned int best_len = UINT_MAX, len;
+
+	array_foreach(&storage->remote_namespaces, ns) {
+		len = strlen(ns->prefix);
+		if (strncmp(ns->prefix, name, len) == 0) {
+			if (best_len > len) {
+				best_ns = ns;
+				best_len = len;
+			}
+		}
+	}
+	return best_ns;
+}
+
 static int imapc_mailbox_get_metadata(struct mailbox *box,
 				      enum mailbox_metadata_items items,
 				      struct mailbox_metadata *metadata_r)
 {
-	if (index_mailbox_get_metadata(box, items, metadata_r) < 0)
-		return -1;
+	struct imapc_mailbox *mbox = (struct imapc_mailbox *)box;
+	const struct imapc_namespace *ns;
+
 	if ((items & MAILBOX_METADATA_GUID) != 0) {
 		/* a bit ugly way to do this, but better than nothing for now.
 		   FIXME: if indexes are enabled, keep this there. */
 		mail_generate_guid_128_hash(box->name, metadata_r->guid);
+		items &= ~MAILBOX_METADATA_GUID;
+	}
+	if ((items & MAILBOX_METADATA_BACKEND_NAMESPACE) != 0) {
+		if (imapc_mailbox_get_namespaces(mbox->storage) < 0)
+			return -1;
+
+		ns = imapc_namespace_find_mailbox(mbox->storage, box->name);
+		if (ns != NULL) {
+			metadata_r->backend_ns_prefix = ns->prefix;
+			metadata_r->backend_ns_type = ns->type;
+		}
+		items &= ~MAILBOX_METADATA_BACKEND_NAMESPACE;
+	}
+	if (items != 0) {
+		if (index_mailbox_get_metadata(box, items, metadata_r) < 0)
+			return -1;
 	}
 	return 0;
 }
@@ -719,10 +826,11 @@ static void imapc_idle_noop_callback(const struct imapc_command_reply *reply,
 static void imapc_notify_changes(struct mailbox *box)
 {
 	struct imapc_mailbox *mbox = (struct imapc_mailbox *)box;
+	const struct mail_storage_settings *set = box->storage->set;
 	struct imapc_command *cmd;
 	enum imapc_capability capa;
 
-	if (box->notify_min_interval == 0) {
+	if (box->notify_callback == NULL) {
 		if (mbox->to_idle_check != NULL)
 			timeout_remove(&mbox->to_idle_check);
 		return;
@@ -742,7 +850,7 @@ static void imapc_notify_changes(struct mailbox *box)
 		   check for changes with NOOP every once in a while. */
 		i_assert(!imapc_client_is_running(mbox->storage->client));
 		mbox->to_idle_check =
-			timeout_add(box->notify_min_interval * 1000,
+			timeout_add(set->mailbox_idle_check_interval * 1000,
 				    imapc_idle_timeout, mbox);
 	}
 }
@@ -789,6 +897,11 @@ struct mailbox imapc_mailbox = {
 		imapc_mailbox_get_status,
 		imapc_mailbox_get_metadata,
 		index_storage_set_subscribed,
+		index_storage_attribute_set,
+		index_storage_attribute_get,
+		index_storage_attribute_iter_init,
+		index_storage_attribute_iter_next,
+		index_storage_attribute_iter_deinit,
 		NULL,
 		NULL,
 		imapc_mailbox_sync_init,

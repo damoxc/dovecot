@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -20,9 +20,23 @@ const char *o_stream_get_name(struct ostream *stream)
 	return stream->real_stream->iostream.name;
 }
 
+int o_stream_get_fd(struct ostream *stream)
+{
+	return stream->real_stream->fd;
+}
+
+static void o_stream_close_full(struct ostream *stream, bool close_parents)
+{
+	io_stream_close(&stream->real_stream->iostream, close_parents);
+	stream->closed = TRUE;
+
+	if (stream->stream_errno == 0)
+		stream->stream_errno = EPIPE;
+}
+
 void o_stream_destroy(struct ostream **stream)
 {
-	o_stream_close(*stream);
+	o_stream_close_full(*stream, FALSE);
 	o_stream_unref(stream);
 }
 
@@ -31,16 +45,24 @@ void o_stream_ref(struct ostream *stream)
 	io_stream_ref(&stream->real_stream->iostream);
 }
 
-void o_stream_unref(struct ostream **stream)
+void o_stream_unref(struct ostream **_stream)
 {
-	io_stream_unref(&(*stream)->real_stream->iostream);
-	*stream = NULL;
+	struct ostream *stream = *_stream;
+
+	if (stream->real_stream->last_errors_not_checked &&
+	    !stream->real_stream->error_handling_disabled &&
+	    stream->real_stream->iostream.refcount == 1) {
+		i_panic("output stream %s is missing error handling",
+			o_stream_get_name(stream));
+	}
+
+	io_stream_unref(&stream->real_stream->iostream);
+	*_stream = NULL;
 }
 
 void o_stream_close(struct ostream *stream)
 {
-	io_stream_close(&stream->real_stream->iostream);
-	stream->closed = TRUE;
+	o_stream_close_full(stream, TRUE);
 }
 
 #undef o_stream_set_flush_callback
@@ -55,7 +77,9 @@ void o_stream_set_flush_callback(struct ostream *stream,
 
 void o_stream_unset_flush_callback(struct ostream *stream)
 {
-	o_stream_set_flush_callback(stream, NULL, NULL);
+	struct ostream_private *_stream = stream->real_stream;
+
+	_stream->set_flush_callback(_stream, NULL, NULL);
 }
 
 void o_stream_set_max_buffer_size(struct ostream *stream, size_t max_size)
@@ -194,6 +218,60 @@ ssize_t o_stream_send_str(struct ostream *stream, const char *str)
 	return o_stream_send(stream, str, strlen(str));
 }
 
+void o_stream_nsend(struct ostream *stream, const void *data, size_t size)
+{
+	struct const_iovec iov;
+
+	memset(&iov, 0, sizeof(iov));
+	iov.iov_base = data;
+	iov.iov_len = size;
+
+	o_stream_nsendv(stream, &iov, 1);
+}
+
+void o_stream_nsendv(struct ostream *stream, const struct const_iovec *iov,
+		     unsigned int iov_count)
+{
+	if (unlikely(stream->closed))
+		return;
+	(void)o_stream_sendv(stream, iov, iov_count);
+	stream->real_stream->last_errors_not_checked = TRUE;
+}
+
+void o_stream_nsend_str(struct ostream *stream, const char *str)
+{
+	o_stream_nsend(stream, str, strlen(str));
+}
+
+void o_stream_nflush(struct ostream *stream)
+{
+	if (unlikely(stream->closed))
+		return;
+	(void)o_stream_flush(stream);
+	stream->real_stream->last_errors_not_checked = TRUE;
+}
+
+int o_stream_nfinish(struct ostream *stream)
+{
+	o_stream_nflush(stream);
+	o_stream_ignore_last_errors(stream);
+	errno = stream->last_failed_errno;
+	return stream->last_failed_errno != 0 ? -1 : 0;
+}
+
+void o_stream_ignore_last_errors(struct ostream *stream)
+{
+	while (stream != NULL) {
+		stream->real_stream->last_errors_not_checked = FALSE;
+		stream = stream->real_stream->parent;
+	}
+}
+
+void o_stream_set_no_error_handling(struct ostream *stream, bool set)
+{
+	stream->real_stream->error_handling_disabled = set;
+}
+
 off_t o_stream_send_istream(struct ostream *outstream,
 			    struct istream *instream)
 {
@@ -275,11 +353,14 @@ void o_stream_switch_ioloop(struct ostream *stream)
 	_stream->switch_ioloop(_stream);
 }
 
-static void o_stream_default_close(struct iostream_private *stream)
+static void o_stream_default_close(struct iostream_private *stream,
+				   bool close_parent)
 {
 	struct ostream_private *_stream = (struct ostream_private *)stream;
 
 	(void)o_stream_flush(&_stream->ostream);
+	if (close_parent && _stream->parent != NULL)
+		o_stream_close(_stream->parent);
 }
 
 static void o_stream_default_destroy(struct iostream_private *stream)
@@ -368,7 +449,7 @@ static int
 o_stream_default_seek(struct ostream_private *_stream,
 		      uoff_t offset ATTR_UNUSED)
 {
-	_stream->ostream.stream_errno = EPIPE;
+	_stream->ostream.stream_errno = ESPIPE;
 	return -1;
 }
 
@@ -377,7 +458,7 @@ o_stream_default_write_at(struct ostream_private *_stream,
 			  const void *data ATTR_UNUSED,
 			  size_t size ATTR_UNUSED, uoff_t offset ATTR_UNUSED)
 {
-	_stream->ostream.stream_errno = EPIPE;
+	_stream->ostream.stream_errno = ESPIPE;
 	return -1;
 }
 
@@ -394,8 +475,9 @@ static void o_stream_default_switch_ioloop(struct ostream_private *_stream)
 }
 
 struct ostream *
-o_stream_create(struct ostream_private *_stream, struct ostream *parent)
+o_stream_create(struct ostream_private *_stream, struct ostream *parent, int fd)
 {
+	_stream->fd = fd;
 	_stream->ostream.real_stream = _stream;
 	if (parent != NULL) {
 		_stream->parent = parent;
@@ -404,6 +486,8 @@ o_stream_create(struct ostream_private *_stream, struct ostream *parent)
 		_stream->callback = parent->real_stream->callback;
 		_stream->context = parent->real_stream->context;
 		_stream->max_buffer_size = parent->real_stream->max_buffer_size;
+		_stream->error_handling_disabled =
+			parent->real_stream->error_handling_disabled;
 	}
 
 	if (_stream->iostream.close == NULL)
@@ -438,4 +522,18 @@ o_stream_create(struct ostream_private *_stream, struct ostream *parent)
 
 	io_stream_init(&_stream->iostream);
 	return &_stream->ostream;
+}
+
+struct ostream *o_stream_create_error(int stream_errno)
+{
+	struct ostream_private *stream;
+	struct ostream *output;
+
+	stream = i_new(struct ostream_private, 1);
+	stream->ostream.closed = TRUE;
+	stream->ostream.stream_errno = stream_errno;
+
+	output = o_stream_create(stream, NULL, -1);
+	o_stream_set_name(output, "(error)");
+	return output;
 }

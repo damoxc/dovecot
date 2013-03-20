@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -14,7 +14,7 @@ struct doveadm_print_header_context {
 
 struct doveadm_print_context {
 	pool_t pool;
-	ARRAY_DEFINE(headers, struct doveadm_print_header_context);
+	ARRAY(struct doveadm_print_header_context) headers;
 	const struct doveadm_print_vfuncs *v;
 
 	unsigned int header_idx;
@@ -59,6 +59,7 @@ static void doveadm_print_sticky_headers(void)
 	unsigned int count;
 
 	headers = array_get(&ctx->headers, &count);
+	i_assert(count > 0);
 	for (;;) {
 		if (ctx->header_idx == count)
 			ctx->header_idx = 0;

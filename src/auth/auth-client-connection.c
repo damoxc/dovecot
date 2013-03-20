@@ -1,10 +1,10 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "ioloop.h"
 #include "istream.h"
 #include "ostream.h"
-#include "network.h"
+#include "net.h"
 #include "hex-binary.h"
 #include "hostpid.h"
 #include "llist.h"
@@ -14,7 +14,7 @@
 #include "safe-memset.h"
 #include "master-service.h"
 #include "mech.h"
-#include "auth-stream.h"
+#include "auth-fields.h"
 #include "auth-request-handler.h"
 #include "auth-client-interface.h"
 #include "auth-client-connection.h"
@@ -23,6 +23,9 @@
 #include <stdlib.h>
 
 #define OUTBUF_THROTTLE_SIZE (1024*50)
+
+#define AUTH_DEBUG_SENSITIVE_SUFFIX \
+	" (previous base64 data may contain sensitive data)"
 
 static void auth_client_disconnected(struct auth_client_connection **_conn);
 static void auth_client_connection_unref(struct auth_client_connection **_conn);
@@ -54,7 +57,7 @@ static void auth_client_send(struct auth_client_connection *conn,
 	iov[0].iov_len = strlen(cmd);
 	iov[1].iov_base = "\n";
 	iov[1].iov_len = 1;
-	(void)o_stream_sendv(conn->output, iov, 2);
+	o_stream_nsendv(conn->output, iov, 2);
 
 	if (o_stream_get_buffer_used_size(conn->output) >=
 	    OUTBUF_THROTTLE_SIZE) {
@@ -71,16 +74,15 @@ static void auth_client_send(struct auth_client_connection *conn,
 	}
 }
 
-static void auth_callback(struct auth_stream_reply *reply,
+static void auth_callback(const char *reply,
 			  struct auth_client_connection *conn)
 {
 	if (reply == NULL) {
 		/* handler destroyed */
 		auth_client_connection_unref(&conn);
-		return;
+	} else {
+		auth_client_send(conn, reply);
 	}
-
-	auth_client_send(conn, auth_stream_reply_export(reply));
 }
 
 static bool
@@ -125,7 +127,7 @@ auth_client_input_cpid(struct auth_client_connection *conn, const char *args)
 	/* handshake complete, we can now actually start serving requests */
         conn->refcount++;
 	conn->request_handler =
-		auth_request_handler_create(auth_callback, conn,
+		auth_request_handler_create(conn->token_auth, auth_callback, conn,
 					    !conn->login_requests ? NULL :
 					    auth_master_request_callback);
 	auth_request_handler_set(conn->request_handler, conn->connect_uid, pid);
@@ -151,7 +153,8 @@ static int auth_client_output(struct auth_client_connection *conn)
 	return 1;
 }
 
-static const char *auth_line_hide_pass(const char *line)
+static const char *
+auth_line_hide_pass(struct auth_client_connection *conn, const char *line)
 {
 	const char *p, *p2;
 
@@ -160,14 +163,21 @@ static const char *auth_line_hide_pass(const char *line)
 		return line;
 	p += 6;
 
+	if (conn->auth->set->debug_passwords)
+		return t_strconcat(line, AUTH_DEBUG_SENSITIVE_SUFFIX, NULL);
+
 	p2 = strchr(p, '\t');
 	return t_strconcat(t_strdup_until(line, p), PASSWORD_HIDDEN_STR,
 			   p2, NULL);
 }
 
-static const char *cont_line_hide_pass(const char *line)
+static const char *
+cont_line_hide_pass(struct auth_client_connection *conn, const char *line)
 {
 	const char *p;
+
+	if (conn->auth->set->debug_passwords)
+		return t_strconcat(line, AUTH_DEBUG_SENSITIVE_SUFFIX, NULL);
 
 	p = strchr(line, '\t');
 	if (p == NULL)
@@ -196,8 +206,7 @@ auth_client_handle_line(struct auth_client_connection *conn, const char *line)
 	if (strncmp(line, "AUTH\t", 5) == 0) {
 		if (conn->auth->set->debug) {
 			i_debug("client in: %s",
-				conn->auth->set->debug_passwords ? line :
-				auth_line_hide_pass(line));
+				auth_line_hide_pass(conn, line));
 		}
 		return auth_request_handler_auth_begin(conn->request_handler,
 						       line + 5);
@@ -205,8 +214,7 @@ auth_client_handle_line(struct auth_client_connection *conn, const char *line)
 	if (strncmp(line, "CONT\t", 5) == 0) {
 		if (conn->auth->set->debug) {
 			i_debug("client in: %s",
-				conn->auth->set->debug_passwords ? line :
-				cont_line_hide_pass(line));
+				cont_line_hide_pass(conn, line));
 		}
 		return auth_request_handler_auth_continue(conn->request_handler,
 							  line + 5);
@@ -293,11 +301,12 @@ static void auth_client_input(struct auth_client_connection *conn)
 	auth_client_connection_unref(&conn);
 }
 
-struct auth_client_connection *
-auth_client_connection_create(struct auth *auth, int fd, bool login_requests)
+void auth_client_connection_create(struct auth *auth, int fd,
+				   bool login_requests, bool token_auth)
 {
 	static unsigned int connect_uid_counter = 0;
 	struct auth_client_connection *conn;
+	const char *mechanisms;
 	string_t *str;
 
 	conn = i_new(struct auth_client_connection, 1);
@@ -305,29 +314,36 @@ auth_client_connection_create(struct auth *auth, int fd, bool login_requests)
 	conn->refcount = 1;
 	conn->connect_uid = ++connect_uid_counter;
 	conn->login_requests = login_requests;
+	conn->token_auth = token_auth;
 	random_fill(conn->cookie, sizeof(conn->cookie));
 
 	conn->fd = fd;
 	conn->input = i_stream_create_fd(fd, AUTH_CLIENT_MAX_LINE_LENGTH,
 					 FALSE);
 	conn->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	o_stream_set_flush_callback(conn->output, auth_client_output, conn);
 	conn->io = io_add(fd, IO_READ, auth_client_input, conn);
 
 	DLLIST_PREPEND(&auth_client_connections, conn);
 
+	if (token_auth) {
+		mechanisms = t_strconcat("MECH\t",
+			mech_dovecot_token.mech_name, "\n", NULL);
+	} else {
+		mechanisms = str_c(auth->reg->handshake);
+	}
+
 	str = t_str_new(128);
 	str_printfa(str, "VERSION\t%u\t%u\n%sSPID\t%s\nCUID\t%u\nCOOKIE\t",
                     AUTH_CLIENT_PROTOCOL_MAJOR_VERSION,
                     AUTH_CLIENT_PROTOCOL_MINOR_VERSION,
-		    str_c(auth->reg->handshake), my_pid, conn->connect_uid);
+		    mechanisms, my_pid, conn->connect_uid);
 	binary_to_hex_append(str, conn->cookie, sizeof(conn->cookie));
 	str_append(str, "\nDONE\n");
 
 	if (o_stream_send(conn->output, str_data(str), str_len(str)) < 0)
 		auth_client_disconnected(&conn);
-
-	return conn;
 }
 
 void auth_client_connection_destroy(struct auth_client_connection **_conn)

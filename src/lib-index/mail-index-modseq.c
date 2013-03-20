@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -26,7 +26,7 @@ struct metadata_modseqs {
 
 struct mail_index_map_modseq {
 	/* indexes use enum modseq_metadata_idx */
-	ARRAY_DEFINE(metadata_modseqs, struct metadata_modseqs);
+	ARRAY(struct metadata_modseqs) metadata_modseqs;
 };
 
 struct mail_index_modseq_sync {
@@ -335,6 +335,7 @@ mail_index_modseq_update_old_rec(struct mail_index_modseq_sync *ctx,
 	buffer_t uid_buf;
 	unsigned int i, count;
 	uint32_t seq1, seq2;
+	uint64_t modseq;
 
 	switch (thdr->type & MAIL_TRANSACTION_TYPE_MASK) {
 	case MAIL_TRANSACTION_APPEND: {
@@ -344,14 +345,13 @@ mail_index_modseq_update_old_rec(struct mail_index_modseq_sync *ctx,
 		for (i = 0; i < count; i++) {
 			if (mail_index_lookup_seq(ctx->view,
 						  appends[i].uid, &seq1)) {
-				mail_index_modseq_update_to_highest(ctx, seq1,
-								    seq1);
+				(void)mail_index_modseq_update_to_highest(ctx, seq1, seq1);
 			}
 		}
 		return;
 	}
 	case MAIL_TRANSACTION_FLAG_UPDATE: {
-		buffer_create_const_data(&uid_buf, tdata, thdr->size);
+		buffer_create_from_const_data(&uid_buf, tdata, thdr->size);
 		array_create_from_buffer(&uids, &uid_buf,
 			sizeof(struct mail_transaction_flag_update));
 		break;
@@ -364,28 +364,35 @@ mail_index_modseq_update_old_rec(struct mail_index_modseq_sync *ctx,
 		if ((seqset_offset % 4) != 0)
 			seqset_offset += 4 - (seqset_offset % 4);
 
-		buffer_create_const_data(&uid_buf,
+		buffer_create_from_const_data(&uid_buf,
 					 CONST_PTR_OFFSET(tdata, seqset_offset),
 					 thdr->size - seqset_offset);
 		array_create_from_buffer(&uids, &uid_buf, sizeof(uint32_t)*2);
 		break;
 	}
 	case MAIL_TRANSACTION_KEYWORD_RESET:
-		buffer_create_const_data(&uid_buf, tdata, thdr->size);
+		buffer_create_from_const_data(&uid_buf, tdata, thdr->size);
 		array_create_from_buffer(&uids, &uid_buf,
 			sizeof(struct mail_transaction_keyword_reset));
+		break;
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE:
 		break;
 	default:
 		return;
 	}
 
+	/* update highestmodseq regardless of whether any mails were updated */
+	modseq = mail_transaction_log_view_get_prev_modseq(ctx->log_view);
+	if (modseq > ctx->highest_modseq)
+		ctx->highest_modseq = modseq;
+
 	/* update modseqs */
-	count = array_count(&uids);
+	count = array_is_created(&uids) ? array_count(&uids) : 0;
 	for (i = 0; i < count; i++) {
 		rec = array_idx(&uids, i);
 		if (mail_index_lookup_seq_range(ctx->view, rec->seq1, rec->seq2,
 						&seq1, &seq2))
-			mail_index_modseq_update_to_highest(ctx, seq1, seq2);
+			(void)mail_index_modseq_update_to_highest(ctx, seq1, seq2);
 	}
 }
 
@@ -463,8 +470,7 @@ static void mail_index_modseq_sync_init(struct mail_index_modseq_sync *ctx)
 			} T_END;
 		}
 	}
-	mail_index_sync_write_seq_update(ctx->sync_map_ctx, 1,
-					 map->hdr.messages_count);
+	map->rec_map->records_changed = TRUE;
 	mail_transaction_log_view_close(&ctx->log_view);
 }
 
@@ -515,7 +521,7 @@ static void mail_index_modseq_update_header(struct mail_index_view *view,
 		buffer_write(map->hdr_copy_buf, ext->hdr_offset,
 			     &new_modseq_hdr, sizeof(new_modseq_hdr));
 		map->hdr_base = map->hdr_copy_buf->data;
-		map->write_ext_header = TRUE;
+		map->header_changed = TRUE;
 	}
 }
 
@@ -548,7 +554,7 @@ void mail_index_modseq_hdr_update(struct mail_index_modseq_sync *ctx)
 
 void mail_index_modseq_append(struct mail_index_modseq_sync *ctx, uint32_t seq)
 {
-	mail_index_modseq_update_to_highest(ctx, seq, seq);
+	(void)mail_index_modseq_update_to_highest(ctx, seq, seq);
 }
 
 void mail_index_modseq_expunge(struct mail_index_modseq_sync *ctx,

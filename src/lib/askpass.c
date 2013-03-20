@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -50,7 +50,7 @@ static void askpass_str(const char *prompt, buffer_t *pass)
 			(void)tcsetattr(fd, TCSAFLUSH, &old_tio);
 
 		fputs("\n", stderr); fflush(stderr);
-		(void)close(fd);
+		i_close_fd(&fd);
 	}
 }
 
@@ -58,7 +58,7 @@ void askpass(const char *prompt, char *buf, size_t buf_size)
 {
 	buffer_t str;
 
-	buffer_create_data(&str, buf, buf_size);
+	buffer_create_from_data(&str, buf, buf_size);
 	askpass_str(prompt, &str);
 	buffer_append_c(&str, '\0');
 }

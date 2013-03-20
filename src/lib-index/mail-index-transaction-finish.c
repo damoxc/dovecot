@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -80,7 +80,7 @@ transaction_update_atomic_reset_ids(struct mail_index_transaction *t)
 
 static unsigned int
 mail_transaction_drop_range(struct mail_index_transaction *t,
-			    struct mail_transaction_flag_update update,
+			    struct mail_index_flag_update update,
 			    unsigned int update_idx,
 			    ARRAY_TYPE(seq_range) *keeps)
 {
@@ -109,7 +109,7 @@ mail_transaction_drop_range(struct mail_index_transaction *t,
 static void
 mail_index_transaction_finish_flag_updates(struct mail_index_transaction *t)
 {
-	const struct mail_transaction_flag_update *updates, *u;
+	const struct mail_index_flag_update *updates, *u;
 	const struct mail_index_record *rec;
 	unsigned int i, count;
 	ARRAY_TYPE(seq_range) keeps;
@@ -129,7 +129,7 @@ mail_index_transaction_finish_flag_updates(struct mail_index_transaction *t)
 			if ((rec->flags & u->add_flags) != u->add_flags ||
 			    (rec->flags & u->remove_flags) != 0) {
 				/* keep this change */
-				seq_range_array_add(&keeps, 0, seq);
+				seq_range_array_add(&keeps, seq);
 			}
 		}
 		i = mail_transaction_drop_range(t, updates[i], i, &keeps);
@@ -162,8 +162,10 @@ mail_index_transaction_check_conflicts(struct mail_index_transaction *t)
 		if (mail_index_modseq_lookup(t->view, seq) > t->max_modseq) {
 			ret1 = mail_index_cancel_flag_updates(t, seq);
 			ret2 = mail_index_cancel_keyword_updates(t, seq);
-			if (ret1 || ret2)
-				seq_range_array_add(t->conflict_seqs, 0, seq);
+			if (ret1 || ret2) {
+				seq_range_array_add_with_init(t->conflict_seqs,
+							      16, seq);
+			}
 		}
 	}
 	mail_index_transaction_set_log_updates(t);
@@ -222,7 +224,7 @@ mail_index_convert_to_uid_ranges(struct mail_index_transaction *t,
 {
 	struct seq_range *range, *new_range;
 	unsigned int i, count;
-	uint32_t uid1, uid2;
+	uint32_t uid1, uid2, prev_uid = 0;
 
 	if (!array_is_created(array))
 		return;
@@ -233,10 +235,12 @@ mail_index_convert_to_uid_ranges(struct mail_index_transaction *t,
 
 		uid1 = mail_index_transaction_get_uid(t, range->seq1);
 		uid2 = mail_index_transaction_get_uid(t, range->seq2);
+		i_assert(uid1 > prev_uid);
 		if (uid2 - uid1 == range->seq2 - range->seq1) {
 			/* simple conversion */
 			range->seq1 = uid1;
 			range->seq2 = uid2;
+			prev_uid = uid2;
 		} else {
 			/* remove expunged UIDs */
 			new_range = array_insert_space(array, i);
@@ -247,9 +251,11 @@ mail_index_convert_to_uid_ranges(struct mail_index_transaction *t,
 			new_range->seq1 = uid1;
 			new_range->seq2 = get_nonexpunged_uid2(t, uid1,
 							       range->seq1);
+			i_assert(new_range->seq2 < uid2);
 
 			/* continue the range without the inserted seqs */
 			range->seq1 += new_range->seq2 - new_range->seq1 + 1;
+			prev_uid = new_range->seq2;
 		}
 	}
 }
@@ -313,7 +319,6 @@ mail_index_transaction_convert_to_uids(struct mail_index_transaction *t)
 	expunges_convert_to_uids(t);
 	mail_index_convert_to_uids(t, (void *)&t->modseq_updates);
 	mail_index_convert_to_uid_ranges(t, (void *)&t->updates);
-	mail_index_convert_to_uid_ranges(t, &t->keyword_resets);
 }
 
 void mail_index_transaction_finish(struct mail_index_transaction *t)

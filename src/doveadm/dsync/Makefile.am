@@ -1,9 +1,10 @@
-noinst_LIBRARIES = libdsync.a
+noinst_LTLIBRARIES = libdsync.la
 
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
 	-I$(top_srcdir)/src/lib-test \
 	-I$(top_srcdir)/src/lib-settings \
+	-I$(top_srcdir)/src/lib-ssl-iostream \
 	-I$(top_srcdir)/src/lib-master \
 	-I$(top_srcdir)/src/lib-mail \
 	-I$(top_srcdir)/src/lib-imap \
@@ -11,65 +12,57 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-storage \
 	-I$(top_srcdir)/src/doveadm
 
-libdsync_a_SOURCES = \
+libdsync_la_SOURCES = \
 	doveadm-dsync.c \
 	dsync-brain.c \
-	dsync-brain-msgs.c \
-	dsync-brain-msgs-new.c \
-	dsync-data.c \
-	dsync-proxy.c \
-	dsync-proxy-client.c \
-	dsync-proxy-server.c \
-	dsync-proxy-server-cmd.c \
-	dsync-worker.c \
-	dsync-worker-local.c
+	dsync-brain-mailbox.c \
+	dsync-brain-mailbox-tree.c \
+	dsync-brain-mailbox-tree-sync.c \
+	dsync-brain-mails.c \
+	dsync-deserializer.c \
+	dsync-mail.c \
+	dsync-mailbox.c \
+	dsync-mailbox-import.c \
+	dsync-mailbox-export.c \
+	dsync-mailbox-state.c \
+	dsync-mailbox-tree.c \
+	dsync-mailbox-tree-fill.c \
+	dsync-mailbox-tree-sync.c \
+	dsync-serializer.c \
+	dsync-ibc.c \
+	dsync-ibc-stream.c \
+	dsync-ibc-pipe.c \
+	dsync-transaction-log-scan.c
 
 noinst_HEADERS = \
 	doveadm-dsync.h \
 	dsync-brain.h \
 	dsync-brain-private.h \
-	dsync-data.h \
-	dsync-proxy.h \
-	dsync-proxy-server.h \
-	dsync-worker.h \
-	dsync-worker-private.h \
-	test-dsync-common.h \
-	test-dsync-worker.h
+	dsync-mail.h \
+	dsync-mailbox.h \
+	dsync-mailbox-import.h \
+	dsync-mailbox-export.h \
+	dsync-mailbox-state.h \
+	dsync-mailbox-tree.h \
+	dsync-mailbox-tree-private.h \
+	dsync-serializer.h \
+	dsync-deserializer.h \
+	dsync-ibc.h \
+	dsync-ibc-private.h \
+	dsync-transaction-log-scan.h
 
 test_programs = \
-	test-dsync-brain \
-	test-dsync-brain-msgs \
-	test-dsync-proxy \
-	test-dsync-proxy-server-cmd
+	test-dsync-mailbox-tree-sync
 
 noinst_PROGRAMS = $(test_programs)
 
 test_libs = \
 	../../lib-test/libtest.la \
-	../../lib-mail/libmail.la \
-	../../lib-imap/libimap.la \
-	../../lib-charset/libcharset.la \
 	../../lib/liblib.la
 
-test_ldadd = \
-	$(test_libs) \
-	$(LIBICONV)
-
-test_dsync_brain_SOURCES = test-dsync-brain.c test-dsync-worker.c test-dsync-common.c
-test_dsync_brain_LDADD = dsync-data.o dsync-brain.o dsync-worker.o $(test_ldadd)
-test_dsync_brain_DEPENDENCIES = dsync-data.o dsync-brain.o dsync-worker.o $(test_libs)
-
-test_dsync_brain_msgs_SOURCES = test-dsync-brain-msgs.c test-dsync-worker.c test-dsync-common.c
-test_dsync_brain_msgs_LDADD = dsync-data.o dsync-brain-msgs.o dsync-worker.o $(test_ldadd)
-test_dsync_brain_msgs_DEPENDENCIES = dsync-data.o dsync-brain-msgs.o dsync-worker.o $(test_libs)
-
-test_dsync_proxy_SOURCES = test-dsync-proxy.c test-dsync-common.c
-test_dsync_proxy_LDADD = dsync-proxy.o dsync-data.o $(test_ldadd)
-test_dsync_proxy_DEPENDENCIES = dsync-proxy.o dsync-data.o $(test_libs)
-
-test_dsync_proxy_server_cmd_SOURCES = test-dsync-proxy-server-cmd.c test-dsync-worker.c test-dsync-common.c
-test_dsync_proxy_server_cmd_LDADD = dsync-worker.o dsync-proxy.o dsync-proxy-server-cmd.o dsync-data.o $(test_ldadd)
-test_dsync_proxy_server_cmd_DEPENDENCIES = dsync-worker.o dsync-proxy.o dsync-proxy-server-cmd.o dsync-data.o $(test_libs)
+test_dsync_mailbox_tree_sync_SOURCES = test-dsync-mailbox-tree-sync.c
+test_dsync_mailbox_tree_sync_LDADD = dsync-mailbox-tree-sync.lo dsync-mailbox-tree.lo $(test_libs)
+test_dsync_mailbox_tree_sync_DEPENDENCIES = $(noinst_LTLIBRARIES) $(test_libs)
 
 check: check-am check-test
 check-test: all-am

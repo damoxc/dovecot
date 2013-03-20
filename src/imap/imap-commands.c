@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "array.h"
@@ -38,7 +38,6 @@ static const struct command imap4rev1_commands[] = {
 	{ "FETCH",		cmd_fetch,       COMMAND_FLAG_USES_SEQS },
 	{ "SEARCH",		cmd_search,      COMMAND_FLAG_USES_SEQS },
 	{ "STORE",		cmd_store,       COMMAND_FLAG_USES_SEQS },
-	{ "UID",		cmd_uid,         0 },
 	{ "UID COPY",		cmd_copy,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID FETCH",		cmd_fetch,       COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID SEARCH",		cmd_search,      COMMAND_FLAG_BREAKS_SEQS },
@@ -47,26 +46,35 @@ static const struct command imap4rev1_commands[] = {
 #define IMAP4REV1_COMMANDS_COUNT N_ELEMENTS(imap4rev1_commands)
 
 static const struct command imap_ext_commands[] = {
+	/* IMAP extensions: */
 	{ "CANCELUPDATE",	cmd_cancelupdate,0 },
 	{ "ENABLE",		cmd_enable,      0 },
 	{ "ID",			cmd_id,          0 },
 	{ "IDLE",		cmd_idle,        COMMAND_FLAG_BREAKS_SEQS |
 						 COMMAND_FLAG_REQUIRES_SYNC },
 	{ "NAMESPACE",		cmd_namespace,   0 },
+	{ "NOTIFY",		cmd_notify,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "SORT",		cmd_sort,        COMMAND_FLAG_USES_SEQS },
 	{ "THREAD",		cmd_thread,      COMMAND_FLAG_USES_SEQS },
 	{ "UID EXPUNGE",	cmd_uid_expunge, COMMAND_FLAG_BREAKS_SEQS },
+	{ "MOVE",		cmd_move,        COMMAND_FLAG_USES_SEQS |
+						 COMMAND_FLAG_BREAKS_SEQS },
+	{ "UID MOVE",		cmd_move,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID SORT",		cmd_sort,        COMMAND_FLAG_BREAKS_SEQS },
 	{ "UID THREAD",		cmd_thread,      COMMAND_FLAG_BREAKS_SEQS },
 	{ "UNSELECT",		cmd_unselect,    COMMAND_FLAG_BREAKS_MAILBOX },
 	{ "X-CANCEL",		cmd_x_cancel,    0 },
-	{ "XLIST",		cmd_list,        0 }
+	{ "XLIST",		cmd_list,        0 },
+	/* IMAP URLAUTH (RFC4467): */
+	{ "GENURLAUTH",		cmd_genurlauth,  0 },
+	{ "RESETKEY",		cmd_resetkey,    0 },
+	{ "URLFETCH",		cmd_urlfetch,    0 }
 };
 #define IMAP_EXT_COMMANDS_COUNT N_ELEMENTS(imap_ext_commands)
 
 ARRAY_TYPE(command) imap_commands;
 static bool commands_unsorted;
-static ARRAY_DEFINE(command_hooks, struct command_hook);
+static ARRAY(struct command_hook) command_hooks;
 
 void command_register(const char *name, command_func_t *func,
 		      enum command_flags flags)

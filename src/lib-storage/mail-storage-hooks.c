@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -12,6 +12,7 @@
 struct mail_storage_module_hooks {
 	struct module *module;
 	const struct mail_storage_hooks *hooks;
+	bool forced;
 };
 
 struct hook_stack {
@@ -36,14 +37,13 @@ struct hook_build_context {
 	struct hook_stack *head, *tail;
 };
 
-static ARRAY_DEFINE(module_hooks,
-		    struct mail_storage_module_hooks) = ARRAY_INIT;
-static ARRAY_DEFINE(internal_hooks,
-		    const struct mail_storage_hooks *) = ARRAY_INIT;
+static ARRAY(struct mail_storage_module_hooks) module_hooks = ARRAY_INIT;
+static ARRAY(const struct mail_storage_hooks *) internal_hooks = ARRAY_INIT;
 
 void mail_storage_hooks_init(void)
 {
-	i_array_init(&module_hooks, 32);
+	if (!array_is_created(&module_hooks))
+		i_array_init(&module_hooks, 32);
 	i_array_init(&internal_hooks, 8);
 }
 
@@ -62,13 +62,27 @@ void mail_storage_hooks_add(struct module *module,
 	new_hook.module = module;
 	new_hook.hooks = hooks;
 
+	/* allow adding hooks before mail_storage_hooks_init() */
+	if (!array_is_created(&module_hooks))
+		i_array_init(&module_hooks, 32);
 	array_append(&module_hooks, &new_hook, 1);
+}
+
+void mail_storage_hooks_add_forced(struct module *module,
+				   const struct mail_storage_hooks *hooks)
+{
+	struct mail_storage_module_hooks *hook;
+
+	mail_storage_hooks_add(module, hooks);
+	hook = array_idx_modifiable(&module_hooks,
+				    array_count(&module_hooks)-1);
+	hook->forced = TRUE;
 }
 
 void mail_storage_hooks_remove(const struct mail_storage_hooks *hooks)
 {
 	const struct mail_storage_module_hooks *module_hook;
-	unsigned int idx = -1U;
+	unsigned int idx = UINT_MAX;
 
 	array_foreach(&module_hooks, module_hook) {
 		if (module_hook->hooks == hooks) {
@@ -76,7 +90,7 @@ void mail_storage_hooks_remove(const struct mail_storage_hooks *hooks)
 			break;
 		}
 	}
-	i_assert(idx != -1U);
+	i_assert(idx != UINT_MAX);
 
 	array_delete(&module_hooks, idx, 1);
 }
@@ -89,7 +103,7 @@ void mail_storage_hooks_add_internal(const struct mail_storage_hooks *hooks)
 void mail_storage_hooks_remove_internal(const struct mail_storage_hooks *hooks)
 {
 	const struct mail_storage_hooks *const *old_hooks;
-	unsigned int idx = -1U;
+	unsigned int idx = UINT_MAX;
 
 	array_foreach(&internal_hooks, old_hooks) {
 		if (*old_hooks == hooks) {
@@ -97,7 +111,7 @@ void mail_storage_hooks_remove_internal(const struct mail_storage_hooks *hooks)
 			break;
 		}
 	}
-	i_assert(idx != -1U);
+	i_assert(idx != UINT_MAX);
 
 	array_delete(&internal_hooks, idx, 1);
 }
@@ -119,7 +133,7 @@ mail_storage_module_hooks_cmp(const struct mail_storage_module_hooks *h1,
 static void mail_user_add_plugin_hooks(struct mail_user *user)
 {
 	const struct mail_storage_module_hooks *module_hook;
-	ARRAY_DEFINE(tmp_hooks, struct mail_storage_module_hooks);
+	ARRAY(struct mail_storage_module_hooks) tmp_hooks;
 	const char *const *plugins, *name;
 
 	/* first get all hooks wanted by the user */
@@ -127,7 +141,7 @@ static void mail_user_add_plugin_hooks(struct mail_user *user)
 	plugins = t_strsplit_spaces(user->set->mail_plugins, ", ");
 	array_foreach(&module_hooks, module_hook) {
 		name = module_get_plugin_name(module_hook->module);
-		if (str_array_find(plugins, name))
+		if (str_array_find(plugins, name) || module_hook->forced)
 			array_append(&tmp_hooks, module_hook, 1);
 	}
 

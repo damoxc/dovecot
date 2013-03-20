@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -83,6 +83,8 @@ static int client_input_line(struct client *client, const char *line)
 		return cmd_rset(client, args);
 	if (strcmp(cmd, "NOOP") == 0)
 		return cmd_noop(client, args);
+	if (strcmp(cmd, "XCLIENT") == 0)
+		return cmd_xclient(client, args);
 
 	client_send_line(client, "502 5.5.2 Unknown command");
 	return 0;
@@ -188,7 +190,7 @@ static void client_generate_session_id(struct client *client)
 	client->state.session_id = p_strdup(client->state_pool, str_c(id));
 }
 
-static const char *client_remote_id(struct client *client)
+const char *client_remote_id(struct client *client)
 {
 	const char *addr;
 
@@ -231,6 +233,7 @@ struct client *client_create(int fd_in, int fd_out,
 
 	client->input = i_stream_create_fd(fd_in, CLIENT_MAX_INPUT_SIZE, FALSE);
 	client->output = o_stream_create_fd(fd_out, (size_t)-1, FALSE);
+	o_stream_set_no_error_handling(client->output, TRUE);
 
 	client_io_reset(client);
 	client->state_pool = pool_alloconly_create("client state", 4096);
@@ -240,6 +243,7 @@ struct client *client_create(int fd_in, int fd_out,
 	client_generate_session_id(client);
 	client->my_domain = client->set->hostname;
 	client->lhlo = i_strdup("missing");
+	client->proxy_ttl = LMTP_PROXY_DEFAULT_TTL;
 
 	DLLIST_PREPEND(&clients, client);
 	clients_count++;
@@ -358,9 +362,32 @@ void client_send_line(struct client *client, const char *fmt, ...)
 		str = t_str_new(256);
 		str_vprintfa(str, fmt, args);
 		str_append(str, "\r\n");
-		o_stream_send(client->output, str_data(str), str_len(str));
+		o_stream_nsend(client->output, str_data(str), str_len(str));
 	} T_END;
 	va_end(args);
+}
+
+bool client_is_trusted(struct client *client)
+{
+	const char *const *net;
+	struct ip_addr net_ip;
+	unsigned int bits;
+
+	if (client->lmtp_set->login_trusted_networks == NULL)
+		return FALSE;
+
+	net = t_strsplit_spaces(client->lmtp_set->login_trusted_networks, ", ");
+	for (; *net != NULL; net++) {
+		if (net_parse_range(*net, &net_ip, &bits) < 0) {
+			i_error("login_trusted_networks: "
+				"Invalid network '%s'", *net);
+			break;
+		}
+
+		if (net_is_in_network(&client->remote_ip, &net_ip, bits))
+			return TRUE;
+	}
+	return FALSE;
 }
 
 void clients_destroy(void)

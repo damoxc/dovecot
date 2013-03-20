@@ -1,11 +1,11 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "mail-cache.h"
 #include "mail-search-build.h"
-#include "index-storage.h"
 #include "mail-index-modseq.h"
+#include "index-storage.h"
 
 static void
 get_last_cached_seq(struct mailbox *box, uint32_t *last_cached_seq_r)
@@ -33,16 +33,81 @@ int index_storage_get_status(struct mailbox *box,
 			     enum mailbox_status_items items,
 			     struct mailbox_status *status_r)
 {
-	const struct mail_index_header *hdr;
-
-	memset(status_r, 0, sizeof(struct mailbox_status));
-
 	if (!box->opened) {
 		if (mailbox_open(box) < 0)
 			return -1;
-		if (mailbox_sync(box, 0) < 0)
+	}
+	if (!box->synced) {
+		if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FAST) < 0)
 			return -1;
 	}
+	index_storage_get_open_status(box, items, status_r);
+	return 0;
+}
+
+static unsigned int index_storage_count_pvt_unseen(struct mailbox *box)
+{
+	const struct mail_index_record *pvt_rec;
+	uint32_t shared_seq, pvt_seq, shared_count, pvt_count;
+	uint32_t shared_uid;
+	unsigned int unseen_count = 0;
+
+	/* we can't trust private index to be up to date. we'll need to go
+	   through the shared index and for each existing mail lookup its
+	   private flags. if a mail doesn't exist in private index then its
+	   flags are 0. */
+	shared_count = mail_index_view_get_messages_count(box->view);
+	pvt_count = mail_index_view_get_messages_count(box->view_pvt);
+	shared_seq = pvt_seq = 1;
+	while (shared_seq <= shared_count && pvt_seq <= pvt_count) {
+		mail_index_lookup_uid(box->view, shared_seq, &shared_uid);
+		pvt_rec = mail_index_lookup(box->view_pvt, pvt_seq);
+
+		if (shared_uid == pvt_rec->uid) {
+			if ((pvt_rec->flags & MAIL_SEEN) == 0)
+				unseen_count++;
+			shared_seq++; pvt_seq++;
+		} else if (shared_uid < pvt_rec->uid) {
+			shared_seq++;
+		} else {
+			pvt_seq++;
+		}
+	}
+	unseen_count += (shared_count+1) - shared_seq;
+	return unseen_count;
+}
+
+static uint32_t index_storage_find_first_pvt_unseen_seq(struct mailbox *box)
+{
+	const struct mail_index_header *pvt_hdr;
+	const struct mail_index_record *pvt_rec;
+	uint32_t pvt_seq, pvt_count, shared_seq, seq2;
+
+	pvt_count = mail_index_view_get_messages_count(box->view_pvt);
+	mail_index_lookup_first(box->view_pvt, 0, MAIL_SEEN, &pvt_seq);
+	if (pvt_seq == 0)
+		pvt_seq = pvt_count+1;
+	for (; pvt_seq <= pvt_count; pvt_seq++) {
+		pvt_rec = mail_index_lookup(box->view_pvt, pvt_seq);
+		if ((pvt_rec->flags & MAIL_SEEN) == 0 &&
+		    mail_index_lookup_seq(box->view, pvt_rec->uid, &shared_seq))
+			return shared_seq;
+	}
+	/* if shared index has any messages that don't exist in private index,
+	   the first of them is the first unseen message */
+	pvt_hdr = mail_index_get_header(box->view_pvt);
+	if (mail_index_lookup_seq_range(box->view,
+					pvt_hdr->next_uid, (uint32_t)-1,
+					&shared_seq, &seq2))
+		return shared_seq;
+	return 0;
+}
+
+void index_storage_get_open_status(struct mailbox *box,
+				   enum mailbox_status_items items,
+				   struct mailbox_status *status_r)
+{
+	const struct mail_index_header *hdr;
 
 	/* we can get most of the status items without any trouble */
 	hdr = mail_index_get_header(box->view);
@@ -61,14 +126,22 @@ int index_storage_get_status(struct mailbox *box,
 		status_r->recent = index_mailbox_get_recent_count(box);
 		i_assert(status_r->recent <= status_r->messages);
 	}
-	status_r->unseen = hdr->messages_count - hdr->seen_messages_count;
+	if ((items & STATUS_UNSEEN) != 0) {
+		if (box->view_pvt == NULL ||
+		    (mailbox_get_private_flags_mask(box) & MAIL_SEEN) == 0) {
+			status_r->unseen = hdr->messages_count -
+				hdr->seen_messages_count;
+		} else {
+			status_r->unseen = index_storage_count_pvt_unseen(box);
+		}
+	}
 	status_r->uidvalidity = hdr->uid_validity;
 	status_r->uidnext = hdr->next_uid;
 	status_r->first_recent_uid = hdr->first_recent_uid;
-	status_r->nonpermanent_modseqs =
-		mail_index_is_in_memory(box->index) ||
-		!mail_index_have_modseq_tracking(box->index);
 	if ((items & STATUS_HIGHESTMODSEQ) != 0) {
+		status_r->nonpermanent_modseqs =
+			mail_index_is_in_memory(box->index) ||
+			!mail_index_have_modseq_tracking(box->index);
 		status_r->highest_modseq =
 			mail_index_modseq_get_highest(box->view);
 		if (status_r->highest_modseq == 0) {
@@ -76,10 +149,24 @@ int index_storage_get_status(struct mailbox *box,
 			status_r->highest_modseq = 1;
 		}
 	}
+	if ((items & STATUS_HIGHESTPVTMODSEQ) != 0 && box->view_pvt != NULL) {
+		status_r->highest_pvt_modseq =
+			mail_index_modseq_get_highest(box->view_pvt);
+		if (status_r->highest_pvt_modseq == 0) {
+			/* modseqs not enabled yet, but we can't return 0 */
+			status_r->highest_pvt_modseq = 1;
+		}
+	}
 
 	if ((items & STATUS_FIRST_UNSEEN_SEQ) != 0) {
-		mail_index_lookup_first(box->view, 0, MAIL_SEEN,
-					&status_r->first_unseen_seq);
+		if (box->view_pvt == NULL ||
+		    (mailbox_get_private_flags_mask(box) & MAIL_SEEN) == 0) {
+			mail_index_lookup_first(box->view, 0, MAIL_SEEN,
+						&status_r->first_unseen_seq);
+		} else {
+			status_r->first_unseen_seq =
+				index_storage_find_first_pvt_unseen_seq(box);
+		}
 	}
 	if ((items & STATUS_LAST_CACHED_SEQ) != 0)
 		get_last_cached_seq(box, &status_r->last_cached_seq);
@@ -94,7 +181,6 @@ int index_storage_get_status(struct mailbox *box,
 				!box->disallow_new_keywords;
 		}
 	}
-	return 0;
 }
 
 static void
@@ -109,7 +195,7 @@ get_metadata_cache_fields(struct mailbox *box,
 
 	if (box->metadata_pool == NULL) {
 		box->metadata_pool =
-			pool_alloconly_create("mailbox metadata", 2048);
+			pool_alloconly_create("mailbox metadata", 1024*3);
 	}
 
 	fields = mail_cache_register_get_list(box->cache,
@@ -288,6 +374,10 @@ int index_mailbox_get_metadata(struct mailbox *box,
 		if (mailbox_open(box) < 0)
 			return -1;
 	}
+	if (!box->synced && (items & MAILBOX_METADATA_SYNC_ITEMS) != 0) {
+		if (mailbox_sync(box, MAILBOX_SYNC_FLAG_FAST) < 0)
+			return -1;
+	}
 
 	if ((items & MAILBOX_METADATA_VIRTUAL_SIZE) != 0) {
 		if (get_metadata_virtual_size(box, metadata_r) < 0)
@@ -297,5 +387,10 @@ int index_mailbox_get_metadata(struct mailbox *box,
 		get_metadata_cache_fields(box, metadata_r);
 	if ((items & MAILBOX_METADATA_PRECACHE_FIELDS) != 0)
 		get_metadata_precache_fields(box, metadata_r);
+	if ((items & MAILBOX_METADATA_BACKEND_NAMESPACE) != 0) {
+		metadata_r->backend_ns_prefix = "";
+		metadata_r->backend_ns_type =
+			mailbox_list_get_namespace(box->list)->type;
+	}
 	return 0;
 }

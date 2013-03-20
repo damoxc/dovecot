@@ -1,6 +1,7 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
+#include "net.h"
 #include "ioloop.h"
 #include "istream.h"
 #include "ostream.h"
@@ -115,7 +116,7 @@ static void idle_client_input(struct cmd_idle_context *ctx)
 
 static void keepalive_timeout(struct cmd_idle_context *ctx)
 {
-	if (ctx->client->output_lock != NULL) {
+	if (ctx->client->output_cmd_lock != NULL) {
 		/* it's busy sending output */
 		return;
 	}
@@ -143,7 +144,7 @@ static void idle_sync_now(struct mailbox *box, struct cmd_idle_context *ctx)
 
 	ctx->sync_pending = FALSE;
 	ctx->sync_ctx = imap_sync_init(ctx->client, box, 0, 0);
-	cmd_idle_continue(ctx->cmd);
+	(void)cmd_idle_continue(ctx->cmd);
 }
 
 static void idle_callback(struct mailbox *box, struct cmd_idle_context *ctx)
@@ -160,15 +161,62 @@ static void idle_callback(struct mailbox *box, struct cmd_idle_context *ctx)
 	}
 }
 
+static bool remote_ip_is_usable(const struct ip_addr *ip)
+{
+	unsigned int addr;
+
+	if (ip->family == 0)
+		return FALSE;
+	if (ip->family == AF_INET) {
+		addr = ip->u.ip4.s_addr;
+		if (addr >= 167772160 && addr <= 184549375)
+			return FALSE; /* 10/8 */
+		if (addr >= 3232235520 && addr <= 3232301055)
+			return FALSE; /* 192.168/16 */
+		if (addr >= 2886729728 && addr <= 2887778303)
+			return FALSE; /* 172.16/12 */
+		if (addr >= 2130706432 && addr <= 2147483647)
+			return FALSE; /* 127/8 */
+	}
+#ifdef HAVE_IPV6
+	else if (ip->family == AF_INET6) {
+		addr = ip->u.ip6.s6_addr[0];
+		if (addr == 0xfc || addr == 0xfd)
+			return FALSE; /* fc00::/7 */
+	}
+#endif
+	return TRUE;
+}
+
 static void idle_add_keepalive_timeout(struct cmd_idle_context *ctx)
 {
 	unsigned int interval = ctx->client->set->imap_idle_notify_interval;
+	unsigned int client_hash;
 
 	if (interval == 0)
 		return;
 
-	interval -= (time(NULL) +
-		     crc32_str(ctx->client->user->username)) % interval;
+	/* set the interval so that the client gets the keepalive notifications
+	   at exactly the same time for all the connections. this helps to
+	   reduce battery usage in mobile devices. but we don't really want to
+	   send this notification for everyone at the same time, because it
+	   would cause huge peaks of activity.
+
+	   basing the notifications on the username works well for one account,
+	   but basing it on the IP address allows the client to get all of the
+	   notifications at the same time for multiple accounts as well (of
+	   course assuming Dovecot is running on all the servers :)
+
+	   one potential downside to using IP is that if a proxy hides the
+	   client's IP address notifications are sent to everyone at the same
+	   time, but this can be avoided by using a properly configured Dovecot
+	   proxy. we'll also try to avoid this by not doing it for the commonly
+	   used intranet IP ranges. */
+	client_hash = ctx->client->user->remote_ip != NULL &&
+		remote_ip_is_usable(ctx->client->user->remote_ip) ?
+		net_ip_hash(ctx->client->user->remote_ip) :
+		crc32_str(ctx->client->user->username);
+	interval -= (time(NULL) + client_hash) % interval;
 
 	if (ctx->keepalive_to != NULL)
 		timeout_remove(&ctx->keepalive_to);
@@ -253,14 +301,8 @@ bool cmd_idle(struct client_command_context *cmd)
 	ctx->client = client;
 	idle_add_keepalive_timeout(ctx);
 
-	if (client->mailbox != NULL) {
-		const struct mail_storage_settings *set;
-
-		set = mailbox_get_settings(client->mailbox);
-		mailbox_notify_changes(client->mailbox,
-				       set->mailbox_idle_check_interval,
-				       idle_callback, ctx);
-	}
+	if (client->mailbox != NULL)
+		mailbox_notify_changes(client->mailbox, idle_callback, ctx);
 	client_send_line(client, "+ idling");
 
 	io_remove(&client->io);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -39,7 +39,7 @@ int mbox_file_open(struct mbox_mailbox *mbox)
 
 	if (fstat(fd, &st) < 0) {
 		mbox_set_syscall_error(mbox, "fstat()");
-		(void)close(fd);
+		i_close_fd(&fd);
 		return -1;
 	}
 
@@ -77,7 +77,7 @@ int mbox_file_open_stream(struct mbox_mailbox *mbox)
 
 		if (mbox->mbox_writeonly) {
 			mbox->mbox_file_stream =
-				i_stream_create_from_data(NULL, 0);
+				i_stream_create_from_data("", 0);
 		} else {
 			mbox->mbox_file_stream =
 				i_stream_create_fd(mbox->mbox_fd,

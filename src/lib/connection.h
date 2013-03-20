@@ -1,7 +1,7 @@
 #ifndef CONNECTION_H
 #define CONNECTION_H
 
-#include "network.h"
+#include "net.h"
 
 struct connection;
 
@@ -27,7 +27,13 @@ enum connection_disconnect_reason {
 
 struct connection_vfuncs {
 	void (*destroy)(struct connection *conn);
-	void (*connected)(struct connection *conn);
+	/* For UNIX socket clients this gets called immediately with
+	   success=TRUE, for IP connections it gets called later:
+
+	   If connect() fails, sets success=FALSE and errno. Streams aren't
+	   initialized in that situation either. destroy() is called after
+	   the callback. */
+	void (*client_connected)(struct connection *conn, bool success);
 
 	/* implement one of the input*() methods.
 	   They return 0 = ok, -1 = error, disconnect the client */
@@ -49,6 +55,7 @@ struct connection_settings {
 	enum connection_behavior input_full_behavior;
 
 	bool client;
+	bool dont_send_version;
 };
 
 struct connection {
@@ -78,6 +85,7 @@ struct connection {
 
 struct connection_list {
 	struct connection *connections;
+	unsigned int connections_count;
 
 	struct connection_settings set;
 	struct connection_vfuncs v;

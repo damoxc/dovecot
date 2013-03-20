@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -84,7 +84,7 @@ static void cmd_dump_fts_expunge_log(int argc ATTR_UNUSED, char *argv[])
 		} T_END;
 	} while (ret > 0);
 	buffer_free(&buf);
-	(void)close(fd);
+	i_close_fd(&fd);
 }
 
 static bool test_dump_fts_expunge_log(const char *path)

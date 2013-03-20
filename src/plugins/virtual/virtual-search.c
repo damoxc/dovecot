@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -26,7 +26,7 @@ struct virtual_search_context {
 
 	ARRAY_TYPE(seq_range) result;
 	struct seq_range_iter result_iter;
-	ARRAY_DEFINE(records, struct virtual_search_record);
+	ARRAY(struct virtual_search_record) records;
 
 	enum virtual_search_state search_state;
 	unsigned int next_result_n;
@@ -70,7 +70,6 @@ static void virtual_search_get_records(struct mail_search_context *ctx,
 	const struct virtual_mail_index_record *vrec;
 	struct virtual_search_record srec;
 	const void *data;
-	bool expunged;
 	int result;
 
 	memset(&srec, 0, sizeof(srec));
@@ -79,12 +78,12 @@ static void virtual_search_get_records(struct mail_search_context *ctx,
 		i_assert(result != 0);
 		if (result > 0) {
 			/* full match, no need to check this any further */
-			seq_range_array_add(&vctx->result, 0, ctx->seq);
+			seq_range_array_add(&vctx->result, ctx->seq);
 		} else {
 			/* possible match, save and check later */
 			mail_index_lookup_ext(mbox->box.view, ctx->seq,
 					      mbox->virtual_ext_id,
-					      &data, &expunged);
+					      &data, NULL);
 			vrec = data;
 
 			srec.mailbox_id = vrec->mailbox_id;
@@ -153,7 +152,7 @@ bool virtual_search_next_nonblock(struct mail_search_context *ctx,
 		/* the messages won't be returned sorted, so we'll have to
 		   do it ourself */
 		while (index_storage_search_next_nonblock(ctx, mail_r, tryagain_r))
-			seq_range_array_add(&vctx->result, 0, (*mail_r)->seq);
+			seq_range_array_add(&vctx->result, (*mail_r)->seq);
 		if (*tryagain_r)
 			return FALSE;
 

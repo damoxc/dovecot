@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "array.h"
@@ -8,7 +8,7 @@
 #include "userdb-template.h"
 
 struct userdb_template {
-	ARRAY_DEFINE(args, const char *);
+	ARRAY(const char *) args;
 };
 
 struct userdb_template *

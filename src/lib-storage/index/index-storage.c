@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -6,6 +6,7 @@
 #include "ioloop.h"
 #include "str.h"
 #include "mkdir-parents.h"
+#include "dict.h"
 #include "mail-index-alloc-cache.h"
 #include "mail-index-private.h"
 #include "mail-index-modseq.h"
@@ -134,21 +135,21 @@ void index_storage_lock_notify_reset(struct mailbox *box)
 	ibox->last_notify_type = MAILBOX_LOCK_NOTIFY_NONE;
 }
 
-static struct mail_index *
-index_mailbox_alloc_index(struct mailbox *box)
+static int
+index_mailbox_alloc_index(struct mailbox *box, struct mail_index **index_r)
 {
 	const char *index_dir, *mailbox_path;
 
-	mailbox_path = mailbox_list_get_path(box->list, box->name,
-					     MAILBOX_LIST_PATH_TYPE_MAILBOX);
-	index_dir = (box->flags & MAILBOX_FLAG_NO_INDEX_FILES) != 0 ? "" :
-		mailbox_list_get_path(box->list, box->name,
-				      MAILBOX_LIST_PATH_TYPE_INDEX);
-	if (*index_dir == '\0')
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_MAILBOX,
+				&mailbox_path) < 0)
+		return -1;
+	if ((box->flags & MAILBOX_FLAG_NO_INDEX_FILES) != 0 ||
+	    mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_INDEX,
+				&index_dir) <= 0)
 		index_dir = NULL;
-
-	return mail_index_alloc_cache_get(mailbox_path, index_dir,
-					  box->index_prefix);
+	*index_r = mail_index_alloc_cache_get(mailbox_path, index_dir,
+					      box->index_prefix);
+	return 0;
 }
 
 int index_storage_mailbox_exists(struct mailbox *box,
@@ -162,11 +163,24 @@ int index_storage_mailbox_exists_full(struct mailbox *box, const char *subdir,
 				      enum mailbox_existence *existence_r)
 {
 	struct stat st;
+	enum mail_error error;
 	const char *path, *path2;
+	int ret;
 
 	/* see if it's selectable */
-	path = mailbox_list_get_path(box->list, box->name,
-				     MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	ret = mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_MAILBOX, &path);
+	if (ret < 0) {
+		mailbox_list_get_last_error(box->list, &error);
+		if (error != MAIL_ERROR_NOTFOUND)
+			return -1;
+		*existence_r = MAILBOX_EXISTENCE_NONE;
+		return 0;
+	}
+	if (ret == 0) {
+		/* no mailboxes in this storage? */
+		*existence_r = MAILBOX_EXISTENCE_NONE;
+		return 0;
+	}
 	if (subdir != NULL)
 		path = t_strconcat(path, "/", subdir, NULL);
 	if (stat(path, &st) == 0) {
@@ -180,10 +194,8 @@ int index_storage_mailbox_exists_full(struct mailbox *box, const char *subdir,
 	}
 
 	/* see if it's non-selectable */
-	path2 = mailbox_list_get_path(box->list, box->name,
-				      MAILBOX_LIST_PATH_TYPE_DIR);
-	if (strcmp(path, path2) != 0 &&
-	    stat(path2, &st) == 0) {
+	if (mailbox_get_path_to(box, MAILBOX_LIST_PATH_TYPE_DIR, &path2) <= 0 ||
+	    (strcmp(path, path2) != 0 && stat(path2, &st) == 0)) {
 		*existence_r = MAILBOX_EXISTENCE_NOSELECT;
 		return 0;
 	}
@@ -196,17 +208,16 @@ int index_storage_mailbox_alloc_index(struct mailbox *box)
 	if (box->index != NULL)
 		return 0;
 
-	if (mailbox_list_create_missing_index_dir(box->list, box->name) < 0) {
-		mail_storage_set_internal_error(box->storage);
+	if (mailbox_create_missing_dir(box, MAILBOX_LIST_PATH_TYPE_INDEX) < 0)
 		return -1;
-	}
 
-	box->index = index_mailbox_alloc_index(box);
+	if (index_mailbox_alloc_index(box, &box->index) < 0)
+		return -1;
 	mail_index_set_fsync_mode(box->index,
 				  box->storage->set->parsed_fsync_mode, 0);
 	mail_index_set_lock_method(box->index,
 		box->storage->set->parsed_lock_method,
-		mail_storage_get_lock_timeout(box->storage, -1U));
+		mail_storage_get_lock_timeout(box->storage, UINT_MAX));
 	return 0;
 }
 
@@ -232,7 +243,7 @@ int index_storage_mailbox_open(struct mailbox *box, bool move_to_memory)
 	if (ret <= 0 || move_to_memory) {
 		if ((index_flags & MAIL_INDEX_OPEN_FLAG_NEVER_IN_MEMORY) != 0) {
 			i_assert(ret <= 0);
-			mail_storage_set_index_error(box);
+			mailbox_set_index_error(box);
 			return -1;
 		}
 
@@ -334,6 +345,10 @@ void index_storage_mailbox_close(struct mailbox *box)
 	if (box->input != NULL)
 		i_stream_unref(&box->input);
 
+	if (box->view_pvt != NULL)
+		mail_index_view_close(&box->view_pvt);
+	if (box->index_pvt != NULL)
+		mail_index_close(box->index_pvt);
 	mail_index_view_close(&box->view);
 	mail_index_close(box->index);
 	box->cache = NULL;
@@ -351,15 +366,18 @@ void index_storage_mailbox_close(struct mailbox *box)
 
 void index_storage_mailbox_free(struct mailbox *box)
 {
+	if (box->index_pvt != NULL)
+		mail_index_alloc_cache_unref(&box->index_pvt);
 	if (box->index != NULL)
 		mail_index_alloc_cache_unref(&box->index);
 }
 
-void index_storage_mailbox_update_cache(struct mailbox *box,
-					const struct mailbox_update *update)
+static void
+index_storage_mailbox_update_cache(struct mailbox *box,
+				   const struct mailbox_update *update)
 {
 	const struct mailbox_cache_field *updates = update->cache_updates;
-	ARRAY_DEFINE(new_fields, struct mail_cache_field);
+	ARRAY(struct mail_cache_field) new_fields;
 	const struct mail_cache_field *old_fields;
 	struct mail_cache_field field;
 	unsigned int i, j, old_count;
@@ -400,6 +418,49 @@ void index_storage_mailbox_update_cache(struct mailbox *box,
 	}
 }
 
+static int
+index_storage_mailbox_update_pvt(struct mailbox *box,
+				 const struct mailbox_update *update)
+{
+	struct mail_index_transaction *trans;
+	struct mail_index_view *view;
+	int ret;
+
+	if ((ret = mailbox_open_index_pvt(box)) <= 0)
+		return ret;
+
+	mail_index_refresh(box->index_pvt);
+	view = mail_index_view_open(box->index_pvt);
+	trans = mail_index_transaction_begin(view,
+					MAIL_INDEX_TRANSACTION_FLAG_EXTERNAL);
+	if (update->min_highest_modseq != 0 &&
+	    mail_index_modseq_get_highest(view) < update->min_highest_pvt_modseq) {
+		mail_index_modseq_enable(box->index_pvt);
+		mail_index_update_highest_modseq(trans,
+						 update->min_highest_pvt_modseq);
+	}
+
+	if ((ret = mail_index_transaction_commit(&trans)) < 0)
+		mailbox_set_index_error(box);
+	mail_index_view_close(&view);
+	return ret;
+}
+
+int index_storage_mailbox_update_common(struct mailbox *box,
+					const struct mailbox_update *update)
+{
+	int ret = 0;
+
+	if (update->cache_updates != NULL)
+		index_storage_mailbox_update_cache(box, update);
+
+	if (update->min_highest_pvt_modseq != 0) {
+		if (index_storage_mailbox_update_pvt(box, update) < 0)
+			ret = -1;
+	}
+	return ret;
+}
+
 int index_storage_mailbox_update(struct mailbox *box,
 				 const struct mailbox_update *update)
 {
@@ -410,11 +471,9 @@ int index_storage_mailbox_update(struct mailbox *box,
 
 	if (mailbox_open(box) < 0)
 		return -1;
-	if (update->cache_updates != NULL)
-		index_storage_mailbox_update_cache(box, update);
 
 	/* make sure we get the latest index info */
-	(void)mail_index_refresh(box->index);
+	mail_index_refresh(box->index);
 	view = mail_index_view_open(box->index);
 	hdr = mail_index_get_header(view);
 
@@ -456,9 +515,68 @@ int index_storage_mailbox_update(struct mailbox *box,
 	}
 
 	if ((ret = mail_index_transaction_commit(&trans)) < 0)
-		mail_storage_set_index_error(box);
+		mailbox_set_index_error(box);
 	mail_index_view_close(&view);
-	return ret;
+	return ret < 0 ? -1 :
+		index_storage_mailbox_update_common(box, update);
+}
+
+int index_storage_mailbox_create(struct mailbox *box, bool directory)
+{
+	const char *path, *p;
+	enum mailbox_list_path_type type;
+	enum mailbox_existence existence;
+	bool create_parent_dir;
+	int ret;
+
+	type = directory ? MAILBOX_LIST_PATH_TYPE_DIR :
+		MAILBOX_LIST_PATH_TYPE_MAILBOX;
+	if ((ret = mailbox_get_path_to(box, type, &path)) < 0)
+		return -1;
+	if (ret == 0) {
+		/* layout=none */
+		mail_storage_set_error(box->storage, MAIL_ERROR_NOTPOSSIBLE,
+				       "Mailbox creation not supported");
+		return -1;
+	}
+	create_parent_dir = !directory &&
+		(box->list->flags & MAILBOX_LIST_FLAG_MAILBOX_FILES) != 0;
+	if (create_parent_dir) {
+		/* we only need to make sure that the parent directory exists */
+		p = strrchr(path, '/');
+		if (p == NULL)
+			return 1;
+		path = t_strdup_until(path, p);
+	}
+
+	if ((ret = mailbox_mkdir(box, path, type)) < 0)
+		return -1;
+	mailbox_refresh_permissions(box);
+	if (ret == 0) {
+		/* directory already exists */
+		if (create_parent_dir)
+			return 1;
+		if (!directory && *box->list->set.mailbox_dir_name == '\0') {
+			/* For example: layout=fs, path=~/Maildir/foo
+			   might itself exist, but does it have the
+			   cur|new|tmp subdirs? */
+			if (mailbox_exists(box, FALSE, &existence) < 0)
+				return -1;
+			if (existence != MAILBOX_EXISTENCE_SELECT)
+				return 1;
+		}
+		mail_storage_set_error(box->storage, MAIL_ERROR_EXISTS,
+				       "Mailbox already exists");
+		return -1;
+	}
+
+	if (directory &&
+	    (box->list->props & MAILBOX_LIST_PROP_NO_NOSELECT) == 0) {
+		/* we only wanted to create the directory and it's done now */
+		return 0;
+	}
+	/* the caller should still create the mailbox */
+	return 1;
 }
 
 int index_storage_mailbox_delete_dir(struct mailbox *box, bool mailbox_deleted)
@@ -469,7 +587,7 @@ int index_storage_mailbox_delete_dir(struct mailbox *box, bool mailbox_deleted)
 	if (mailbox_list_delete_dir(box->list, box->name) == 0)
 		return 0;
 
-	(void)mailbox_list_get_last_error(box->list, &error);
+	mailbox_list_get_last_error(box->list, &error);
 	if (error != MAIL_ERROR_NOTFOUND || !mailbox_deleted) {
 		mail_storage_copy_list_error(box->storage, box->list);
 		return -1;
@@ -477,13 +595,31 @@ int index_storage_mailbox_delete_dir(struct mailbox *box, bool mailbox_deleted)
 	/* failed directory deletion, but mailbox deletion succeeded.
 	   this was probably maildir++, which internally deleted the
 	   directory as well. add changelog record about that too. */
-	mailbox_name_get_sha128(box->name, dir_sha128);
+	mailbox_name_get_sha128(box->vname, dir_sha128);
 	mailbox_list_add_change(box->list, MAILBOX_LOG_RECORD_DELETE_DIR,
 				dir_sha128);
 	return 0;
 }
 
-static int mailbox_expunge_all_mails(struct mailbox *box)
+static int
+mailbox_delete_all_attributes(struct mailbox_transaction_context *t,
+			      enum mail_attribute_type type)
+{
+	struct mailbox_attribute_iter *iter;
+	const char *key;
+	int ret = 0;
+
+	iter = mailbox_attribute_iter_init(t->box, type, "");
+	while ((key = mailbox_attribute_iter_next(iter)) != NULL) {
+		if (mailbox_attribute_unset(t, type, key) < 0)
+			ret = -1;
+	}
+	if (mailbox_attribute_iter_deinit(&iter) < 0)
+		ret = -1;
+	return ret;
+}
+
+static int mailbox_expunge_all_data(struct mailbox *box)
 {
 	struct mail_search_context *ctx;
         struct mailbox_transaction_context *t;
@@ -506,6 +642,12 @@ static int mailbox_expunge_all_mails(struct mailbox *box)
 		mailbox_transaction_rollback(&t);
 		return -1;
 	}
+
+	if (mailbox_delete_all_attributes(t, MAIL_ATTRIBUTE_TYPE_PRIVATE) < 0 ||
+	    mailbox_delete_all_attributes(t, MAIL_ATTRIBUTE_TYPE_SHARED) < 0) {
+		mailbox_transaction_rollback(&t);
+		return -1;
+	}
 	return mailbox_transaction_commit(&t);
 }
 
@@ -513,7 +655,6 @@ int index_storage_mailbox_delete(struct mailbox *box)
 {
 	struct mailbox_metadata metadata;
 	struct mailbox_status status;
-	enum mail_error error;
 	int ret_guid;
 
 	if (!box->opened) {
@@ -538,7 +679,7 @@ int index_storage_mailbox_delete(struct mailbox *box)
 	*/
 
 	if (!box->deleting_must_be_empty) {
-		if (mailbox_expunge_all_mails(box) < 0)
+		if (mailbox_expunge_all_data(box) < 0)
 			return -1;
 	}
 	if (mailbox_mark_index_deleted(box, TRUE) < 0)
@@ -573,8 +714,7 @@ int index_storage_mailbox_delete(struct mailbox *box)
 					metadata.guid);
 	}
 	if (index_storage_mailbox_delete_dir(box, TRUE) < 0) {
-		(void)mailbox_get_last_error(box, &error);
-		if (error != MAIL_ERROR_EXISTS)
+		if (mailbox_get_last_mail_error(box) != MAIL_ERROR_EXISTS)
 			return -1;
 		/* we deleted the mailbox, but couldn't delete the directory
 		   because it has children. that's not an error. */
@@ -582,21 +722,19 @@ int index_storage_mailbox_delete(struct mailbox *box)
 	return 0;
 }
 
-int index_storage_mailbox_rename(struct mailbox *src, struct mailbox *dest,
-				 bool rename_children)
+int index_storage_mailbox_rename(struct mailbox *src, struct mailbox *dest)
 {
 	guid_128_t guid;
 
 	if (src->list->v.rename_mailbox(src->list, src->name,
-					dest->list, dest->name,
-					rename_children) < 0) {
+					dest->list, dest->name) < 0) {
 		mail_storage_copy_list_error(src->storage, src->list);
 		return -1;
 	}
 
 	/* we'll track mailbox names, instead of GUIDs. We may be renaming a
 	   non-selectable mailbox (directory), which doesn't even have a GUID */
-	mailbox_name_get_sha128(dest->name, guid);
+	mailbox_name_get_sha128(dest->vname, guid);
 	mailbox_list_add_change(src->list, MAILBOX_LOG_RECORD_RENAME, guid);
 	return 0;
 }
@@ -614,18 +752,16 @@ bool index_storage_is_inconsistent(struct mailbox *box)
 void index_save_context_free(struct mail_save_context *ctx)
 {
 	index_mail_save_finish(ctx);
-	i_free_and_null(ctx->from_envelope);
-	i_free_and_null(ctx->guid);
-	i_free_and_null(ctx->pop3_uidl);
+	i_free_and_null(ctx->data.from_envelope);
+	i_free_and_null(ctx->data.guid);
+	i_free_and_null(ctx->data.pop3_uidl);
 	index_attachment_save_free(ctx);
+	memset(&ctx->data, 0, sizeof(ctx->data));
 
-	ctx->flags = 0;
-	ctx->keywords = NULL;
-	ctx->min_modseq = 0;
-	ctx->received_date = ctx->save_date = 0;
-	ctx->received_tz_offset = 0;
-	ctx->uid = 0;
-	ctx->pop3_order = 0;
+	ctx->unfinished = FALSE;
+	ctx->copying_via_save = FALSE;
+	ctx->saving = FALSE;
+	ctx->moving = FALSE;
 }
 
 static void
@@ -638,10 +774,10 @@ mail_copy_cache_field(struct mail_save_context *ctx, struct mail *src_mail,
 	uint32_t t;
 
 	src_field_idx = mail_cache_register_lookup(src_mail->box->cache, name);
-	i_assert(src_field_idx != -1U);
+	i_assert(src_field_idx != UINT_MAX);
 
 	dest_field_idx = mail_cache_register_lookup(dest_trans->box->cache, name);
-	if (dest_field_idx == -1U) {
+	if (dest_field_idx == UINT_MAX) {
 		/* unknown field */
 		return;
 	}
@@ -695,6 +831,7 @@ int index_storage_set_subscribed(struct mailbox *box, bool set)
 	struct mail_namespace *ns;
 	struct mailbox_list *list = box->list;
 	const char *subs_name;
+	guid_128_t guid;
 
 	if ((list->ns->flags & NAMESPACE_FLAG_SUBSCRIPTIONS) != 0)
 		subs_name = box->name;
@@ -721,5 +858,21 @@ int index_storage_set_subscribed(struct mailbox *box, bool set)
 		mail_storage_copy_list_error(box->storage, list);
 		return -1;
 	}
+
+	/* subscriptions are about names, not about mailboxes. it's possible
+	   to have a subscription to nonexistent mailbox. renames also don't
+	   change subscriptions. so instead of using actual GUIDs, we'll use
+	   hash of the name. */
+	mailbox_name_get_sha128(box->vname, guid);
+	mailbox_list_add_change(list, set ? MAILBOX_LOG_RECORD_SUBSCRIBE :
+				MAILBOX_LOG_RECORD_UNSUBSCRIBE, guid);
 	return 0;
+}
+
+void index_storage_destroy(struct mail_storage *storage)
+{
+	if (storage->_shared_attr_dict != NULL) {
+		(void)dict_wait(storage->_shared_attr_dict);
+		dict_deinit(&storage->_shared_attr_dict);
+	}
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2003-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2003-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "passdb.h"
@@ -40,13 +40,13 @@ struct passdb_ldap_request {
 
 static void
 ldap_query_save_result(struct ldap_connection *conn,
-		       LDAPMessage *entry, struct auth_request *auth_request)
+		       struct auth_request *auth_request,
+		       struct ldap_request_search *ldap_request)
 {
 	struct db_ldap_result_iterate_context *ldap_iter;
 	const char *name, *const *values;
 
-	ldap_iter = db_ldap_result_iterate_init(conn, entry, auth_request,
-						&conn->pass_attr_map);
+	ldap_iter = db_ldap_result_iterate_init(conn, ldap_request);
 	while (db_ldap_result_iterate_next(ldap_iter, &name, &values)) {
 		if (values[1] != NULL) {
 			auth_request_log_warning(auth_request, "ldap",
@@ -79,7 +79,7 @@ ldap_lookup_finish(struct auth_request *auth_request,
 			"pass_filter matched multiple objects, aborting");
 		passdb_result = PASSDB_RESULT_INTERNAL_FAILURE;
 	} else if (auth_request->passdb_password == NULL &&
-		   !auth_request->no_password) {
+		   !auth_fields_exists(auth_request->extra_fields, "nopassword")) {
 		auth_request_log_info(auth_request, "ldap",
 			"No password returned (and no nopassword)");
 		passdb_result = PASSDB_RESULT_PASSWORD_MISMATCH;
@@ -128,7 +128,8 @@ ldap_lookup_pass_callback(struct ldap_connection *conn,
 
 	if (ldap_request->entries++ == 0) {
 		/* first entry */
-		ldap_query_save_result(conn, res, auth_request);
+		ldap_query_save_result(conn, auth_request,
+				       &ldap_request->request.search);
 	}
 }
 
@@ -243,7 +244,8 @@ static void ldap_bind_lookup_dn_callback(struct ldap_connection *conn,
 		}
 
 		/* first entry */
-		ldap_query_save_result(conn, res, auth_request);
+		ldap_query_save_result(conn, auth_request,
+				       &passdb_ldap_request->request.search);
 
 		/* save dn */
 		dn = ldap_get_dn(conn->ld, res);
@@ -286,6 +288,7 @@ static void ldap_lookup_pass(struct auth_request *auth_request,
 	str_truncate(str, 0);
 	var_expand(str, conn->set.pass_filter, vars);
 	srequest->filter = p_strdup(auth_request->pool, str_c(str));
+	srequest->attr_map = &conn->pass_attr_map;
 	srequest->attributes = conn->pass_attr_names;
 
 	auth_request_log_debug(auth_request, "ldap", "pass search: "
@@ -323,6 +326,7 @@ static void ldap_bind_lookup_dn(struct auth_request *auth_request,
 	/* we don't need the attributes to perform authentication, but they
 	   may contain some extra parameters. if a password is returned,
 	   it's just ignored. */
+	srequest->attr_map = &conn->pass_attr_map;
 	srequest->attributes = conn->pass_attr_names;
 
 	auth_request_log_debug(auth_request, "ldap",

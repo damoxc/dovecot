@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "str.h"
@@ -71,7 +71,7 @@ static void test_istream_dot_one(const struct dot_test *test,
 			}
 		}
 		test_istream_set_size(test_input, input_len);
-		i_stream_read(test_input);
+		(void)i_stream_read(test_input);
 	} else {
 		test_istream_set_size(test_input, input_len);
 		size = 0;
@@ -106,6 +106,8 @@ static void test_istream_dot(void)
 	static struct dot_test tests[] = {
 		{ "..foo\n..\n.foo\n.\nfoo", ".foo\n.\nfoo\n", "foo" },
 		{ "..foo\r\n..\r\n.foo\r\n.\r\nfoo", ".foo\r\n.\r\nfoo\r\n", "foo" },
+		{ "\r.\r\n.\r\n", "\r.\r\n", "" },
+		{ "\n\r.\r\r\n.\r\n", "\n\r.\r\r\n", "" },
 		{ "\r\n.\r\n", "\r\n", "" },
 		{ "\n.\r\n", "\n", "" },
 		{ "\n.\n", "\n", "" },

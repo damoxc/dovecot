@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -107,7 +107,7 @@ int message_parse_header_next(struct message_header_parser_ctx *ctx,
 				return -1;
 			}
 
-			if (size > 0 && !ctx->skip_line &&
+			if (size > 0 && !ctx->skip_line && !continued &&
 			    (msg[0] == '\n' ||
 			     (msg[0] == '\r' && size > 1 && msg[1] == '\n'))) {
 				/* end of headers - this mostly happens just
@@ -134,22 +134,6 @@ int message_parse_header_next(struct message_header_parser_ctx *ctx,
 
 			/* a) line is larger than input buffer
 			   b) header ended unexpectedly */
-			if (colon_pos == UINT_MAX && ret == -2 && !continued) {
-				/* header name is huge. just skip it. */
-				i_assert(size > 1);
-				if (msg[size-1] == '\r')
-					size--;
-
-				if (ctx->hdr_size != NULL) {
-					ctx->hdr_size->physical_size += size;
-					ctx->hdr_size->virtual_size += size;
-				}
-				i_stream_skip(ctx->input, size);
-				ctx->skip_line = TRUE;
-				startpos = 0;
-				continue;
-			}
-
 			if (ret == -2) {
 				/* go back to last LWSP if found. */
 				size_t min_pos = !continued ? colon_pos : 0;
@@ -159,6 +143,20 @@ int message_parse_header_next(struct message_header_parser_ctx *ctx,
 						break;
 					}
 				}
+				if (i == min_pos && (msg[size-1] == '\r' ||
+						     msg[size-1] == '\n')) {
+					/* we may or may not have a full header,
+					   but we don't know until we get the
+					   next character. leave out the
+					   linefeed and finish the header on
+					   the next run. */
+					size--;
+					if (size > 0 && msg[size-1] == '\r')
+						size--;
+				}
+				/* the buffer really has to be more than 2 to
+				   avoid CRLF looping forever */
+				i_assert(size > 0);
 
 				continues = TRUE;
 			}
@@ -201,7 +199,10 @@ int message_parse_header_next(struct message_header_parser_ctx *ctx,
 			}
 		}
 
-		if (i < parse_size) {
+		if (i < parse_size && i+1 == size && ret == -2) {
+			/* we don't know if the line continues. */
+			i++;
+		} else if (i < parse_size) {
 			/* got a line */
 			if (ctx->skip_line) {
 				/* skipping a line with a huge header name */
@@ -251,7 +252,7 @@ int message_parse_header_next(struct message_header_parser_ctx *ctx,
 	line->continued = continued;
 	line->crlf_newline = crlf_newline;
 	line->no_newline = no_newline;
-	if (size == 0) {
+	if (size == 0 && !continued) {
 		/* end of headers */
 		line->eoh = TRUE;
 		line->name_len = line->value_len = line->full_value_len = 0;

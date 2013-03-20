@@ -1,11 +1,11 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "mail-namespace.h"
 #include "virtual-storage.h"
 #include "virtual-plugin.h"
 
-const char *virtual_plugin_version = DOVECOT_VERSION;
+const char *virtual_plugin_version = DOVECOT_ABI_VERSION;
 
 void virtual_plugin_init(struct module *module ATTR_UNUSED)
 {

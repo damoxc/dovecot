@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "fdatasync-path.h"
@@ -26,6 +26,6 @@ int fdatasync_path(const char *path)
 			ret = -1;
 		}
 	}
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "mail-namespace.h"
@@ -6,7 +6,7 @@
 #include "doveadm-mail.h"
 #include "doveadm-fts.h"
 
-const char *doveadm_fts_plugin_version = DOVECOT_VERSION;
+const char *doveadm_fts_plugin_version = DOVECOT_ABI_VERSION;
 
 static int
 fts_namespace_find(struct mail_user *user, const char *ns_prefix,

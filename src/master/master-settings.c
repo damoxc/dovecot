@@ -1,10 +1,10 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "common.h"
 #include "array.h"
 #include "env-util.h"
 #include "istream.h"
-#include "network.h"
+#include "net.h"
 #include "str.h"
 #include "ipwd.h"
 #include "mkdir-parents.h"
@@ -171,6 +171,7 @@ const struct setting_parser_info service_setting_parser_info = {
 
 static const struct setting_define master_setting_defines[] = {
 	DEF(SET_STR, base_dir),
+	DEF(SET_STR, state_dir),
 	DEF(SET_STR, libexec_dir),
 	DEF(SET_STR, instance_name),
 	DEF(SET_STR, import_environment),
@@ -211,6 +212,7 @@ static const struct setting_define master_setting_defines[] = {
 
 static const struct master_settings master_default_settings = {
 	.base_dir = PKG_RUNDIR,
+	.state_dir = PKG_STATEDIR,
 	.libexec_dir = PKG_LIBEXECDIR,
 	.instance_name = PACKAGE,
 	.import_environment = "TZ" ENV_SYSTEMD ENV_GDB,
@@ -503,12 +505,8 @@ master_settings_verify(void *_set, pool_t pool, const char **error_r)
 			continue;
 		}
 
-		if (*service->executable == '\0') {
-			*error_r = t_strdup_printf("service(%s): "
-				"executable is empty", service->name);
-			return FALSE;
-		}
-		if (*service->executable != '/') {
+		if (*service->executable != '/' &&
+		    *service->executable != '\0') {
 			service->executable =
 				p_strconcat(pool, set->libexec_dir, "/",
 					    service->executable, NULL);
@@ -713,48 +711,19 @@ static void unlink_sockets(const char *path, const char *prefix)
 	(void)closedir(dirp);
 }
 
-bool master_settings_do_fixes(const struct master_settings *set)
+static void
+mkdir_login_dir(const struct master_settings *set, const char *login_dir)
 {
-	const char *login_dir, *empty_dir;
-	struct stat st;
+	mode_t mode;
 	gid_t gid;
 
-	/* since base dir is under /var/run by default, it may have been
-	   deleted. */
-	if (mkdir_parents(set->base_dir, 0755) < 0 && errno != EEXIST) {
-		i_error("mkdir(%s) failed: %m", set->base_dir);
-		return FALSE;
-	}
-	/* allow base_dir to be a symlink, so don't use lstat() */
-	if (stat(set->base_dir, &st) < 0) {
-		i_error("stat(%s) failed: %m", set->base_dir);
-		return FALSE;
-	}
-	if (!S_ISDIR(st.st_mode)) {
-		i_error("%s is not a directory", set->base_dir);
-		return FALSE;
-	}
-	if ((st.st_mode & 0755) != 0755) {
-		i_warning("Fixing permissions of %s to be world-readable",
-			  set->base_dir);
-		if (chmod(set->base_dir, 0755) < 0)
-			i_error("chmod(%s) failed: %m", set->base_dir);
-	}
-
-	/* Make sure our permanent state directory exists */
-	if (mkdir_parents(PKG_STATEDIR, 0750) < 0 && errno != EEXIST) {
-		i_error("mkdir(%s) failed: %m", PKG_STATEDIR);
-		return FALSE;
-	}
-
-	login_dir = t_strconcat(set->base_dir, "/login", NULL);
 	if (settings_have_auth_unix_listeners_in(set, login_dir)) {
 		/* we are not using external authentication, so make sure the
 		   login directory exists with correct permissions and it's
 		   empty. with external auth we wouldn't want to delete
 		   existing sockets or break the permissions required by the
 		   auth server. */
-		mode_t mode = login_want_core_dumps(set, &gid) ? 0770 : 0750;
+		mode = login_want_core_dumps(set, &gid) ? 0770 : 0750;
 		if (safe_mkdir(login_dir, mode, master_uid, gid) == 0) {
 			i_warning("Corrected permissions for login directory "
 				  "%s", login_dir);
@@ -763,16 +732,42 @@ bool master_settings_do_fixes(const struct master_settings *set)
 		unlink_sockets(login_dir, "");
 	} else {
 		/* still make sure that login directory exists */
-		if (mkdir(login_dir, 0755) < 0 && errno != EEXIST) {
-			i_error("mkdir(%s) failed: %m", login_dir);
-			return FALSE;
-		}
+		if (mkdir(login_dir, 0755) < 0 && errno != EEXIST)
+			i_fatal("mkdir(%s) failed: %m", login_dir);
 	}
+}
+
+void master_settings_do_fixes(const struct master_settings *set)
+{
+	const char *empty_dir;
+	struct stat st;
+
+	/* since base dir is under /var/run by default, it may have been
+	   deleted. */
+	if (mkdir_parents(set->base_dir, 0755) < 0 && errno != EEXIST)
+		i_fatal("mkdir(%s) failed: %m", set->base_dir);
+	/* allow base_dir to be a symlink, so don't use lstat() */
+	if (stat(set->base_dir, &st) < 0)
+		i_fatal("stat(%s) failed: %m", set->base_dir);
+	if (!S_ISDIR(st.st_mode))
+		i_fatal("%s is not a directory", set->base_dir);
+	if ((st.st_mode & 0755) != 0755) {
+		i_warning("Fixing permissions of %s to be world-readable",
+			  set->base_dir);
+		if (chmod(set->base_dir, 0755) < 0)
+			i_error("chmod(%s) failed: %m", set->base_dir);
+	}
+
+	/* Make sure our permanent state directory exists */
+	if (mkdir_parents(set->state_dir, 0755) < 0 && errno != EEXIST)
+		i_fatal("mkdir(%s) failed: %m", set->state_dir);
+
+	mkdir_login_dir(set, t_strconcat(set->base_dir, "/login", NULL));
+	mkdir_login_dir(set, t_strconcat(set->base_dir, "/token-login", NULL));
 
 	empty_dir = t_strconcat(set->base_dir, "/empty", NULL);
 	if (safe_mkdir(empty_dir, 0755, master_uid, getegid()) == 0) {
 		i_warning("Corrected permissions for empty directory "
 			  "%s", empty_dir);
 	}
-	return TRUE;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "istream.h"
@@ -13,8 +13,7 @@ static const char *cydir_mail_get_path(struct mail *mail)
 {
 	const char *dir;
 
-	dir = mailbox_list_get_path(mail->box->list, mail->box->name,
-				    MAILBOX_LIST_PATH_TYPE_MAILBOX);
+	dir = mailbox_get_path(mail->box);
 	return t_strdup_printf("%s/%u.", dir, mail->uid);
 }
 
@@ -99,6 +98,7 @@ cydir_mail_get_stream(struct mail *_mail, bool get_body ATTR_UNUSED,
 		      struct istream **stream_r)
 {
 	struct index_mail *mail = (struct index_mail *)_mail;
+	struct istream *input;
 	const char *path;
 	int fd;
 
@@ -115,13 +115,16 @@ cydir_mail_get_stream(struct mail *_mail, bool get_body ATTR_UNUSED,
 			}
 			return -1;
 		}
-		mail->data.stream = i_stream_create_fd(fd, 0, TRUE);
-		i_stream_set_name(mail->data.stream, path);
-		index_mail_set_read_buffer_size(_mail, mail->data.stream);
+		input = i_stream_create_fd(fd, 0, TRUE);
+		i_stream_set_name(input, path);
+		index_mail_set_read_buffer_size(_mail, input);
 		if (mail->mail.v.istream_opened != NULL) {
-			if (mail->mail.v.istream_opened(_mail, stream_r) < 0)
+			if (mail->mail.v.istream_opened(_mail, &input) < 0) {
+				i_stream_unref(&input);
 				return -1;
+			}
 		}
+		mail->data.stream = input;
 	}
 
 	return index_mail_init_stream(mail, hdr_size, body_size, stream_r);
@@ -141,6 +144,7 @@ struct mail_vfuncs cydir_mail_vfuncs = {
 	index_mail_get_keywords,
 	index_mail_get_keyword_indexes,
 	index_mail_get_modseq,
+	index_mail_get_pvt_modseq,
 	index_mail_get_parts,
 	index_mail_get_date,
 	cydir_mail_get_received_date,
@@ -151,11 +155,13 @@ struct mail_vfuncs cydir_mail_vfuncs = {
 	index_mail_get_headers,
 	index_mail_get_header_stream,
 	cydir_mail_get_stream,
+	index_mail_get_binary_stream,
 	index_mail_get_special,
 	index_mail_get_real_mail,
 	index_mail_update_flags,
 	index_mail_update_keywords,
 	index_mail_update_modseq,
+	index_mail_update_pvt_modseq,
 	NULL,
 	index_mail_expunge,
 	index_mail_set_cache_corrupted,

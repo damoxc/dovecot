@@ -1,11 +1,10 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
 #include "imap-match.h"
 #include "mailbox-list-private.h"
 
-#define MAILBOX_LIST_NAME_NONE "none"
 #define GLOBAL_TEMP_PREFIX ".temp."
 
 struct noop_list_iterate_context {
@@ -34,40 +33,18 @@ static void none_list_deinit(struct mailbox_list *list)
 	pool_unref(&list->pool);
 }
 
-static bool
-none_is_valid_pattern(struct mailbox_list *list ATTR_UNUSED,
-		      const char *pattern ATTR_UNUSED)
-{
-	return TRUE;
-}
-
-static bool
-none_is_valid_existing_name(struct mailbox_list *list ATTR_UNUSED,
-			    const char *name ATTR_UNUSED)
-{
-	return TRUE;
-}
-
-static bool
-none_is_valid_create_name(struct mailbox_list *list ATTR_UNUSED,
-			  const char *name ATTR_UNUSED)
-{
-	return FALSE;
-}
-
 static char none_list_get_hierarchy_sep(struct mailbox_list *list ATTR_UNUSED)
 {
 	return '/';
 }
 
-static const char *
+static int
 none_list_get_path(struct mailbox_list *list ATTR_UNUSED,
 		   const char *name ATTR_UNUSED,
-		   enum mailbox_list_path_type type ATTR_UNUSED)
+		   enum mailbox_list_path_type type ATTR_UNUSED,
+		   const char **path_r ATTR_UNUSED)
 {
-	if (type == MAILBOX_LIST_PATH_TYPE_INDEX)
-		return "";
-	return NULL;
+	return 0;
 }
 
 static const char *
@@ -92,15 +69,6 @@ static int none_list_set_subscribed(struct mailbox_list *list,
 	return -1;
 }
 
-static int
-none_list_create_mailbox_dir(struct mailbox_list *list,
-			     const char *name ATTR_UNUSED,
-			     enum mailbox_dir_create_type type ATTR_UNUSED)
-{
-	mailbox_list_set_error(list, MAIL_ERROR_NOTPOSSIBLE, "Not supported");
-	return -1;
-}
-
 static int none_list_delete_mailbox(struct mailbox_list *list,
 				    const char *name ATTR_UNUSED)
 {
@@ -119,8 +87,7 @@ static int
 none_list_rename_mailbox(struct mailbox_list *oldlist,
 			 const char *oldname ATTR_UNUSED,
 			 struct mailbox_list *newlist ATTR_UNUSED,
-			 const char *newname ATTR_UNUSED,
-			 bool rename_children ATTR_UNUSED)
+			 const char *newname ATTR_UNUSED)
 {
 	mailbox_list_set_error(oldlist, MAIL_ERROR_NOTPOSSIBLE,
 			       "Not supported");
@@ -147,7 +114,7 @@ none_list_iter_init(struct mailbox_list *list,
 	    imap_match(ctx->ctx.glob, "INBOX") == IMAP_MATCH_YES) {
 		ctx->list_inbox = TRUE;
 		ctx->inbox_info.ns = list->ns;
-		ctx->inbox_info.name = "INBOX";
+		ctx->inbox_info.vname = "INBOX";
 	}
 	return &ctx->ctx;
 }
@@ -190,11 +157,9 @@ struct mailbox_list none_mailbox_list = {
 
 	{
 		none_list_alloc,
+		NULL,
 		none_list_deinit,
 		NULL,
-		none_is_valid_pattern,
-		none_is_valid_existing_name,
-		none_is_valid_create_name,
 		none_list_get_hierarchy_sep,
 		mailbox_list_default_get_vname,
 		mailbox_list_default_get_storage_name,
@@ -208,10 +173,10 @@ struct mailbox_list none_mailbox_list = {
 		NULL,
 		none_list_subscriptions_refresh,
 		none_list_set_subscribed,
-		none_list_create_mailbox_dir,
 		none_list_delete_mailbox,
 		none_list_delete_dir,
 		none_list_delete_dir,
-		none_list_rename_mailbox
+		none_list_rename_mailbox,
+		NULL, NULL, NULL, NULL
 	}
 };

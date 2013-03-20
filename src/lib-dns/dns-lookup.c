@@ -1,8 +1,8 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "write-full.h"
 #include "time-util.h"
@@ -121,7 +121,8 @@ static void dns_lookup_timeout(struct dns_lookup *lookup)
 
 #undef dns_lookup
 int dns_lookup(const char *host, const struct dns_lookup_settings *set,
-	       dns_lookup_callback_t *callback, void *context)
+	       dns_lookup_callback_t *callback, void *context,
+	       struct dns_lookup **lookup_r)
 {
 	struct dns_lookup *lookup;
 	struct dns_lookup_result result;
@@ -143,7 +144,7 @@ int dns_lookup(const char *host, const struct dns_lookup_settings *set,
 	if (write_full(fd, cmd, strlen(cmd)) < 0) {
 		result.error = t_strdup_printf("write(%s) failed: %m",
 					       set->dns_client_socket_path);
-		(void)close(fd);
+		i_close_fd(&fd);
 		callback(&result, context);
 		return -1;
 	}
@@ -162,6 +163,8 @@ int dns_lookup(const char *host, const struct dns_lookup_settings *set,
 	lookup->context = context;
 	if (gettimeofday(&lookup->start_time, NULL) < 0)
 		i_fatal("gettimeofday() failed: %m");
+
+	*lookup_r = lookup;
 	return 0;
 }
 
@@ -181,4 +184,16 @@ static void dns_lookup_free(struct dns_lookup **_lookup)
 	i_free(lookup->ips);
 	i_free(lookup->path);
 	i_free(lookup);
+}
+
+void dns_lookup_abort(struct dns_lookup **lookup)
+{
+	dns_lookup_free(lookup);
+}
+
+void dns_lookup_switch_ioloop(struct dns_lookup *lookup)
+{
+	if (lookup->to != NULL)
+		lookup->to = io_loop_move_timeout(&lookup->to);
+	lookup->io = io_loop_move_io(&lookup->io);
 }

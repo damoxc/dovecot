@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -11,6 +11,7 @@
 #include "mail-namespace.h"
 #include "mail-search-build.h"
 #include "mail-search-parser.h"
+#include "mailbox-list-iter.h"
 #include "virtual-storage.h"
 #include "virtual-plugin.h"
 
@@ -273,13 +274,13 @@ static bool virtual_config_match(const struct mailbox_info *info,
 		if (boxes[i]->glob != NULL) {
 			if (virtual_ns_match(boxes[i]->ns, info->ns) &&
 			    imap_match(boxes[i]->glob,
-				       info->name) == IMAP_MATCH_YES) {
+				       info->vname) == IMAP_MATCH_YES) {
 				*idx_r = i;
 				return TRUE;
 			}
 		} else {
 			i_assert(boxes[i]->name[0] == '-');
-			if (strcmp(boxes[i]->name + 1, info->name) == 0) {
+			if (strcmp(boxes[i]->name + 1, info->vname) == 0) {
 				*idx_r = i;
 				return TRUE;
 			}
@@ -290,8 +291,8 @@ static bool virtual_config_match(const struct mailbox_info *info,
 
 static int virtual_config_expand_wildcards(struct virtual_parse_context *ctx)
 {
-	const enum namespace_type iter_ns_types =
-		NAMESPACE_PRIVATE | NAMESPACE_SHARED | NAMESPACE_PUBLIC;
+	const enum mail_namespace_type iter_ns_types =
+		MAIL_NAMESPACE_TYPE_MASK_ALL;
 	const enum mailbox_list_iter_flags iter_flags =
 		MAILBOX_LIST_ITER_RETURN_NO_FLAGS;
 	struct mail_user *user = ctx->mbox->storage->storage.user;
@@ -327,9 +328,9 @@ static int virtual_config_expand_wildcards(struct virtual_parse_context *ctx)
 		if (virtual_config_match(info, &wildcard_boxes, &i) &&
 		    !virtual_config_match(info, &neg_boxes, &j) &&
 		    virtual_backend_box_lookup_name(ctx->mbox,
-						    info->name) == NULL) {
+						    info->vname) == NULL) {
 			virtual_config_copy_expanded(ctx, wboxes[i],
-						     info->name);
+						     info->vname);
 		}
 	}
 	for (i = 0; i < count; i++)
@@ -429,7 +430,7 @@ int virtual_config_read(struct virtual_mailbox *mbox)
 	if (ret == 0)
 		virtual_config_search_args_dup(mbox);
 	i_stream_unref(&ctx.input);
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret;
 }
 

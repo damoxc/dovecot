@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING memcached */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING memcached */
 
 #include "lib.h"
 #include "array.h"
@@ -140,11 +140,12 @@ static void memcached_conn_input(struct connection *_conn)
 		memcached_conn_destroy(_conn);
 }
 
-static void memcached_conn_connected(struct connection *_conn)
+static void memcached_conn_connected(struct connection *_conn, bool success)
 {
-	struct memcached_connection *conn = (struct memcached_connection *)_conn;
+	struct memcached_connection *conn =
+		(struct memcached_connection *)_conn;
 
-	if ((errno = net_geterror(_conn->fd_in)) != 0) {
+	if (!success) {
 		i_error("memcached: connect(%s, %u) failed: %m",
 			net_ip2addr(&conn->dict->ip), conn->dict->port);
 	} else {
@@ -163,17 +164,19 @@ static const struct connection_settings memcached_conn_set = {
 static const struct connection_vfuncs memcached_conn_vfuncs = {
 	.destroy = memcached_conn_destroy,
 	.input = memcached_conn_input,
-	.connected = memcached_conn_connected
+	.client_connected = memcached_conn_connected
 };
 
-static struct dict *
+static int
 memcached_dict_init(struct dict *driver, const char *uri,
 		    enum dict_data_type value_type ATTR_UNUSED,
 		    const char *username ATTR_UNUSED,
-		    const char *base_dir ATTR_UNUSED)
+		    const char *base_dir ATTR_UNUSED, struct dict **dict_r,
+		    const char **error_r)
 {
 	struct memcached_dict *dict;
 	const char *const *args;
+	int ret = 0;
 
 	if (memcached_connections == NULL) {
 		memcached_connections =
@@ -191,28 +194,45 @@ memcached_dict_init(struct dict *driver, const char *uri,
 	args = t_strsplit(uri, ":");
 	for (; *args != NULL; args++) {
 		if (strncmp(*args, "host=", 5) == 0) {
-			if (net_addr2ip(*args+5, &dict->ip) < 0)
-				i_error("Invalid IP: %s", *args+5);
+			if (net_addr2ip(*args+5, &dict->ip) < 0) {
+				*error_r = t_strdup_printf("Invalid IP: %s",
+							   *args+5);
+				ret = -1;
+			}
 		} else if (strncmp(*args, "port=", 5) == 0) {
-			if (str_to_uint(*args+5, &dict->port) < 0)
-				i_error("Invalid port: %s", *args+5);
+			if (str_to_uint(*args+5, &dict->port) < 0) {
+				*error_r = t_strdup_printf("Invalid port: %s",
+							   *args+5);
+				ret = -1;
+			}
 		} else if (strncmp(*args, "prefix=", 7) == 0) {
 			i_free(dict->key_prefix);
 			dict->key_prefix = i_strdup(*args + 7);
 		} else if (strncmp(*args, "timeout_msecs=", 14) == 0) {
-			if (str_to_uint(*args+14, &dict->timeout_msecs) < 0)
-				i_error("Invalid timeout_msecs: %s", *args+14);
+			if (str_to_uint(*args+14, &dict->timeout_msecs) < 0) {
+				*error_r = t_strdup_printf(
+					"Invalid timeout_msecs: %s", *args+14);
+				ret = -1;
+			}
 		} else {
-			i_error("Unknown parameter: %s", *args);
+			*error_r = t_strdup_printf("Unknown parameter: %s",
+						   *args);
+			ret = -1;
 		}
 	}
+	if (ret < 0) {
+		i_free(dict->key_prefix);
+		i_free(dict);
+		return -1;
+	}
+
 	connection_init_client_ip(memcached_connections, &dict->conn.conn,
 				  &dict->ip, dict->port);
-
 	dict->dict = *driver;
 	dict->conn.cmd = buffer_create_dynamic(default_pool, 256);
 	dict->conn.dict = dict;
-	return &dict->dict;
+	*dict_r = &dict->dict;
+	return 0;
 }
 
 static void memcached_dict_deinit(struct dict *_dict)
@@ -298,9 +318,9 @@ memcached_dict_lookup_real(struct memcached_dict *dict, pool_t pool,
 			memcached_add_header(dict->conn.cmd, key_len);
 			buffer_append(dict->conn.cmd, key, key_len);
 
-			o_stream_send(dict->conn.conn.output,
-				      dict->conn.cmd->data,
-				      dict->conn.cmd->used);
+			o_stream_nsend(dict->conn.conn.output,
+				       dict->conn.cmd->data,
+				       dict->conn.cmd->used);
 
 			memset(&dict->conn.reply, 0, sizeof(dict->conn.reply));
 			io_loop_run(dict->ioloop);
@@ -363,6 +383,7 @@ struct dict dict_driver_memcached = {
 		memcached_dict_deinit,
 		NULL,
 		memcached_dict_lookup,
+		NULL,
 		NULL,
 		NULL,
 		NULL,

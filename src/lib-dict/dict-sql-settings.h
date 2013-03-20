@@ -16,9 +16,10 @@ struct dict_sql_settings {
 	const char *connect;
 
 	unsigned int max_field_count;
-	ARRAY_DEFINE(maps, struct dict_sql_map);
+	ARRAY(struct dict_sql_map) maps;
 };
 
-struct dict_sql_settings *dict_sql_settings_read(pool_t pool, const char *path);
+struct dict_sql_settings *
+dict_sql_settings_read(pool_t pool, const char *path, const char **error_r);
 
 #endif

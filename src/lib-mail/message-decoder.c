@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -13,13 +13,6 @@
 #include "message-header-decode.h"
 #include "message-decoder.h"
 
-enum content_type {
-	CONTENT_TYPE_UNKNOWN = 0,
-	CONTENT_TYPE_BINARY,
-	CONTENT_TYPE_QP,
-	CONTENT_TYPE_BASE64
-};
-
 /* base64 takes max 4 bytes per character, q-p takes max 3. */
 #define MAX_ENCODING_BUF_SIZE 3
 
@@ -29,6 +22,7 @@ enum content_type {
 
 struct message_decoder_context {
 	enum message_decoder_flags flags;
+	normalizer_func_t *normalizer;
 	struct message_part *prev_part;
 
 	struct message_header_line hdr;
@@ -42,7 +36,7 @@ struct message_decoder_context {
 	buffer_t *encoding_buf;
 
 	char *content_charset;
-	enum content_type content_type;
+	enum message_cte message_cte;
 
 	unsigned int charset_utf8:1;
 	unsigned int binary_input:1;
@@ -53,12 +47,14 @@ message_decode_body_init_charset(struct message_decoder_context *ctx,
 				 struct message_part *part);
 
 struct message_decoder_context *
-message_decoder_init(enum message_decoder_flags flags)
+message_decoder_init(normalizer_func_t *normalizer,
+		     enum message_decoder_flags flags)
 {
 	struct message_decoder_context *ctx;
 
 	ctx = i_new(struct message_decoder_context, 1);
 	ctx->flags = flags;
+	ctx->normalizer = normalizer;
 	ctx->buf = buffer_create_dynamic(default_pool, 8192);
 	ctx->buf2 = buffer_create_dynamic(default_pool, 8192);
 	ctx->encoding_buf = buffer_create_dynamic(default_pool, 128);
@@ -92,37 +88,37 @@ void message_decoder_set_return_binary(struct message_decoder_context *ctx,
 	message_decode_body_init_charset(ctx, ctx->prev_part);
 }
 
-static void
-parse_content_transfer_encoding(struct message_decoder_context *ctx,
-				struct message_header_line *hdr)
+enum message_cte message_decoder_parse_cte(struct message_header_line *hdr)
 {
 	struct rfc822_parser_context parser;
+	enum message_cte message_cte;
 	string_t *value;
 
 	value = t_str_new(64);
 	rfc822_parser_init(&parser, hdr->full_value, hdr->full_value_len, NULL);
 
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 	(void)rfc822_parse_mime_token(&parser, value);
 
-	ctx->content_type = CONTENT_TYPE_UNKNOWN;
+	message_cte = MESSAGE_CTE_UNKNOWN;
 	switch (str_len(value)) {
 	case 4:
 		if (i_memcasecmp(str_data(value), "7bit", 4) == 0 ||
 		    i_memcasecmp(str_data(value), "8bit", 4) == 0)
-			ctx->content_type = CONTENT_TYPE_BINARY;
+			message_cte = MESSAGE_CTE_78BIT;
 		break;
 	case 6:
 		if (i_memcasecmp(str_data(value), "base64", 6) == 0)
-			ctx->content_type = CONTENT_TYPE_BASE64;
+			message_cte = MESSAGE_CTE_BASE64;
 		else if (i_memcasecmp(str_data(value), "binary", 6) == 0)
-			ctx->content_type = CONTENT_TYPE_BINARY;
+			message_cte = MESSAGE_CTE_BINARY;
 		break;
 	case 16:
 		if (i_memcasecmp(str_data(value), "quoted-printable", 16) == 0)
-			ctx->content_type = CONTENT_TYPE_QP;
+			message_cte = MESSAGE_CTE_QP;
 		break;
 	}
+	return message_cte;
 }
 
 static void
@@ -137,12 +133,12 @@ parse_content_type(struct message_decoder_context *ctx,
 		return;
 
 	rfc822_parser_init(&parser, hdr->full_value, hdr->full_value_len, NULL);
-	(void)rfc822_skip_lwsp(&parser);
+	rfc822_skip_lwsp(&parser);
 	str = t_str_new(64);
 	if (rfc822_parse_content_type(&parser, str) <= 0)
 		return;
 
-	(void)rfc2231_parse(&parser, &results);
+	rfc2231_parse(&parser, &results);
 	for (; *results != NULL; results += 2) {
 		if (strcasecmp(results[0], "charset") == 0) {
 			ctx->content_charset = i_strdup(results[1]);
@@ -156,7 +152,6 @@ static bool message_decode_header(struct message_decoder_context *ctx,
 				  struct message_header_line *hdr,
 				  struct message_block *output)
 {
-	bool dtcase = (ctx->flags & MESSAGE_DECODER_FLAG_DTCASE) != 0;
 	size_t value_len;
 
 	if (hdr->continues) {
@@ -170,17 +165,16 @@ static bool message_decode_header(struct message_decoder_context *ctx,
 			parse_content_type(ctx, hdr);
 		if (hdr->name_len == 25 &&
 		    strcasecmp(hdr->name, "Content-Transfer-Encoding") == 0)
-			parse_content_transfer_encoding(ctx, hdr);
+			ctx->message_cte = message_decoder_parse_cte(hdr);
 	} T_END;
 
 	buffer_set_used_size(ctx->buf, 0);
 	message_header_decode_utf8(hdr->full_value, hdr->full_value_len,
-				   ctx->buf, dtcase);
+				   ctx->buf, ctx->normalizer);
 	value_len = ctx->buf->used;
 
-	if (dtcase) {
-		(void)uni_utf8_to_decomposed_titlecase(hdr->name, hdr->name_len,
-						       ctx->buf);
+	if (ctx->normalizer != NULL) {
+		(void)ctx->normalizer(hdr->name, hdr->name_len, ctx->buf);
 		buffer_append_c(ctx->buf, '\0');
 	} else {
 		if (!uni_utf8_get_valid_data((const unsigned char *)hdr->name,
@@ -244,8 +238,6 @@ static void
 message_decode_body_init_charset(struct message_decoder_context *ctx,
 				 struct message_part *part)
 {
-	enum charset_flags flags;
-
 	ctx->binary_input = ctx->content_charset == NULL &&
 		(ctx->flags & MESSAGE_DECODER_FLAG_RETURN_BINARY) != 0 &&
 		(part->flags & (MESSAGE_PART_FLAG_TEXT |
@@ -264,12 +256,10 @@ message_decode_body_init_charset(struct message_decoder_context *ctx,
 		charset_to_utf8_end(&ctx->charset_trans);
 	i_free_and_null(ctx->charset_trans_charset);
 
-	flags = (ctx->flags & MESSAGE_DECODER_FLAG_DTCASE) != 0 ?
-		CHARSET_FLAG_DECOMP_TITLECASE : 0;
 	ctx->charset_trans_charset = i_strdup(ctx->content_charset != NULL ?
 					      ctx->content_charset : "UTF-8");
-	if (charset_to_utf8_begin(ctx->charset_trans_charset,
-				  flags, &ctx->charset_trans) < 0)
+	if (charset_to_utf8_begin(ctx->charset_trans_charset, ctx->normalizer,
+				  &ctx->charset_trans) < 0)
 		ctx->charset_trans = NULL;
 }
 
@@ -286,29 +276,30 @@ static bool message_decode_body(struct message_decoder_context *ctx,
 		buffer_append(ctx->encoding_buf, input->data, input->size);
 	}
 
-	switch (ctx->content_type) {
-	case CONTENT_TYPE_UNKNOWN:
+	switch (ctx->message_cte) {
+	case MESSAGE_CTE_UNKNOWN:
 		/* just skip this body */
 		return FALSE;
 
-	case CONTENT_TYPE_BINARY:
+	case MESSAGE_CTE_78BIT:
+	case MESSAGE_CTE_BINARY:
 		data = input->data;
 		size = pos = input->size;
 		break;
-	case CONTENT_TYPE_QP:
+	case MESSAGE_CTE_QP:
 		buffer_set_used_size(ctx->buf, 0);
 		if (ctx->encoding_buf->used != 0) {
-			quoted_printable_decode(ctx->encoding_buf->data,
-						ctx->encoding_buf->used,
-						&pos, ctx->buf);
+			(void)quoted_printable_decode(ctx->encoding_buf->data,
+						      ctx->encoding_buf->used,
+						      &pos, ctx->buf);
 		} else {
-			quoted_printable_decode(input->data, input->size,
-						&pos, ctx->buf);
+			(void)quoted_printable_decode(input->data, input->size,
+						      &pos, ctx->buf);
 		}
 		data = ctx->buf->data;
 		size = ctx->buf->used;
 		break;
-	case CONTENT_TYPE_BASE64:
+	case MESSAGE_CTE_BASE64:
 		buffer_set_used_size(ctx->buf, 0);
 		if (ctx->encoding_buf->used != 0) {
 			ret = base64_decode(ctx->encoding_buf->data,
@@ -345,9 +336,8 @@ static bool message_decode_body(struct message_decoder_context *ctx,
 		output->size = size;
 	} else if (ctx->charset_utf8) {
 		buffer_set_used_size(ctx->buf2, 0);
-		if ((ctx->flags & MESSAGE_DECODER_FLAG_DTCASE) != 0) {
-			(void)uni_utf8_to_decomposed_titlecase(data, size,
-							       ctx->buf2);
+		if (ctx->normalizer != NULL) {
+			(void)ctx->normalizer(data, size, ctx->buf2);
 			output->data = ctx->buf2->data;
 			output->size = ctx->buf2->used;
 		} else if (uni_utf8_get_valid_data(data, size, ctx->buf2)) {
@@ -417,7 +407,7 @@ bool message_decoder_decode_next_block(struct message_decoder_context *ctx,
 void message_decoder_decode_reset(struct message_decoder_context *ctx)
 {
 	i_free_and_null(ctx->content_charset);
-	ctx->content_type = CONTENT_TYPE_BINARY;
+	ctx->message_cte = MESSAGE_CTE_78BIT;
 	ctx->charset_utf8 = TRUE;
 	buffer_set_used_size(ctx->encoding_buf, 0);
 }

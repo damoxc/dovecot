@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "buffer.h"
@@ -11,11 +11,13 @@ struct ssl_ostream {
 	buffer_t *buffer;
 };
 
-static void o_stream_ssl_close(struct iostream_private *stream)
+static void
+o_stream_ssl_close(struct iostream_private *stream, bool close_parent)
 {
 	struct ssl_ostream *sstream = (struct ssl_ostream *)stream;
 
-	o_stream_close(sstream->ssl_io->plain_output);
+	if (close_parent)
+		o_stream_close(sstream->ssl_io->plain_output);
 }
 
 static void o_stream_ssl_destroy(struct iostream_private *stream)
@@ -87,8 +89,8 @@ static int o_stream_ssl_flush_buffer(struct ssl_ostream *sstream)
 				CONST_PTR_OFFSET(sstream->buffer->data, pos),
 				sstream->buffer->used - pos);
 		if (ret <= 0) {
-			ret = ssl_iostream_handle_write_error(sstream->ssl_io,
-							      ret, "SSL_write");
+			ret = openssl_iostream_handle_write_error(sstream->ssl_io,
+								  ret, "SSL_write");
 			if (ret < 0) {
 				sstream->ostream.ostream.stream_errno = errno;
 				break;
@@ -97,7 +99,7 @@ static int o_stream_ssl_flush_buffer(struct ssl_ostream *sstream)
 				break;
 		} else {
 			pos += ret;
-			(void)ssl_iostream_bio_sync(sstream->ssl_io);
+			(void)openssl_iostream_bio_sync(sstream->ssl_io);
 		}
 	}
 	buffer_delete(sstream->buffer, 0, pos);
@@ -109,7 +111,7 @@ static int o_stream_ssl_flush(struct ostream_private *stream)
 	struct ssl_ostream *sstream = (struct ssl_ostream *)stream;
 	int ret;
 
-	if ((ret = ssl_iostream_more(sstream->ssl_io)) < 0) {
+	if ((ret = openssl_iostream_more(sstream->ssl_io)) < 0) {
 		/* handshake failed */
 		stream->ostream.stream_errno = errno;
 	} else if (ret > 0 && sstream->buffer != NULL &&
@@ -129,59 +131,21 @@ static int o_stream_ssl_flush(struct ostream_private *stream)
 }
 
 static ssize_t
-o_stream_ssl_sendv_try(struct ssl_ostream *sstream,
-		       const struct const_iovec *iov, unsigned int iov_count,
-		       size_t *bytes_sent_r)
-{
-	unsigned int i;
-	size_t pos;
-	ssize_t ret = 0;
-
-	*bytes_sent_r = 0;
-	for (i = 0, pos = 0; i < iov_count; ) {
-		ret = SSL_write(sstream->ssl_io->ssl,
-				CONST_PTR_OFFSET(iov[i].iov_base, pos),
-				iov[i].iov_len - pos);
-		if (ret <= 0) {
-			ret = ssl_iostream_handle_write_error(sstream->ssl_io,
-							      ret, "SSL_write");
-			if (ret < 0) {
-				sstream->ostream.ostream.stream_errno = errno;
-				break;
-			}
-			if (ret == 0)
-				break;
-		} else {
-			*bytes_sent_r += ret;
-			if ((size_t)ret < iov[i].iov_len)
-				pos += ret;
-			else {
-				i++;
-				pos = 0;
-			}
-			(void)ssl_iostream_bio_sync(sstream->ssl_io);
-		}
-	}
-	return ret < 0 ? -1 : 0;
-}
-
-static ssize_t
 o_stream_ssl_sendv(struct ostream_private *stream,
 		   const struct const_iovec *iov, unsigned int iov_count)
 {
 	struct ssl_ostream *sstream = (struct ssl_ostream *)stream;
 	size_t bytes_sent = 0;
-	int ret;
-
-	if (!sstream->ssl_io->handshaked)
-		ret = 0;
-	else {
-		ret = o_stream_ssl_sendv_try(sstream, iov, iov_count,
-					     &bytes_sent);
-	}
 
 	bytes_sent = o_stream_ssl_buffer(sstream, iov, iov_count, bytes_sent);
-	return bytes_sent != 0 ? (ssize_t)bytes_sent : ret;
+	if (sstream->ssl_io->handshaked &&
+	    sstream->buffer->used == bytes_sent) {
+		/* buffer was empty before calling this. try to write it
+		   immediately. */
+		if (o_stream_ssl_flush_buffer(sstream) < 0)
+			return -1;
+	}
+	return bytes_sent;
 }
 
 static void o_stream_ssl_switch_ioloop(struct ostream_private *stream)
@@ -231,7 +195,7 @@ static void o_stream_ssl_set_max_buffer_size(struct iostream_private *_stream,
 	o_stream_set_max_buffer_size(sstream->ssl_io->plain_output, max_size);
 }
 
-struct ostream *o_stream_create_ssl(struct ssl_iostream *ssl_io)
+struct ostream *openssl_o_stream_create_ssl(struct ssl_iostream *ssl_io)
 {
 	struct ssl_ostream *sstream;
 
@@ -256,5 +220,6 @@ struct ostream *o_stream_create_ssl(struct ssl_iostream *ssl_io)
 	o_stream_set_flush_callback(ssl_io->plain_output,
 				    plain_flush_callback, sstream);
 
-	return o_stream_create(&sstream->ostream, NULL);
+	return o_stream_create(&sstream->ostream, NULL,
+			       o_stream_get_fd(ssl_io->plain_output));
 }

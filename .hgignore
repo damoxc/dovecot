@@ -1,6 +1,7 @@
 syntax: glob
 aclocal.m4
 autom4te.cache
+cc-wrapper.sh
 compile
 config.cache
 config.guess
@@ -67,12 +68,16 @@ src/dns/dns-client
 src/doveadm/doveadm
 src/doveadm/doveadm-server
 src/imap-login/imap-login
+src/imap-urlauth/imap-urlauth
+src/imap-urlauth/imap-urlauth-login
+src/imap-urlauth/imap-urlauth-worker
 src/imap/imap
 src/indexer/indexer
 src/indexer/indexer-worker
 src/ipc/ipc
 src/lib/unicodemap.c
 src/lib/UnicodeData.txt
+src/lib-fs/fs-test
 src/lib-dict/dict-drivers-register.c
 src/lib-sql/sql-drivers-register.c
 src/lib-storage/register/mail-storage-register.c

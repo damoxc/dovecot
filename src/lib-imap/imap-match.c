@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* imap_match_init() logic originates from Cyrus, but the code is fully
    rewritten. */
@@ -189,7 +189,7 @@ imap_match_dup_real(pool_t pool, const struct imap_match_glob *glob)
 			inboxcase = TRUE;
 		array_append(&patterns, &p->pattern, 1);
 	}
-	(void)array_append_space(&patterns);
+	array_append_zero(&patterns);
 	return imap_match_init_multiple_real(pool, array_idx(&patterns, 0),
 					     inboxcase, glob->sep);
 }

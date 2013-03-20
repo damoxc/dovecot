@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #define _GNU_SOURCE
 #include "lib.h"
@@ -10,7 +10,7 @@
 #include "ioloop-private.h"
 #include "ioloop-notify-fd.h"
 #include "buffer.h"
-#include "network.h"
+#include "net.h"
 #include "ipwd.h"
 
 #include <stdio.h>

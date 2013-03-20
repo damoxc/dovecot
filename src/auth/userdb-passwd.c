@@ -1,4 +1,4 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "auth-common.h"
 #include "userdb.h"
@@ -146,13 +146,6 @@ passwd_iterate_want_pw(struct passwd *pw, const struct auth_settings *set)
 		return FALSE;
 	if (pw->pw_uid > (uid_t)set->last_valid_uid && set->last_valid_uid != 0)
 		return FALSE;
-
-	/* skip entries that don't have a valid shell.
-	   they're again probably not real users. */
-	if (strcmp(pw->pw_shell, "/bin/false") == 0 ||
-	    strcmp(pw->pw_shell, "/sbin/nologin") == 0 ||
-	    strcmp(pw->pw_shell, "/usr/sbin/nologin") == 0)
-		return FALSE;
 	return TRUE;
 }
 
@@ -185,7 +178,8 @@ static void passwd_iterate_next(struct userdb_iterate_context *_ctx)
 	_ctx->callback(NULL, _ctx->context);
 }
 
-static void passwd_iterate_next_timeout(void *context ATTR_UNUSED)
+static void ATTR_NULL(1)
+passwd_iterate_next_timeout(void *context ATTR_UNUSED)
 {
 	timeout_remove(&cur_userdb_iter_to);
 	passwd_iterate_next(&cur_userdb_iter->ctx);
@@ -201,8 +195,8 @@ static int passwd_iterate_deinit(struct userdb_iterate_context *_ctx)
 	i_free(ctx);
 
 	if (cur_userdb_iter != NULL) {
-		cur_userdb_iter_to =
-			timeout_add(0, passwd_iterate_next_timeout, NULL);
+		cur_userdb_iter_to = timeout_add(0, passwd_iterate_next_timeout,
+						 (void *)NULL);
 	}
 	return ret;
 }

@@ -1,11 +1,11 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 /* @UNSAFE: whole file */
 
 #include "lib.h"
 #include "ioloop.h"
 #include "write-full.h"
-#include "network.h"
+#include "net.h"
 #include "sendfile-util.h"
 #include "istream.h"
 #include "istream-private.h"
@@ -67,12 +67,13 @@ static void stream_closed(struct file_ostream *fstream)
 	fstream->ostream.ostream.closed = TRUE;
 }
 
-static void o_stream_file_close(struct iostream_private *stream)
+static void o_stream_file_close(struct iostream_private *stream,
+				bool close_parent ATTR_UNUSED)
 {
 	struct file_ostream *fstream = (struct file_ostream *)stream;
 
 	/* flush output before really closing it */
-	o_stream_flush(&fstream->ostream.ostream);
+	(void)o_stream_flush(&fstream->ostream.ostream);
 
 	stream_closed(fstream);
 }
@@ -174,6 +175,8 @@ static ssize_t o_stream_writev(struct file_ostream *fstream,
 
 	o_stream_socket_cork(fstream);
 	if (iov_size == 1) {
+		i_assert(iov->iov_len > 0);
+
 		if (!fstream->file ||
 		    fstream->real_offset == fstream->buffer_offset) {
 			ret = write(fstream->fd, iov->iov_base, iov->iov_len);
@@ -505,7 +508,8 @@ static size_t o_stream_add(struct file_ostream *fstream,
 		if (fstream->tail == fstream->buffer_size)
 			fstream->tail = 0;
 
-		if (fstream->head == fstream->tail)
+		if (fstream->head == fstream->tail &&
+		    fstream->buffer_size > 0)
 			fstream->full = TRUE;
 	}
 
@@ -674,17 +678,15 @@ static off_t io_stream_sendfile(struct ostream_private *outstream,
 				struct istream *instream, int in_fd)
 {
 	struct file_ostream *foutstream = (struct file_ostream *)outstream;
-	const struct stat *st;
 	uoff_t start_offset;
 	uoff_t in_size, offset, send_size, v_offset;
 	ssize_t ret;
 
-	st = i_stream_stat(instream, TRUE);
-	if (st == NULL) {
-		outstream->ostream.stream_errno = instream->stream_errno;
+	if ((ret = i_stream_get_size(instream, TRUE, &in_size)) <= 0) {
+		outstream->ostream.stream_errno = ret == 0 ? ESPIPE :
+			instream->stream_errno;
 		return -1;
 	}
-	in_size = st->st_size;
 
 	o_stream_socket_cork(foutstream);
 
@@ -812,18 +814,24 @@ static off_t io_stream_copy_stream(struct ostream_private *outstream,
 				   struct istream *instream, bool same_stream)
 {
 	struct file_ostream *foutstream = (struct file_ostream *)outstream;
-	const struct stat *st;
-	off_t in_abs_offset, ret;
+	uoff_t in_size;
+	off_t in_abs_offset, ret = 0;
 
 	if (same_stream) {
 		/* copying data within same fd. we'll have to be careful with
 		   seeks and overlapping writes. */
-		st = i_stream_stat(instream, TRUE);
-		if (st == NULL) {
-			outstream->ostream.stream_errno = instream->stream_errno;
+		if ((ret = i_stream_get_size(instream, TRUE, &in_size)) < 0) {
+			outstream->ostream.stream_errno =
+				instream->stream_errno;
 			return -1;
 		}
-		i_assert(instream->v_offset <= (uoff_t)st->st_size);
+		/* if we couldn't find out the size, it means that instream
+		   isn't a regular file_istream. we can be reasonably sure that
+		   we can copy it safely the regular way. (there's really no
+		   other possibility, other than failing completely.) */
+	}
+	if (ret > 0) {
+		i_assert(instream->v_offset <= in_size);
 
 		in_abs_offset = instream->real_stream->abs_start_offset +
 			instream->v_offset;
@@ -831,13 +839,13 @@ static off_t io_stream_copy_stream(struct ostream_private *outstream,
 		if (ret == 0) {
 			/* copying data over itself. we don't really
 			   need to do that, just fake it. */
-			return st->st_size - instream->v_offset;
+			return in_size - instream->v_offset;
 		}
-		if (ret > 0 && st->st_size > ret) {
+		if (ret > 0 && in_size > (uoff_t)ret) {
 			/* overlapping */
 			i_assert(instream->seekable);
 			return io_stream_copy_backwards(outstream, instream,
-							st->st_size);
+							in_size);
 		}
 	}
 
@@ -866,7 +874,8 @@ static off_t o_stream_file_send_istream(struct ostream_private *outstream,
 		foutstream->no_sendfile = TRUE;
 	}
 
-	same_stream = i_stream_get_fd(instream) == foutstream->fd;
+	same_stream = i_stream_get_fd(instream) == foutstream->fd &&
+		foutstream->fd != -1;
 	return io_stream_copy_stream(outstream, instream, same_stream);
 }
 
@@ -933,7 +942,7 @@ o_stream_create_fd(int fd, size_t max_buffer_size, bool autoclose_fd)
 
 	fstream = o_stream_create_fd_common(fd, autoclose_fd);
 	fstream->ostream.max_buffer_size = max_buffer_size;
-	ostream = o_stream_create(&fstream->ostream, NULL);
+	ostream = o_stream_create(&fstream->ostream, NULL, fd);
 
 	offset = lseek(fd, 0, SEEK_CUR);
 	if (offset >= 0) {
@@ -969,7 +978,7 @@ o_stream_create_fd_file(int fd, uoff_t offset, bool autoclose_fd)
 	fstream->real_offset = offset;
 	fstream->buffer_offset = offset;
 
-	ostream = o_stream_create(&fstream->ostream, NULL);
+	ostream = o_stream_create(&fstream->ostream, NULL, fd);
 	ostream->offset = offset;
 	return ostream;
 }

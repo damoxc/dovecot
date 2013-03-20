@@ -1,9 +1,10 @@
-/* Copyright (c) 2002-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2002-2013 Dovecot authors, see the included COPYING file */
 
 #include "imap-common.h"
 #include "seq-range-array.h"
 #include "imap-commands.h"
 #include "mail-search-build.h"
+#include "imap-search-args.h"
 #include "imap-seqset.h"
 #include "imap-fetch.h"
 #include "imap-sync.h"
@@ -214,16 +215,17 @@ static bool cmd_select_continue(struct client_command_context *cmd)
         struct imap_select_context *ctx = cmd->context;
 	int ret;
 
-	if (imap_fetch_more(ctx->fetch_ctx) == 0) {
+	if (imap_fetch_more(ctx->fetch_ctx, cmd) == 0) {
 		/* unfinished */
 		return FALSE;
 	}
 
-	ret = imap_fetch_deinit(ctx->fetch_ctx);
+	ret = imap_fetch_end(ctx->fetch_ctx);
 	if (ret < 0) {
 		client_send_storage_error(ctx->cmd,
 					  mailbox_get_storage(ctx->box));
 	}
+	imap_fetch_free(&ctx->fetch_ctx);
 	cmd_select_finish(ctx, ret);
 	return TRUE;
 }
@@ -232,42 +234,46 @@ static int select_qresync(struct imap_select_context *ctx)
 {
 	struct imap_fetch_context *fetch_ctx;
 	struct mail_search_args *search_args;
+	struct imap_fetch_qresync_args qresync_args;
 
 	search_args = mail_search_build_init();
 	search_args->args = p_new(search_args->pool, struct mail_search_arg, 1);
 	search_args->args->type = SEARCH_UIDSET;
 	search_args->args->value.seqset = ctx->qresync_known_uids;
+	imap_search_add_changed_since(search_args, ctx->qresync_modseq);
 
-	fetch_ctx = imap_fetch_init(ctx->cmd, ctx->box);
-	if (fetch_ctx == NULL)
-		return -1;
+	memset(&qresync_args, 0, sizeof(qresync_args));
+	qresync_args.qresync_sample_seqset = &ctx->qresync_sample_seqset;
+	qresync_args.qresync_sample_uidset = &ctx->qresync_sample_uidset;
 
-	fetch_ctx->search_args = search_args;
-	fetch_ctx->send_vanished = TRUE;
-	fetch_ctx->qresync_sample_seqset = &ctx->qresync_sample_seqset;
-	fetch_ctx->qresync_sample_uidset = &ctx->qresync_sample_uidset;
-
-	if (!imap_fetch_add_changed_since(fetch_ctx, ctx->qresync_modseq) ||
-	    !imap_fetch_init_handler(fetch_ctx, "UID", NULL) ||
-	    !imap_fetch_init_handler(fetch_ctx, "FLAGS", NULL) ||
-	    !imap_fetch_init_handler(fetch_ctx, "MODSEQ", NULL)) {
-		(void)imap_fetch_deinit(fetch_ctx);
+	if (imap_fetch_send_vanished(ctx->cmd->client, ctx->box,
+				     search_args, &qresync_args) < 0) {
+		mail_search_args_unref(&search_args);
 		return -1;
 	}
 
-	if (imap_fetch_begin(fetch_ctx) == 0) {
-		if (imap_fetch_more(fetch_ctx) == 0) {
-			/* unfinished */
-			ctx->fetch_ctx = fetch_ctx;
-			ctx->cmd->state = CLIENT_COMMAND_STATE_WAIT_OUTPUT;
+	fetch_ctx = imap_fetch_alloc(ctx->cmd->client, ctx->cmd->pool);
 
-			ctx->cmd->func = cmd_select_continue;
-			ctx->cmd->context = ctx;
-			return 0;
-		}
+	imap_fetch_init_nofail_handler(fetch_ctx, imap_fetch_uid_init);
+	imap_fetch_init_nofail_handler(fetch_ctx, imap_fetch_flags_init);
+	imap_fetch_init_nofail_handler(fetch_ctx, imap_fetch_modseq_init);
+
+	imap_fetch_begin(fetch_ctx, ctx->box, search_args);
+	mail_search_args_unref(&search_args);
+
+	if (imap_fetch_more(fetch_ctx, ctx->cmd) == 0) {
+		/* unfinished */
+		ctx->fetch_ctx = fetch_ctx;
+		ctx->cmd->state = CLIENT_COMMAND_STATE_WAIT_OUTPUT;
+
+		ctx->cmd->func = cmd_select_continue;
+		ctx->cmd->context = ctx;
+		return 0;
 	}
-
-	return imap_fetch_deinit(fetch_ctx) < 0 ? -1 : 1;
+	if (imap_fetch_end(fetch_ctx) < 0)
+		return -1;
+	imap_fetch_free(&fetch_ctx);
+	return 1;
 }
 
 static int
@@ -304,11 +310,11 @@ select_open(struct imap_select_context *ctx, const char *mailbox, bool readonly)
 				STATUS_HIGHESTMODSEQ, &status);
 
 	client->mailbox = ctx->box;
-	client->select_counter++;
 	client->mailbox_examined = readonly;
 	client->messages_count = status.messages;
 	client->recent_count = status.recent;
 	client->uidvalidity = status.uidvalidity;
+	client->notify_uidnext = status.uidnext;
 
 	client_update_mailbox_flags(client, status.keywords);
 	client_send_mailbox_flags(client, TRUE);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "restrict-access.h"
@@ -32,7 +32,8 @@ static void client_connected(struct master_service_connection *conn)
 	}
 
 	master_service_client_connection_accept(conn);
-	doveadm_client = client_connection_create(conn->fd, conn->listen_fd);
+	doveadm_client = client_connection_create(conn->fd, conn->listen_fd,
+						  conn->ssl);
 }
 
 static void main_preinit(void)
@@ -73,7 +74,7 @@ int main(int argc, char *argv[])
 	const char *error;
 
 	master_service = master_service_init("doveadm", service_flags,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 

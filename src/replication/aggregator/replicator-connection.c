@@ -1,8 +1,8 @@
-/* Copyright (c) 2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
-#include "network.h"
+#include "net.h"
 #include "istream.h"
 #include "ostream.h"
 #include "buffer.h"
@@ -29,7 +29,7 @@ struct replicator_connection {
 
 	buffer_t *queue[REPLICATION_PRIORITY_SYNC + 1];
 
-	struct hash_table *requests;
+	HASH_TABLE(void *, void *) requests;
 	unsigned int request_id_counter;
 	replicator_sync_callback_t *callback;
 };
@@ -172,7 +172,8 @@ static void replicator_connection_connect(struct replicator_connection *conn)
 	conn->io = io_add(fd, IO_READ, replicator_input, conn);
 	conn->input = i_stream_create_fd(fd, MAX_INBUF_SIZE, FALSE);
 	conn->output = o_stream_create_fd(fd, (size_t)-1, FALSE);
-	(void)o_stream_send_str(conn->output, REPLICATOR_HANDSHAKE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
+	o_stream_nsend_str(conn->output, REPLICATOR_HANDSHAKE);
 	o_stream_set_flush_callback(conn->output, replicator_output, conn);
 }
 
@@ -182,7 +183,7 @@ static void replicator_abort_all_requests(struct replicator_connection *conn)
 	void *key, *value;
 
 	iter = hash_table_iterate_init(conn->requests);
-	while (hash_table_iterate(iter, &key, &value))
+	while (hash_table_iterate(iter, conn->requests, &key, &value))
 		conn->callback(FALSE, value);
 	hash_table_iterate_deinit(&iter);
 	hash_table_clear(conn->requests, TRUE);
@@ -208,8 +209,7 @@ static struct replicator_connection *replicator_connection_create(void)
 
 	conn = i_new(struct replicator_connection, 1);
 	conn->fd = -1;
-	conn->requests = hash_table_create(default_pool, default_pool,
-					   0, NULL, NULL);
+	hash_table_create_direct(&conn->requests, default_pool, 0);
 	for (i = REPLICATION_PRIORITY_LOW; i <= REPLICATION_PRIORITY_SYNC; i++)
 		conn->queue[i] = buffer_create_dynamic(default_pool, 1024);
 	return conn;
@@ -269,7 +269,7 @@ replicator_send(struct replicator_connection *conn,
 	if (conn->fd != -1 &&
 	    o_stream_get_buffer_used_size(conn->output) == 0) {
 		/* we can send data immediately */
-		o_stream_send(conn->output, data, data_len);
+		o_stream_nsend(conn->output, data, data_len);
 	} else if (conn->queue[priority]->used + data_len >=
 		   	REPLICATOR_MEMBUF_MAX_SIZE) {
 		/* FIXME: compress duplicates, start writing to file */

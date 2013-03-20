@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2008-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "time-util.h"
@@ -37,7 +37,7 @@ long long timeval_diff_usecs(const struct timeval *tv1,
 		secs--;
 		usecs += 1000000;
 	}
-	return ((long long)secs * 1000000ULL) + usecs;
+	return ((long long)secs * 1000000LL) + usecs;
 }
 
 const char *t_strflocaltime(const char *fmt, time_t t)

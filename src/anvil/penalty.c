@@ -1,4 +1,8 @@
-/* Copyright (c) 2009-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2009-2013 Dovecot authors, see the included COPYING file */
+
+/* The idea behind checksums is that the same username+password doesn't
+   increase the penalty, because it's most likely a user with a misconfigured
+   account. */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -38,7 +42,7 @@ struct penalty_rec {
 
 struct penalty {
 	/* ident => penalty_rec */
-	struct hash_table *hash;
+	HASH_TABLE(char *, struct penalty_rec *) hash;
 	struct penalty_rec *oldest, *newest;
 
 	unsigned int expire_secs;
@@ -50,9 +54,7 @@ struct penalty *penalty_init(void)
 	struct penalty *penalty;
 
 	penalty = i_new(struct penalty, 1);
-	penalty->hash =
-		hash_table_create(default_pool, default_pool, 0,
-				  str_hash, (hash_cmp_callback_t *)strcmp);
+	hash_table_create(&penalty->hash, default_pool, 0, str_hash, strcmp);
 	penalty->expire_secs = PENALTY_DEFAULT_EXPIRE_SECS;
 	return penalty;
 }
@@ -261,12 +263,12 @@ void penalty_dump(struct penalty *penalty, struct ostream *output)
 
 	for (rec = penalty->oldest; rec != NULL; rec = rec->next) {
 		str_truncate(str, 0);
-		str_tabescape_write(str, rec->ident);
+		str_append_tabescaped(str, rec->ident);
 		str_printfa(str, "\t%u\t%u\t%u\n",
 			    rec->penalty, rec->last_penalty,
 			    rec->last_penalty + rec->last_update);
 		if (o_stream_send(output, str_data(str), str_len(str)) < 0)
 			break;
 	}
-	(void)o_stream_send(output, "\n", 1);
+	o_stream_nsend(output, "\n", 1);
 }

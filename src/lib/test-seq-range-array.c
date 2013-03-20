@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "array.h"
@@ -6,15 +6,50 @@
 
 #include <stdlib.h>
 
+static void
+boundaries_permute(uint32_t *input, unsigned int i, unsigned int count)
+{
+	ARRAY_TYPE(seq_range) range;
+	const struct seq_range *seqs;
+	unsigned int seqs_count;
+	uint32_t tmp;
+	unsigned int j;
+
+	if (i+1 < count) {
+		for (j = i; j < count; j++) {
+			tmp = input[i]; input[i] = input[j]; input[j] = tmp;
+			boundaries_permute(input, i+1, count);
+			tmp = input[i]; input[i] = input[j]; input[j] = tmp;
+		}
+		return;
+	}
+	t_array_init(&range, 4);
+	for (i = 0; i < count; i++)
+		seq_range_array_add(&range, input[i]);
+	seqs = array_get(&range, &seqs_count);
+	test_assert(seqs_count == 2);
+	test_assert(seqs[0].seq1 == 0);
+	test_assert(seqs[0].seq2 == 1);
+	test_assert(seqs[1].seq1 == (uint32_t)-2);
+	test_assert(seqs[1].seq2 == (uint32_t)-1);
+}
+
+static void test_seq_range_array_add_boundaries(void)
+{
+	static uint32_t input[] = { 0, 1, (uint32_t)-2, (uint32_t)-1 };
+
+	boundaries_permute(input, 0, N_ELEMENTS(input));
+}
+
 static void test_seq_range_array_add_merge(void)
 {
 	ARRAY_TYPE(seq_range) range;
 
 	test_begin("seq_range_array_add() merging");
 	t_array_init(&range, 8);
-	seq_range_array_add(&range, 0, 4);
-	seq_range_array_add(&range, 0, 1);
-	seq_range_array_add(&range, 0, 2);
+	seq_range_array_add(&range, 4);
+	seq_range_array_add(&range, 1);
+	seq_range_array_add(&range, 2);
 	test_assert(array_count(&range) == 2);
 	test_end();
 }
@@ -39,7 +74,7 @@ static void test_seq_range_array_random(void)
 		test = rand() % 4;
 		switch (test) {
 		case 0:
-			seq_range_array_add(&range, 0, seq1);
+			seq_range_array_add(&range, seq1);
 			shadowbuf[seq1] = 1;
 			break;
 		case 1:
@@ -96,23 +131,23 @@ static void test_seq_range_array_invert(void)
 {
 	static const unsigned int input_min = 1, input_max = 5;
 	static const unsigned int input[] = {
-		1, 2, 3, 4, 5, -1U,
-		2, 3, 4, -1U,
-		1, 2, 4, 5, -1U,
-		1, 3, 5, -1U,
-		1, -1U,
-		5, -1U,
-		-1U
+		1, 2, 3, 4, 5, UINT_MAX,
+		2, 3, 4, UINT_MAX,
+		1, 2, 4, 5, UINT_MAX,
+		1, 3, 5, UINT_MAX,
+		1, UINT_MAX,
+		5, UINT_MAX,
+		UINT_MAX
 	};
 	ARRAY_TYPE(seq_range) range = ARRAY_INIT;
 	unsigned int i, j, seq, start, num;
 	bool old_exists, success;
 
-	for (i = num = 0; input[i] != -1U; num++, i++) {
+	for (i = num = 0; input[i] != UINT_MAX; num++, i++) {
 		success = TRUE;
 		start = i;
-		for (; input[i] != -1U; i++) {
-			seq_range_array_add(&range, 32, input[i]);
+		for (; input[i] != UINT_MAX; i++) {
+			seq_range_array_add_with_init(&range, 32, input[i]);
 			for (j = start; j < i; j++) {
 				if (!seq_range_exists(&range, input[j]))
 					success = FALSE;
@@ -121,11 +156,11 @@ static void test_seq_range_array_invert(void)
 
 		seq_range_array_invert(&range, input_min, input_max);
 		for (seq = input_min; seq <= input_max; seq++) {
-			for (j = start; input[j] != -1U; j++) {
+			for (j = start; input[j] != UINT_MAX; j++) {
 				if (input[j] == seq)
 					break;
 			}
-			old_exists = input[j] != -1U;
+			old_exists = input[j] != UINT_MAX;
 			if (seq_range_exists(&range, seq) == old_exists)
 				success = FALSE;
 		}
@@ -142,7 +177,7 @@ static void test_seq_range_create(ARRAY_TYPE(seq_range) *array, uint8_t byte)
 	array_clear(array);
 	for (i = 0; i < 8; i++) {
 		if ((byte & (1 << i)) != 0)
-			seq_range_array_add(array, 0, i + 1);
+			seq_range_array_add(array, i + 1);
 	}
 }
 
@@ -169,6 +204,7 @@ static void test_seq_range_array_have_common(void)
 
 void test_seq_range_array(void)
 {
+	test_seq_range_array_add_boundaries();
 	test_seq_range_array_add_merge();
 	test_seq_range_array_invert();
 	test_seq_range_array_have_common();

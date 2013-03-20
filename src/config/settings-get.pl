@@ -8,7 +8,7 @@ print '#include "var-expand.h"'."\n";
 print '#include "file-lock.h"'."\n";
 print '#include "fsync-mode.h"'."\n";
 print '#include "hash-format.h"'."\n";
-print '#include "network.h"'."\n";
+print '#include "net.h"'."\n";
 print '#include "unichar.h"'."\n";
 print '#include "settings-parser.h"'."\n";
 print '#include "all-settings.h"'."\n";
@@ -136,6 +136,8 @@ print "\tconfig_all_services, sizeof(config_all_services), { 0, }\n";
 print "};\n";
 
 print "const struct setting_parser_info *all_default_roots[] = {\n";
+print "\t&master_service_setting_parser_info,\n";
+print "\t&master_service_ssl_setting_parser_info,\n";
 foreach my $name (keys %parsers) {
   my $module = $parsers{$name};
   next if (!$module);

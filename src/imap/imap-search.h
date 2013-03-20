@@ -26,6 +26,9 @@ struct imap_search_context {
 	struct mailbox_transaction_context *trans;
         struct mail_search_context *search_ctx;
 
+	pool_t fetch_pool;
+	struct imap_fetch_context *fetch_ctx;
+
 	struct mail_search_args *sargs;
 	enum search_return_options return_options;
 	uint32_t partial1, partial2;
@@ -34,7 +37,7 @@ struct imap_search_context {
 	ARRAY_TYPE(seq_range) result;
 	unsigned int result_count;
 
-	ARRAY_DEFINE(relevancy_scores, float);
+	ARRAY(float) relevancy_scores;
 	float min_relevancy, max_relevancy;
 
 	uint64_t highest_seen_modseq;
@@ -47,9 +50,11 @@ struct imap_search_context {
 
 int cmd_search_parse_return_if_found(struct imap_search_context *ctx,
 				     const struct imap_arg **args);
+void imap_search_context_free(struct imap_search_context *ctx);
 
 bool imap_search_start(struct imap_search_context *ctx,
 		       struct mail_search_args *sargs,
-		       const enum mail_sort_type *sort_program);
+		       const enum mail_sort_type *sort_program) ATTR_NULL(3);
+void imap_search_update_free(struct imap_search_update *update);
 
 #endif

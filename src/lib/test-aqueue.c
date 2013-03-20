@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "test-lib.h"
 #include "array.h"
@@ -23,7 +23,7 @@ static bool aqueue_is_ok(struct aqueue *aqueue, unsigned int deleted_n)
 static const unsigned int aqueue_input[] = { 1, 2, 3, 4, 5, 6 };
 static const char *test_aqueue2(unsigned int initial_size)
 {
-	ARRAY_DEFINE(aqueue_array, unsigned int);
+	ARRAY(unsigned int) aqueue_array;
 	unsigned int i, j, k;
 	struct aqueue *aqueue;
 
@@ -38,7 +38,7 @@ static const char *test_aqueue2(unsigned int initial_size)
 					return t_strdup_printf("Wrong count after append %u vs %u)",
 							       aqueue_count(aqueue), j + 1);
 				}
-				if (!aqueue_is_ok(aqueue, -1U))
+				if (!aqueue_is_ok(aqueue, UINT_MAX))
 					return "Invalid data after append";
 			}
 

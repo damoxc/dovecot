@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2010-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -12,7 +12,7 @@ struct doveadm_print_pager_header {
 
 struct doveadm_print_pager_context {
 	pool_t pool;
-	ARRAY_DEFINE(headers, struct doveadm_print_pager_header);
+	ARRAY(struct doveadm_print_pager_header) headers;
 	unsigned int header_idx;
 
 	unsigned int streaming:1;

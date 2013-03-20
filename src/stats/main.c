@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2011-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "restrict-access.h"
@@ -26,7 +26,7 @@ static void client_connected(struct master_service_connection *conn)
 		}
 		mail_server_conn = mail_server_connection_create(conn->fd);
 	} else {
-		client_create(conn->fd);
+		(void)client_create(conn->fd);
 	}
 	master_service_client_connection_accept(conn);
 }
@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
 	void **sets;
 
 	master_service = master_service_init("stats", service_flags,
-					     &argc, &argv, NULL);
+					     &argc, &argv, "");
 	if (master_getopt(master_service) > 0)
 		return FATAL_DEFAULT;
 	if (master_service_settings_read_simple(master_service, set_roots,

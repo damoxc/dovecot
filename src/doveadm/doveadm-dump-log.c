@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "hex-binary.h"
@@ -52,6 +52,7 @@ mail_transaction_header_has_modseq(const struct mail_transaction_header *hdr)
 	case MAIL_TRANSACTION_FLAG_UPDATE:
 	case MAIL_TRANSACTION_KEYWORD_UPDATE:
 	case MAIL_TRANSACTION_KEYWORD_RESET:
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE:
 		/* these changes increase modseq */
 		return TRUE;
 	}
@@ -114,13 +115,18 @@ static const char *log_record_type(unsigned int type)
 	case MAIL_TRANSACTION_BOUNDARY:
 		name = "boundary";
 		break;
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE:
+		name = "attribute-update";
+		break;
 	default:
 		name = t_strdup_printf("unknown: %x", type);
 		break;
 	}
 
-	if (type & MAIL_TRANSACTION_EXTERNAL)
+	if ((type & MAIL_TRANSACTION_EXTERNAL) != 0)
 		name = t_strconcat(name, " (ext)", NULL);
+	if ((type & MAIL_TRANSACTION_SYNC) != 0)
+		name = t_strconcat(name, " (sync)", NULL);
 	return name;
 }
 
@@ -282,8 +288,8 @@ static void log_record_print(const struct mail_transaction_header *hdr,
 		const struct mail_transaction_flag_update *u = data;
 
 		for (; size > 0; size -= sizeof(*u), u++) {
-			printf(" - uids=%u-%u (flags +%x-%x)\n",
-			       u->uid1, u->uid2, u->add_flags, u->remove_flags);
+			printf(" - uids=%u-%u (flags +%x-%x, modseq_inc_flag=%d)\n",
+			       u->uid1, u->uid2, u->add_flags, u->remove_flags, u->modseq_inc_flag);
 		}
 		break;
 	}
@@ -413,6 +419,16 @@ static void log_record_print(const struct mail_transaction_header *hdr,
 		printf(" - size=%u\n", rec->size);
 		break;
 	}
+	case MAIL_TRANSACTION_ATTRIBUTE_UPDATE: {
+		const char *keys = data;
+		unsigned int i;
+
+		for (i = 0; i < size && keys[i] != '\0'; ) {
+			printf(" - %s\n", keys+i);
+			i += strlen(keys+i) + 1;
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -507,7 +523,7 @@ static bool test_dump_log(const char *path)
 	    hdr.major_version == MAIL_TRANSACTION_LOG_MAJOR_VERSION &&
 	    hdr.hdr_size >= MAIL_TRANSACTION_LOG_HEADER_MIN_SIZE)
 		ret = TRUE;
-	(void)close(fd);
+	i_close_fd(&fd);
 	return ret;
 }
 

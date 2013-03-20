@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 /*
    Expunging works like:
@@ -51,7 +51,7 @@ static int mdbox_sync_expunge(struct mdbox_sync_context *ctx, uint32_t seq,
 {
 	uint32_t map_uid;
 
-	if (seq_range_array_add(&ctx->expunged_seqs, 0, seq)) {
+	if (seq_range_array_add(&ctx->expunged_seqs, seq)) {
 		/* already marked as expunged in this sync */
 		return 0;
 	}
@@ -195,7 +195,7 @@ static int mdbox_sync_try_begin(struct mdbox_sync_context *ctx,
 	if (mail_index_reset_fscked(mbox->box.index))
 		mdbox_storage_set_corrupted(mbox->storage);
 	if (ret < 0) {
-		mail_storage_set_index_error(&mbox->box);
+		mailbox_set_index_error(&mbox->box);
 		return -1;
 	}
 	if (ret == 0) {
@@ -298,7 +298,7 @@ int mdbox_sync_finish(struct mdbox_sync_context **_ctx, bool success)
 
 	if (success) {
 		if (mail_index_sync_commit(&ctx->index_sync_ctx) < 0) {
-			mail_storage_set_index_error(&ctx->mbox->box);
+			mailbox_set_index_error(&ctx->mbox->box);
 			ret = -1;
 		}
 	} else {

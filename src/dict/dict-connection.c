@@ -1,4 +1,4 @@
-/* Copyright (c) 2005-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2005-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -68,7 +68,7 @@ static int dict_connection_dict_init(struct dict_connection *conn)
 {
 	const char *const *strlist;
 	unsigned int i, count;
-	const char *uri;
+	const char *uri, *error;
 
 	strlist = array_get(&dict_settings->dicts, &count);
 	for (i = 0; i < count; i += 2) {
@@ -83,11 +83,11 @@ static int dict_connection_dict_init(struct dict_connection *conn)
 	}
 	uri = strlist[i+1];
 
-	conn->dict = dict_init(uri, conn->value_type, conn->username,
-			       dict_settings->base_dir);
-	if (conn->dict == NULL) {
+	if (dict_init(uri, conn->value_type, conn->username,
+		      dict_settings->base_dir, &conn->dict, &error) < 0) {
 		/* dictionary initialization failed */
-		i_error("Failed to initialize dictionary '%s'", conn->name);
+		i_error("Failed to initialize dictionary '%s': %s",
+			conn->name, error);
 		return -1;
 	}
 	return 0;
@@ -149,6 +149,7 @@ struct dict_connection *dict_connection_create(int fd)
 	conn->input = i_stream_create_fd(fd, DICT_CLIENT_MAX_LINE_LENGTH,
 					 FALSE);
 	conn->output = o_stream_create_fd(fd, 128*1024, FALSE);
+	o_stream_set_no_error_handling(conn->output, TRUE);
 	conn->io = io_add(fd, IO_READ, dict_connection_input, conn);
 	DLLIST_PREPEND(&dict_connections, conn);
 	return conn;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2007-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2007-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "ioloop.h"
@@ -126,26 +126,6 @@ imapc_sync_index_keyword(struct imapc_sync_context *ctx,
 	str_append(str, *kw_p);
 	str_append_c(str, ')');
 	imapc_sync_cmd(ctx, str_c(str));
-}
-
-static void
-imapc_sync_index_keyword_reset(struct imapc_sync_context *ctx,
-			       uint32_t seq1, uint32_t seq2)
-{
-	const struct mail_index_record *rec;
-	string_t *str = t_str_new(128);
-	uint32_t seq;
-
-	for (seq = seq1; seq <= seq2; seq++) {
-		rec = mail_index_lookup(ctx->sync_view, seq);
-		i_assert((rec->flags & MAIL_RECENT) == 0);
-
-		str_truncate(str, 0);
-		str_printfa(str, "UID STORE %u FLAGS (", rec->uid);
-		imap_write_flags(str, rec->flags, NULL);
-		str_append_c(str, ')');
-		imapc_sync_cmd(ctx, str_c(str));
-	}
 }
 
 static void imapc_sync_expunge_finish(struct imapc_sync_context *ctx)
@@ -308,9 +288,6 @@ static void imapc_sync_index(struct imapc_sync_context *ctx)
 						 &seq1, &seq2)) {
 			/* already expunged, nothing to do. */
 		} else switch (sync_rec.type) {
-		case MAIL_INDEX_SYNC_TYPE_APPEND:
-			/* don't care */
-			break;
 		case MAIL_INDEX_SYNC_TYPE_EXPUNGE:
 			imapc_sync_add_missing_deleted_flags(ctx, seq1, seq2);
 			seq_range_array_add_range(&ctx->expunged_uids,
@@ -322,9 +299,6 @@ static void imapc_sync_index(struct imapc_sync_context *ctx)
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_ADD:
 		case MAIL_INDEX_SYNC_TYPE_KEYWORD_REMOVE:
 			imapc_sync_index_keyword(ctx, &sync_rec);
-			break;
-		case MAIL_INDEX_SYNC_TYPE_KEYWORD_RESET:
-			imapc_sync_index_keyword_reset(ctx, seq1, seq2);
 			break;
 		}
 	} T_END;
@@ -403,7 +377,7 @@ imapc_sync_begin(struct imapc_mailbox *mbox,
 				    sync_flags);
 	if (ret <= 0) {
 		if (ret < 0)
-			mail_storage_set_index_error(&mbox->box);
+			mailbox_set_index_error(&mbox->box);
 		i_free(ctx);
 		*ctx_r = NULL;
 		return ret;
@@ -438,7 +412,7 @@ static int imapc_sync_finish(struct imapc_sync_context **_ctx)
 	*_ctx = NULL;
 	if (ret == 0) {
 		if (mail_index_sync_commit(&ctx->index_sync_ctx) < 0) {
-			mail_storage_set_index_error(&ctx->mbox->box);
+			mailbox_set_index_error(&ctx->mbox->box);
 			ret = -1;
 		}
 	} else {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2004-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2004-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "array.h"
@@ -83,8 +83,8 @@ static void keywords_ext_register(struct mail_index_sync_map_ctx *ctx,
 
 	i_assert(keywords_count > 0);
 
-	buffer_create_data(&ext_intro_buf, ext_intro_data,
-			   sizeof(ext_intro_data));
+	buffer_create_from_data(&ext_intro_buf, ext_intro_data,
+				sizeof(ext_intro_data));
 
 	u = buffer_append_space_unsafe(&ext_intro_buf, sizeof(*u));
 	u->ext_id = ext_map_idx;
@@ -210,12 +210,12 @@ keywords_update_records(struct mail_index_sync_map_ctx *ctx,
 	unsigned int data_offset;
 	uint32_t seq1, seq2;
 
-	i_assert(keyword_idx != (unsigned int)-1);
+	i_assert(keyword_idx != UINT_MAX);
 
 	if (!mail_index_lookup_seq_range(view, uid1, uid2, &seq1, &seq2))
 		return 1;
 
-	mail_index_sync_write_seq_update(ctx, seq1, seq2);
+	view->map->rec_map->records_changed = TRUE;
 	mail_index_modseq_update_keyword(ctx->modseq_ctx, keyword_idx,
 					  seq1, seq2);
 
@@ -337,7 +337,7 @@ mail_index_sync_keywords_reset(struct mail_index_sync_map_ctx *ctx,
 						 &seq1, &seq2))
 			continue;
 
-		mail_index_sync_write_seq_update(ctx, seq1, seq2);
+		map->rec_map->records_changed = TRUE;
 		mail_index_modseq_reset_keywords(ctx->modseq_ctx, seq1, seq2);
 		for (seq1--; seq1 < seq2; seq1++) {
 			rec = MAIL_INDEX_MAP_IDX(map, seq1);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2006-2012 Dovecot authors, see the included COPYING file */
+/* Copyright (c) 2006-2013 Dovecot authors, see the included COPYING file */
 
 #include "lib.h"
 #include "hash.h"
@@ -67,8 +67,8 @@ acl_backend_init(const char *data, struct mailbox_list *list,
 			p_new(backend->pool, const char *, group_count);
 		for (i = 0; i < group_count; i++)
 			backend->groups[i] = p_strdup(backend->pool, groups[i]);
-		qsort(backend->groups, group_count, sizeof(const char *),
-		      i_strcmp_p);
+		i_qsort(backend->groups, group_count, sizeof(const char *),
+			i_strcmp_p);
 	}
 
 	T_BEGIN {
@@ -82,8 +82,6 @@ acl_backend_init(const char *data, struct mailbox_list *list,
 	backend->default_aclmask =
 		acl_cache_mask_init(backend->cache, backend->pool,
 				    backend->default_rights);
-
-	backend->default_aclobj = acl_object_init_from_name(backend, "");
 	return backend;
 }
 
@@ -93,7 +91,8 @@ void acl_backend_deinit(struct acl_backend **_backend)
 
 	*_backend = NULL;
 
-	acl_object_deinit(&backend->default_aclobj);
+	if (backend->default_aclobj != NULL)
+		acl_object_deinit(&backend->default_aclobj);
 	acl_cache_deinit(&backend->cache);
 	backend->v.deinit(backend);
 }
@@ -127,8 +126,8 @@ bool acl_backend_user_name_equals(struct acl_backend *backend,
 bool acl_backend_user_is_in_group(struct acl_backend *backend,
 				  const char *group_name)
 {
-	return bsearch(group_name, backend->groups, backend->group_count,
-		       sizeof(const char *), bsearch_strcmp) != NULL;
+	return i_bsearch(group_name, backend->groups, backend->group_count,
+			 sizeof(const char *), bsearch_strcmp) != NULL;
 }
 
 bool acl_backend_rights_match_me(struct acl_backend *backend,
@@ -161,6 +160,10 @@ unsigned int acl_backend_lookup_right(struct acl_backend *backend,
 int acl_backend_get_default_rights(struct acl_backend *backend,
 				   const struct acl_mask **mask_r)
 {
+	if (backend->default_aclobj == NULL) {
+		backend->default_aclobj =
+			acl_object_init_from_name(backend, "");
+	}
 	if (backend->v.object_refresh_cache(backend->default_aclobj) < 0)
 		return -1;
 
