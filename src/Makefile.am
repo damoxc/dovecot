@@ -25,6 +25,7 @@ SUBDIRS = \
 	lib-storage \
 	lib-sql \
 	lib-ntlm \
+	lib-mongodb \
 	lib-otp \
 	lib-lda \
 	anvil \

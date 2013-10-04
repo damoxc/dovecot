@@ -2,8 +2,8 @@ AC_PREREQ([2.59])
 
 # Be sure to update ABI version also if anything changes that might require
 # recompiling plugins. Most importantly that means if any structs are changed.
-AC_INIT([Dovecot],[2.2.6],[dovecot@dovecot.org])
-AC_DEFINE_UNQUOTED([DOVECOT_ABI_VERSION], "2.2.ABIv6($PACKAGE_VERSION)", [Dovecot ABI version])
+AC_INIT([Dovecot],[2.2.5],[dovecot@dovecot.org])
+AC_DEFINE_UNQUOTED([DOVECOT_ABI_VERSION], "2.2.ABIv5($PACKAGE_VERSION)", [Dovecot ABI version])
 
 AC_CONFIG_SRCDIR([src])
 
@@ -130,6 +130,11 @@ AC_ARG_WITH(cdb,
 AS_HELP_STRING([--with-cdb], [Build with CDB support]),
   TEST_WITH(cdb, $withval),
   want_cdb=no)
+
+AC_ARG_WITH(mongodb,
+AS_HELP_STRING([--with-mongodb], [Build with MongoDB support]),
+  TEST_WITH(mongodb, $withval),
+  want_mongodb=no)
 
 dnl The --with-sql is useful only if Dovecot is being built with all the SQL
 dnl drivers as modules. If any SQL driver is built-in, this option is ignored.
@@ -496,7 +501,7 @@ if test "$ioloop" = "best" || test "$ioloop" = "epoll"; then
   AC_CACHE_CHECK([whether we can use epoll],i_cv_epoll_works,[
     AC_TRY_RUN([
       #include <sys/epoll.h>
-  
+
       int main()
       {
 	return epoll_create(5) < 1;
@@ -552,29 +557,29 @@ if test "$notify" = "" || test "$notify" = "inotify" ; then
       #include <fcntl.h>
       #include <sys/inotify.h>
       #include <stdio.h>
-    
+
       int main()
       {
 	int wd, fd;
 	char * fn = "/tmp";
-      
+
 	fd = inotify_init ();
 	if (fd < 0)
 	  {
 	    perror ("inotify_init");
 	    return 1;
 	  }
-  
+
 	wd = inotify_add_watch (fd, fn, IN_ALL_EVENTS);
-  
+
 	if (wd < 0)
 	  {
 	    perror ("inotify_add_watch");
 	    return 2;
 	  }
-  
+
 	inotify_rm_watch (fd, wd);
-  
+
 	close (fd);
 	return 0;
       }
@@ -605,7 +610,7 @@ if (test "$notify" = "" && test "$ioloop" = kqueue) || test "$notify" = "kqueue"
     AC_MSG_RESULT("yes")
     AC_DEFINE(IOLOOP_NOTIFY_KQUEUE,,
       Use BSD kqueue directory changes notificaton)
-  else 
+  else
     AC_MSG_RESULT("no")
     if test "$notify" = "kqueue" ; then
       AC_MSG_ERROR([kqueue notify requested but kqueue() is not available])
@@ -921,7 +926,7 @@ AC_CACHE_CHECK([whether size_t is signed],i_cv_signed_size_t,[
     echo "support it. It probably works just fine, but it's less resistant to"
     echo "buffer overflows. If you're not worried about this and still want to"
     echo "compile Dovecot, set ignore_signed_size=1 environment."
-  
+
     if test "$ignore_signed_size" = ""; then
       AC_MSG_ERROR([aborting])
     fi
@@ -1029,7 +1034,7 @@ AC_CACHE_CHECK([how large time_t values gmtime() accepts],i_cv_gmtime_max_time_t
     int main() {
       FILE *f;
       int bits;
-  
+
       for (bits = 1; bits < sizeof(time_t)*8; bits++) {
 	time_t t = ((time_t)1 << bits) - 1;
 	if (gmtime(&t) == NULL) {
@@ -1042,7 +1047,7 @@ AC_CACHE_CHECK([how large time_t values gmtime() accepts],i_cv_gmtime_max_time_t
 	   Let's just do the same as Cyrus folks and limit it to 40 bits. */
 	bits = 40;
       }
-  
+
       f = fopen("conftest.temp", "w");
       if (f == NULL) {
 	perror("fopen()");
@@ -1247,7 +1252,7 @@ AC_CACHE_CHECK([whether shared mmaps get updated by write()s],i_cv_mmap_plays_wi
 	return 1;
       }
       unlink("conftest.mmap");
-  
+
       write(f, "1", 2);
       mem = mmap(NULL, 2, PROT_READ|PROT_WRITE, MAP_SHARED, f, 0);
       if (mem == MAP_FAILED) {
@@ -1258,7 +1263,7 @@ AC_CACHE_CHECK([whether shared mmaps get updated by write()s],i_cv_mmap_plays_wi
       msync(mem, 2, MS_SYNC);
       lseek(f, 0, SEEK_SET);
       write(f, "3", 2);
-    
+
       return strcmp(mem, "3") == 0 ? 0 : 1;
     }
   ], [
@@ -1279,7 +1284,7 @@ AC_CACHE_CHECK([whether fd passing works],i_cv_fd_passing,[
     if test $i = 2; then
       CFLAGS="$CFLAGS -DBUGGY_CMSG_MACROS"
     fi
-  
+
     AC_TRY_RUN([
       #include <sys/types.h>
       #include <sys/socket.h>
@@ -1288,7 +1293,7 @@ AC_CACHE_CHECK([whether fd passing works],i_cv_fd_passing,[
       #include <unistd.h>
       #include <fcntl.h>
       #include "fdpass.h"
-      
+
       int nopen(void)
       {
 	      int i, n;
@@ -1302,14 +1307,14 @@ AC_CACHE_CHECK([whether fd passing works],i_cv_fd_passing,[
 	      int fd[2], send_fd, recv_fd, status, n1, n2;
 	      struct stat st, st2;
 	      char data;
-      
+
 	      send_fd = creat("conftest.fdpass", 0600);
 	      if (send_fd == -1) return 2;
 	      unlink("conftest.fdpass");
 	      if (fstat(send_fd, &st) < 0) return 2;
 	      if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd) < 0) return 2;
 	      n1 = nopen();
-      
+
 	      switch (fork()) {
 	      case -1:
 		      return 2;
@@ -1452,7 +1457,7 @@ AC_CACHE_CHECK([if struct stat has st_?tim timespec fields],i_cv_have_st_tim_tim
   ], [
     struct stat st;
     unsigned long x = st.st_mtim.tv_nsec;
-  
+
     return 0;
   ], [
     i_cv_have_st_tim_timespec=yes
@@ -1472,7 +1477,7 @@ AC_CACHE_CHECK([if struct stat has st_?timespec fields],i_cv_have_st_timespec,[
   ], [
     struct stat st;
     unsigned long x = st.st_mtimespec.tv_nsec;
-  
+
     return 0;
   ], [
     i_cv_have_st_timespec=yes
@@ -1492,7 +1497,7 @@ AC_CACHE_CHECK([if statvfs.f_mntfromname exists],i_cv_have_statvfs_f_mntfromname
   ], [
     struct statvfs buf;
     char *p = buf.f_mntfromname;
-  
+
     statvfs(".", &buf);
   ], [
     i_cv_have_statvfs_f_mntfromname=yes
@@ -1512,7 +1517,7 @@ AC_CACHE_CHECK([if statfs.f_mntfromname exists],i_cv_have_statfs_f_mntfromname,[
   ], [
     struct statfs buf;
     char *p = buf.f_mntfromname;
-  
+
     statfs(".", &buf);
   ], [
     i_cv_have_statfs_f_mntfromname=yes
@@ -1794,7 +1799,7 @@ fi
 
 dnl **
 dnl ** Garbage Collector
-dnl ** 
+dnl **
 
 if test $want_gc != no; then
   AC_CHECK_LIB(gc, GC_malloc, [
@@ -1954,7 +1959,7 @@ if test $want_gssapi != no; then
 		if test "$KRB5_LIBS" != ""; then
 			AC_SUBST(KRB5_LIBS)
 			AC_SUBST(KRB5_CFLAGS)
-			
+
 			# Although krb5-config exists, all systems still don't
 			# have gssapi.h
 			old_CFLAGS=$CFLAGS
@@ -2000,7 +2005,7 @@ if test $want_gssapi != no; then
 				      gss_OID_set mech_set;
 				      unsigned char spnego_oid[] = { 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02 };
 				      unsigned int i;
-    
+
 				      gss_indicate_mechs(&minor_status, &mech_set);
 				      for (i = 0; i < mech_set->count; i++) {
 					if (mech_set->elements[i].length == 6 &&
@@ -2168,6 +2173,37 @@ if test $want_cdb != no; then
   ])
 fi
 
+build_mongodb=no
+if test $want_mongodb != no; then
+  AC_CHECK_LIB(mongoc, mongo_init, [
+    AC_CHECK_HEADER(mongo.h, [
+      MONGO_LIBS="-lmongoc"
+      build_mongodb="yes"
+    ], [
+      if test $want_mongodb = yes; then
+        AC_ERROR([Can't build with MongoDB support: mongo.h not found])
+      fi
+    ])
+  ], [
+    if test $want_mongodb = yes; then
+      AC_ERROR([Can't build with MongoDB support: libmongoc not found])
+    fi
+  ])
+fi
+AM_CONDITIONAL(BUILD_MONGODB, test "$build_mongodb" = "yes")
+AC_SUBST(MONGO_LIBS)
+
+if test $build_mongodb = yes; then
+    AC_DEFINE(PASSDB_MONGODB,, Build with MongoDB support)
+    AC_DEFINE(USERDB_MONGODB,, Build with MongoDB support)
+    AC_DEFINE(HAVE_MONGODB,, Build with MongoDB support)
+    passdb="$passdb mongodb"
+    userdb="$userdb mongodb"
+else
+    not_passdb="$not_passdb mongodb"
+    not_userdb="$not_userdb mongodb"
+fi
+
 if test $want_pgsql != no; then
   AC_CHECK_PROG(PG_CONFIG, pg_config, pg_config, NO)
   if test $PG_CONFIG = NO; then
@@ -2188,7 +2224,7 @@ if test $want_pgsql != no; then
     done
   else
     PGSQL_INCLUDE="`$PG_CONFIG --includedir`"
-    PGSQL_LIBDIR="`$PG_CONFIG --libdir`"  
+    PGSQL_LIBDIR="`$PG_CONFIG --libdir`"
   fi
 
   old_LIBS=$LIBS
@@ -2284,7 +2320,7 @@ if test $want_mysql != no; then
 					AC_DEFINE(HAVE_MYSQL_SSL_CIPHER,, Define if your MySQL library supports setting cipher)
 				])
 			])
-			
+
 			have_mysql=yes
 			AC_DEFINE(HAVE_MYSQL,, Build with MySQL support)
 			found_sql_drivers="$found_sql_drivers mysql"
@@ -2325,7 +2361,7 @@ if test $want_sqlite != no; then
 	  fi
 	])
 fi
-	
+
 SQL_CFLAGS="$MYSQL_CFLAGS $PGSQL_CFLAGS $SQLITE_CFLAGS"
 if test "$want_sql" != "plugin"; then
 	SQL_LIBS="$MYSQL_LIBS $PGSQL_LIBS $SQLITE_LIBS"
@@ -2570,12 +2606,14 @@ else
 fi
 LIBDOVECOT_STORAGE="$LIBDOVECOT_STORAGE_DEPS $LINKED_STORAGE_LDADD"
 LIBDOVECOT_SQL='$(top_builddir)/src/lib-sql/libsql.la'
+LIBDOVECOT_MONGODB='$(top_builddir)/src/lib-mongodb/libmongodb.la'
 AC_SUBST(LIBDOVECOT)
 AC_SUBST(LIBDOVECOT_DEPS)
 AC_SUBST(LIBDOVECOT_STORAGE)
 AC_SUBST(LIBDOVECOT_STORAGE_DEPS)
 AC_SUBST(LIBDOVECOT_LOGIN)
 AC_SUBST(LIBDOVECOT_SQL)
+AC_SUBST(LIBDOVECOT_MONGODB)
 AC_SUBST(LIBDOVECOT_COMPRESS)
 AC_SUBST(LIBDOVECOT_LDA)
 
@@ -2759,7 +2797,7 @@ dnl happy, because otherwise BIS server disables push email.
 capability_banner="IMAP4rev1 LITERAL+ SASL-IR LOGIN-REFERRALS ID ENABLE IDLE"
 capability="$capability_banner SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND URL-PARTIAL CATENATE UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS SPECIAL-USE BINARY MOVE"
 AC_DEFINE_UNQUOTED(CAPABILITY_STRING, "$capability", IMAP capabilities)
-AC_DEFINE_UNQUOTED(CAPABILITY_BANNER_STRING, "$capability_banner", IMAP capabilities advertised in banner) 
+AC_DEFINE_UNQUOTED(CAPABILITY_BANNER_STRING, "$capability_banner", IMAP capabilities advertised in banner)
 
 CFLAGS="$CFLAGS $EXTRA_CFLAGS"
 NOPLUGIN_LDFLAGS="-no-undefined"
@@ -2819,6 +2857,7 @@ src/lib-index/Makefile
 src/lib-lda/Makefile
 src/lib-mail/Makefile
 src/lib-master/Makefile
+src/lib-mongodb/Makefile
 src/lib-ntlm/Makefile
 src/lib-otp/Makefile
 src/lib-dovecot/Makefile
