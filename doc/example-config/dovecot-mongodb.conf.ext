@@ -1,0 +1,23 @@
+# A MongoDB connection uri. See http://docs.mongodb.org/manual/reference/connection-string/ for
+# more information on what options are avaialble.
+#connect    = mongodb://localhost/mail
+
+# The collection within the database
+#collection = users
+
+# The MongoDB query to find the user. All
+#user_query = {"email": "%{user}"}
+
+# The fields to return. To map a userdb field to a different name in the database just
+# specify it as {"database_name": "userdb_name"}
+#user_fields = {"uid": "uid", "gid": "gid", "mail": "mail", "quota": "quota", "proxy": "proxy"}
+
+# A default document to use when returning results. You are able to reference returned
+# fields by using %{field_name}.
+#user_defaults = {"uid": "5000", "gid": "5000", "home": "/srv/mail", "quota_rule": "*:bytes=%{quota}"}
+
+# The password configuration values are the same as their user_* equivalents
+#password_query = {"email": "%u"}
+#password_fields = {"cleartext": "password"}
+#password_fields = {"password": "cleartext"}
+#password_defaults = {"nopassword": "y"}
