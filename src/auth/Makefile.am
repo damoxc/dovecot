@@ -29,6 +29,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-dns \
 	-I$(top_srcdir)/src/lib-sql \
 	-I$(top_srcdir)/src/lib-settings \
+	-I$(top_srcdir)/src/lib-mongodb \
 	-I$(top_srcdir)/src/lib-ntlm \
 	-I$(top_srcdir)/src/lib-otp \
 	-I$(top_srcdir)/src/lib-master \
@@ -52,12 +53,14 @@ auth_libs = \
 	libpassword.a \
 	../lib-ntlm/libntlm.a \
 	../lib-otp/libotp.a \
-	$(LIBDOVECOT_SQL)
+	$(LIBDOVECOT_SQL) \
+	$(LIBDOVECOT_MONGODB)
 
 auth_LDADD = $(auth_libs) $(LIBDOVECOT) $(AUTH_LIBS)
 auth_DEPENDENCIES = $(auth_libs) $(LIBDOVECOT_DEPS)
 
 ldap_sources = db-ldap.c passdb-ldap.c userdb-ldap.c
+mongodb_sources = db-mongodb.c passdb-mongodb.c userdb-mongodb.c
 
 auth_SOURCES = \
 	auth.c \
@@ -77,6 +80,7 @@ auth_SOURCES = \
 	auth-worker-server.c \
 	db-checkpassword.c \
 	db-dict.c \
+	db-mongodb.c \
 	db-sql.c \
 	db-passwd-file.c \
 	main.c \
@@ -102,6 +106,7 @@ auth_SOURCES = \
 	passdb-cache.c \
 	passdb-checkpassword.c \
 	passdb-dict.c \
+	passdb-mongodb.c \
 	passdb-passwd.c \
 	passdb-passwd-file.c \
 	passdb-pam.c \
@@ -115,6 +120,7 @@ auth_SOURCES = \
 	userdb-blocking.c \
 	userdb-checkpassword.c \
 	userdb-dict.c \
+	userdb-mongodb.c \
 	userdb-nss.c \
 	userdb-passwd.c \
 	userdb-passwd-file.c \
@@ -144,6 +150,7 @@ headers = \
 	auth-worker-server.h \
 	db-dict.h \
 	db-ldap.h \
+	db-mongodb.h \
 	db-sql.h \
 	db-passwd-file.h \
 	db-checkpassword.h \
