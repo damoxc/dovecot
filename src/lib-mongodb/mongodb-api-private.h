@@ -23,8 +23,7 @@ struct mongodb_query {
 	bson *query;
 	bson *fields;
 
-	struct hash2_table *fieldmap;
-	struct hash2_table *rfieldmap;
+	HASH_TABLE(const char *, string_t *) fieldmap;
 	HASH_TABLE(const char *, string_t *) defaults;
 };
 
@@ -51,7 +50,7 @@ struct mongodb_driver_vfuncs {
 
 	int (*query_find_one)(mongodb_query_t query, const char *collection, mongodb_result_t *result_r);
 	int (*query_find)(mongodb_query_t query, const char *collection);
-	int (*query_find_next)(mongodb_query_t query);
+	int (*query_find_next)(mongodb_query_t query, mongodb_result_t *result);
 
 	/* result api */
 	int (*result_var_expand)(mongodb_result_t result, struct var_expand_table *_table);

@@ -99,9 +99,9 @@ int mongodb_query_find(mongodb_query_t query, const char *collection)
 	return mongodb_vfuncs->query_find(query, collection);
 }
 
-int mongodb_query_find_next(mongodb_query_t query)
+int mongodb_query_find_next(mongodb_query_t query, mongodb_result_t *result_r)
 {
-	return mongodb_vfuncs->query_find_next(query);
+	return mongodb_vfuncs->query_find_next(query, result_r);
 }
 
 int mongodb_result_var_expand(mongodb_result_t result, struct var_expand_table *_table)
