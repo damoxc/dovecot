@@ -48,7 +48,7 @@ void mongodb_query_debug(mongodb_query_t query);
 
 int mongodb_query_find_one(mongodb_query_t query, const char *collection, mongodb_result_t *result_r);
 int mongodb_query_find(mongodb_query_t query, const char *collection);
-int mongodb_query_find_next(mongodb_query_t query);
+int mongodb_query_find_next(mongodb_query_t query, mongodb_result_t *result_r);
 
 void mongodb_result_debug(mongodb_result_t result);
 int mongodb_result_var_expand(mongodb_result_t result, struct var_expand_table *_table);
