@@ -60,3 +60,5 @@ void mongodb_result_iterate_deinit(struct mongodb_result_iterate_context **_ctx)
 
 
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8
