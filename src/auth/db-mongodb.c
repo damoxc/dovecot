@@ -50,15 +50,15 @@ static struct mongodb_settings default_mongodb_settings = {
 	.database = NULL,
 	.collection = NULL,
 	.password_defaults = NULL,
-	.password_fields = "{\"password\": \"password\"}",
+	.password_fields = "password",
 	.password_query = "{\"user\": \"%n\", \"domain\": \"%d\"}",
 	.user_defaults = NULL,
-	.user_fields = "{\"uid\": \"uid\", \"home\": \"home\", \"gid\": \"gid\"}",
+	.user_fields = "uid,home,gid",
 	.user_query = "{\"user\": \"%n\", \"domain\": \"%d\"}",
 	.update_query = "{\"user\": \"%n\", \"domain\": \"%d\"}",
 	.iterate_query = "{}",
-    .iterate_defaults = NULL,
-    .iterate_fields = "{\"email\": \"user\"}",
+	.iterate_defaults = NULL,
+	.iterate_fields = "user",
 	.default_pass_scheme = "MD5",
 	.userdb_warning_disable = FALSE
 };
@@ -132,3 +132,5 @@ struct mongodb_connection *db_mongodb_init(const char *config_path, bool userdb)
 }
 
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8

@@ -55,3 +55,5 @@ void db_mongodb_success(struct mongodb_connection *conn);
 void db_mongodb_check_userdb_warning(struct mongodb_connection *conn);
 
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8

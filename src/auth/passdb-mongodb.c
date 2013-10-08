@@ -238,3 +238,5 @@ struct passdb_module_interface passdb_mongodb = {
 	.name = "mongodb"
 };
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8

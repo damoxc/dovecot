@@ -147,7 +147,6 @@ static void userdb_mongodb_iterate_next(struct userdb_iterate_context *_ctx)
 {
 	struct mongodb_userdb_iterate_context *ctx =
 		(struct mongodb_userdb_iterate_context *)_ctx;
-    i_assert(_ctx->auth_request != NULL);
 	struct userdb_module *_module = _ctx->auth_request->userdb->userdb;
 	struct mongodb_userdb_module *module = (struct mongodb_userdb_module *)_module;
 	mongodb_result_t result;
@@ -155,21 +154,21 @@ static void userdb_mongodb_iterate_next(struct userdb_iterate_context *_ctx)
 	int ret;
 
 	ret = mongodb_query_find_next(ctx->query, &result);
-    i_debug("mongodb: query_find_next ret=%d", ret);
+	i_debug("mongodb: query_find_next ret=%d", ret);
 	if (ret == MONGODB_QUERY_OK) {
-        if (userdb_mongodb_iterate_get_user(result, &user) < 0) {
+		if (userdb_mongodb_iterate_get_user(result, &user) < 0) {
 			i_error("mongodb: Iterate query didn't return 'user' field");
-        } else if (user == NULL) {
+		} else if (user == NULL) {
 			i_error("mongodb: Iterate query returned NULL user");
-        } else {
-            _ctx->callback(user, _ctx->context);
-            return;
-        }
+		} else {
+			_ctx->callback(user, _ctx->context);
+			return;
+		}
 		_ctx->failed = TRUE;
 	} else if (ret == MONGODB_QUERY_ERROR) {
-        i_error("mongodb: Iterate query failed: %s", mongodb_get_error(module->conn->conn));
+		i_error("mongodb: Iterate query failed: %s", mongodb_get_error(module->conn->conn));
 		_ctx->failed = TRUE;
-    }
+	}
 	_ctx->callback(NULL, _ctx->context);
 }
 
@@ -245,3 +244,5 @@ struct userdb_module_interface userdb_mongodb = {
 	.name = "mongodb"
 };
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8
