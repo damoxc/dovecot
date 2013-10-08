@@ -18,7 +18,7 @@ struct mongodb_userdb_module {
 
 struct mongodb_userdb_iterate_context {
 	struct userdb_iterate_context ctx;
-	struct mongodb_result *result;
+	mongodb_query_t query;
 	unsigned int freed:1;
 	unsigned int call_iter:1;
 };
@@ -30,7 +30,7 @@ static void mongodb_query_get_result(struct mongodb_result *result,
 	const char *key;
 	string_t *value;
 
-    mongodb_result_var_expand(result, NULL);
+    	mongodb_result_var_expand(result, NULL);
 	auth_request_init_userdb_reply(auth_request);
 
 	iter = mongodb_result_iterate_init(result);
@@ -93,11 +93,11 @@ static struct userdb_iterate_context *
 userdb_mongodb_iterate_init(struct auth_request *auth_request,
 			    userdb_iter_callback_t *callback, void *context)
 {
-#if 0
 	struct userdb_module *_module = auth_request->userdb->userdb;
 	struct mongodb_userdb_module *module =
 		(struct mongodb_userdb_module *)_module;
 	struct mongodb_userdb_iterate_context *ctx;
+	mongodb_query_t mongodb_query;
 	string_t *query;
 
 	query = t_str_new(512);
@@ -105,42 +105,83 @@ userdb_mongodb_iterate_init(struct auth_request *auth_request,
 		   auth_request_get_var_expand_table(auth_request,
 						     NULL));
 
+	mongodb_query = mongodb_query_init(module->conn->conn);
+	mongodb_query_parse_query(mongodb_query, str_c(query));
+
+	if (module->conn->set.iterate_defaults != NULL)
+		mongodb_query_parse_defaults(mongodb_query,
+					     module->conn->set.iterate_defaults);
+
+    mongodb_query_parse_fields(mongodb_query, module->conn->set.iterate_fields);
+
 	ctx = i_new(struct mongodb_userdb_iterate_context, 1);
 	ctx->ctx.auth_request = auth_request;
 	ctx->ctx.callback = callback;
 	ctx->ctx.context = context;
+	ctx->query = mongodb_query;
 	auth_request_ref(auth_request);
-#endif
 
-	return NULL;
+	mongodb_query_find(mongodb_query, module->conn->set.collection);
+
+	return &ctx->ctx;
+}
+
+static int userdb_mongodb_iterate_get_user(mongodb_result_t result, const char **user_r)
+{
+	struct mongodb_result_iterate_context *iter;
+	const char *key;
+	string_t *value;
+
+	iter = mongodb_result_iterate_init(result);
+	while (mongodb_result_iterate(iter, &key, &value)) {
+		if (strcmp(key, "user") == 0) {
+			*user_r = str_c(value);
+		}
+	}
+	mongodb_result_iterate_deinit(&iter);
+
+    return MONGODB_QUERY_OK;
 }
 
 static void userdb_mongodb_iterate_next(struct userdb_iterate_context *_ctx)
 {
-#if 0
 	struct mongodb_userdb_iterate_context *ctx =
 		(struct mongodb_userdb_iterate_context *)_ctx;
+    i_assert(_ctx->auth_request != NULL);
 	struct userdb_module *_module = _ctx->auth_request->userdb->userdb;
-	struct sql_userdb_module *module = (struct sql_userdb_module *)_module;
+	struct mongodb_userdb_module *module = (struct mongodb_userdb_module *)_module;
+	mongodb_result_t result;
 	const char *user;
 	int ret;
 
-	if (ctx->result == NULL) {
-		ctx->call_iter = TRUE;
-		return;
-	}
-#endif
-
+	ret = mongodb_query_find_next(ctx->query, &result);
+    i_debug("mongodb: query_find_next ret=%d", ret);
+	if (ret == MONGODB_QUERY_OK) {
+        if (userdb_mongodb_iterate_get_user(result, &user) < 0) {
+			i_error("mongodb: Iterate query didn't return 'user' field");
+        } else if (user == NULL) {
+			i_error("mongodb: Iterate query returned NULL user");
+        } else {
+            _ctx->callback(user, _ctx->context);
+            return;
+        }
+		_ctx->failed = TRUE;
+	} else if (ret == MONGODB_QUERY_ERROR) {
+        i_error("mongodb: Iterate query failed: %s", mongodb_get_error(module->conn->conn));
+		_ctx->failed = TRUE;
+    }
+	_ctx->callback(NULL, _ctx->context);
 }
 
 static int userdb_mongodb_iterate_deinit(struct userdb_iterate_context *_ctx)
 {
-#if 0
 	struct mongodb_userdb_iterate_context *ctx =
 		(struct mongodb_userdb_iterate_context *)_ctx;
 	int ret = _ctx->failed ? -1 : 0;
 
 	auth_request_unref(&_ctx->auth_request);
+
+#if 0
 	if (ctx->result == NULL) {
 		/* mongodb query hasn't finished yet */
 		ctx->freed = TRUE;
@@ -150,9 +191,8 @@ static int userdb_mongodb_iterate_deinit(struct userdb_iterate_context *_ctx)
 			//sql_result_unref(ctx->result);
 		i_free(ctx);
 	}
-	return ret;
 #endif
-	return -1;
+	return ret;
 }
 
 static struct userdb_module *

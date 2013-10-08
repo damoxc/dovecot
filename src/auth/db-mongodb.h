@@ -20,7 +20,10 @@ struct mongodb_settings {
 	const char *password_defaults;
 
 	const char *update_query;
+
 	const char *iterate_query;
+	const char *iterate_fields;
+	const char *iterate_defaults;
 
 	const char *default_pass_scheme;
 	bool userdb_warning_disable;

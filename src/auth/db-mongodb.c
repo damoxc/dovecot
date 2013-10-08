@@ -38,6 +38,8 @@ static struct setting_def setting_defs[] = {
 	DEF_STR(user_defaults),
 	DEF_STR(update_query),
 	DEF_STR(iterate_query),
+	DEF_STR(iterate_fields),
+	DEF_STR(iterate_defaults),
 	DEF_STR(default_pass_scheme),
 
 	{ 0, NULL, 0 }
@@ -55,6 +57,8 @@ static struct mongodb_settings default_mongodb_settings = {
 	.user_query = "{\"user\": \"%n\", \"domain\": \"%d\"}",
 	.update_query = "{\"user\": \"%n\", \"domain\": \"%d\"}",
 	.iterate_query = "{}",
+    .iterate_defaults = NULL,
+    .iterate_fields = "{\"email\": \"user\"}",
 	.default_pass_scheme = "MD5",
 	.userdb_warning_disable = FALSE
 };
