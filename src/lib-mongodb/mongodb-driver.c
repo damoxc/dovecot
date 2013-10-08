@@ -211,8 +211,8 @@ static int mongodb_driver_query_parse_defaults(struct mongodb_query *query, cons
 			value_dup = str_new(query->pool, MAX_FIELD_LENGTH);
 			str_append(value_dup, value);
 			hash_table_insert(query->defaults,
-					 (const char *)p_strdup(query->pool, key),
-					 value_dup);
+					  (const char *)p_strdup(query->pool, key),
+					  value_dup);
 		}
 	}
 
@@ -260,39 +260,58 @@ static int mongodb_driver_query_parse_query(struct mongodb_query *query, const c
 	return ret;
 }
 
-static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const char *json)
+static void str_trim_whitespace(char *string)
+{
+	char *s = string, *last_nwsc = NULL;
+
+	while (*string != 0) {
+		if (*string != ' ' && *string != '\t') {
+			*s++ = *string;
+			last_nwsc = s;
+		} else if (last_nwsc != NULL) {
+			*s++ = *string;
+		}
+		string++;
+	}
+	*last_nwsc = 0;
+}
+
+static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const char *_fields)
 {
 	struct mongodb_json_iter *iter;
-	const char *key, *value, *error;
-	string_t *value_dup;
+	char *key, *value;
+	char *a, *b, *z, *y, *fields = p_strdup(query->pool, _fields);
 	int ret = 0;
 
 	/* initialize the fields bson */
 	query->fields = p_new(query->pool, bson, 1);
 	bson_init(query->fields);
 
-	iter = mongodb_json_iter_init(json);
-	while (mongodb_json_iter_next(iter, &key, &value)) {
+	mongodb_debug("parsing fields '%s'", fields);
+	a = strtok_r(fields, ",", &b);
+	while (a != NULL) {
+		z = strtok_r(a, ":", &y);
+		key = p_strdup(query->pool, z);
+		str_trim_whitespace(key);
+		z = strtok_r(NULL, ":", &y);
+		if (z != NULL) {
+			value = p_strdup(query->pool, z);
+			str_trim_whitespace(value);
+		} else {
+			value = NULL;
+		}
 
-		if (value == NULL)
-			continue;
-
-		value_dup = str_new(query->pool, MAX_FIELD_LENGTH);
-		str_append_n(value_dup, value, MAX_FIELD_LENGTH);
-		hash_table_insert(query->fieldmap,
-				 (const char *)p_strdup(query->pool, key),
-				 value_dup);
+		mongodb_debug("fieldmap: '%s' = '%s'", key, (value == NULL) ? key : value);
 		bson_append_int(query->fields, key, 1);
+		hash_table_insert(query->fieldmap, (const char *)key,
+				  (const char *)((value == NULL) ? key : value));
+		a = strtok_r(NULL, ",", &b);
 	}
 
 	if (ret == 0) {
 		ret = bson_finish(query->fields);
 	} else {
 		bson_init_zero(query->fields);
-	}
-
-	if (mongodb_json_iter_deinit(&iter, &error) < 0) {
-		ret = MONGODB_QUERY_ERROR;
 	}
 
 	return ret;
@@ -321,8 +340,8 @@ static int mongodb_driver_query_result(mongodb_query_t query, bson *_result, mon
 {
 	mongodb_result_t result;
 	bson_iterator iter[1];
-	string_t *key, *value_dup;
-	const char *value;
+	string_t *value_dup;
+	const char *key, *value;
 	int ret = 0;
 
 	/* create the result struct */
@@ -334,8 +353,8 @@ static int mongodb_driver_query_result(mongodb_query_t query, bson *_result, mon
 
 	bson_iterator_init(iter, _result);
 	while (bson_iterator_next(iter) != BSON_EOO) {
-		key = (string_t *)hash_table_lookup(query->fieldmap, bson_iterator_key(iter));
-		mongodb_debug("result doc key=%s; map key=%s", bson_iterator_key(iter), (key == NULL) ? NULL : str_c(key));
+		key = (const char *)hash_table_lookup(query->fieldmap, bson_iterator_key(iter));
+		mongodb_debug("result doc key=%s; map key=%s", bson_iterator_key(iter), key);
 		if (key == NULL)
 			continue; /* most likely the _id field, but still ignore any unknown fields */
 
@@ -345,7 +364,7 @@ static int mongodb_driver_query_result(mongodb_query_t query, bson *_result, mon
 
 		value_dup = str_new(query->pool, MAX_FIELD_LENGTH);
 		str_append_n(value_dup, value, MAX_FIELD_LENGTH);
-		hash_table_update(result->fields, str_c(key), value_dup);
+		hash_table_update(result->fields, key, value_dup);
 	}
 	mongodb_driver_result_debug(result);
 
@@ -555,3 +574,5 @@ const struct mongodb_driver_vfuncs mongodb_vfuncs = {
 	mongodb_driver_result_iterate,
 	mongodb_driver_result_iterate_deinit,
 };
+
+// vim: noexpandtab shiftwidth=8 tabstop=8

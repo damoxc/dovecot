@@ -29,7 +29,7 @@ static int mongodb_driver_load(void)
 	mongodb_vfuncs = module_get_symbol(mongodb_driver, "mongodb_vfuncs");
 	if (mongodb_vfuncs == NULL) {
 		i_error("%s: mongodb_vfuncs symbol not found", plugin_name);
-		return -1; 
+		return -1;
 	}
 
 	atexit(mongodb_driver_unload);
@@ -132,3 +132,5 @@ void mongodb_result_iterate_deinit(struct mongodb_result_iterate_context **_ctx)
 }
 
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8

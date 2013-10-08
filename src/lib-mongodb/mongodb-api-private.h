@@ -23,7 +23,7 @@ struct mongodb_query {
 	bson *query;
 	bson *fields;
 
-	HASH_TABLE(const char *, string_t *) fieldmap;
+	HASH_TABLE(const char *, const char *) fieldmap;
 	HASH_TABLE(const char *, string_t *) defaults;
 };
 
@@ -181,3 +181,5 @@ static inline void bson_debug(mongodb_conn_t conn, bson *b, int depth) {
 #endif
 
 #endif
+
+// vim: noexpandtab shiftwidth=8 tabstop=8
