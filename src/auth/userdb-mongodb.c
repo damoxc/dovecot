@@ -154,7 +154,6 @@ static void userdb_mongodb_iterate_next(struct userdb_iterate_context *_ctx)
 	int ret;
 
 	ret = mongodb_query_find_next(ctx->query, &result);
-	i_debug("mongodb: query_find_next ret=%d", ret);
 	if (ret == MONGODB_QUERY_OK) {
 		if (userdb_mongodb_iterate_get_user(result, &user) < 0) {
 			i_error("mongodb: Iterate query didn't return 'user' field");
