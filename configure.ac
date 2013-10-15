@@ -2199,6 +2199,7 @@ if test $build_mongodb = yes; then
     AC_DEFINE(HAVE_MONGODB,, Build with MongoDB support)
     passdb="$passdb mongodb"
     userdb="$userdb mongodb"
+    dict_drivers="$dict_drivers mongodb"
 else
     not_passdb="$not_passdb mongodb"
     not_userdb="$not_userdb mongodb"

@@ -5,6 +5,7 @@ pkglibexec_PROGRAMS = dict
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib \
 	-I$(top_srcdir)/src/lib-master \
+	-I$(top_srcdir)/src/lib-mongodb \
 	-I$(top_srcdir)/src/lib-settings \
 	-I$(top_srcdir)/src/lib-dict \
 	-I$(top_srcdir)/src/lib-sql \
@@ -15,7 +16,8 @@ dict_LDFLAGS = -export-dynamic
 
 libs = \
 	../lib-dict/libdict_backend.a \
-	$(LIBDOVECOT_SQL)
+	$(LIBDOVECOT_SQL) \
+	$(LIBDOVECOT_MONGODB)
 
 dict_LDADD = \
 	$(libs) \

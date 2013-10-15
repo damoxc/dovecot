@@ -127,7 +127,7 @@ int dict_lookup(struct dict *dict, pool_t pool, const char *key,
 }
 
 struct dict_iterate_context *
-dict_iterate_init(struct dict *dict, const char *path, 
+dict_iterate_init(struct dict *dict, const char *path,
 		  enum dict_iterate_flags flags)
 {
 	const char *paths[2];

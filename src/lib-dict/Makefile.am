@@ -8,6 +8,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/lib-test \
 	-I$(top_srcdir)/src/lib-sql \
 	-I$(top_srcdir)/src/lib-settings \
+	-I$(top_srcdir)/src/lib-mongodb \
 	$(SQL_CFLAGS)
 
 base_sources = \
@@ -25,6 +26,8 @@ libdict_la_SOURCES = \
 
 libdict_backend_a_SOURCES = \
 	dict-db.c \
+	dict-mongodb.c \
+	dict-mongodb-settings.c \
 	dict-sql.c \
 	dict-sql-settings.c
 
