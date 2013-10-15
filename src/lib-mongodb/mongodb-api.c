@@ -114,6 +114,11 @@ void mongodb_result_debug(mongodb_result_t result)
 	mongodb_vfuncs->result_debug(result);
 }
 
+void mongodb_result_field(mongodb_result_t result, const char *key, const char **value_r)
+{
+	mongodb_vfuncs->result_field(result, key, value_r);
+}
+
 struct mongodb_result_iterate_context *
 mongodb_result_iterate_init(mongodb_result_t result)
 {

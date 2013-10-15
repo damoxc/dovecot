@@ -278,9 +278,10 @@ static void str_trim_whitespace(char *string)
 
 static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const char *_fields)
 {
-	struct mongodb_json_iter *iter;
 	char *key, *value;
-	char *a, *b, *z, *y, *fields = p_strdup(query->pool, _fields);
+	char *field, *s1, *map, *s2, *dot, *s3, *fields = p_strdup(query->pool, _fields);
+
+	string_t *key_parts;
 	int ret = 0;
 
 	/* initialize the fields bson */
@@ -288,14 +289,27 @@ static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const 
 	bson_init(query->fields);
 
 	mongodb_debug("parsing fields '%s'", fields);
-	a = strtok_r(fields, ",", &b);
-	while (a != NULL) {
-		z = strtok_r(a, ":", &y);
-		key = p_strdup(query->pool, z);
+	key_parts = str_new(query->pool, 128);
+	field = strtok_r(fields, ",", &s1);
+	while (field != NULL) {
+		str_truncate(key_parts, 0);
+		map = strtok_r(field, ":", &s2);
+		key = p_strdup(query->pool, map);
 		str_trim_whitespace(key);
-		z = strtok_r(NULL, ":", &y);
-		if (z != NULL) {
-			value = p_strdup(query->pool, z);
+
+		/* handle dotted fields */
+		dot = strtok_r(map, ".", &s3);
+		str_append(key_parts, dot);
+		hash_table_insert(query->fieldmap, (const char *)str_c(key_parts), (const char *)"\0");
+		dot = strtok_r(NULL, ".", &s3);
+		while (dot != NULL) {
+			str_printfa(key_parts, ".%s", dot);
+			dot = strtok_r(NULL, ".", &s3);
+		}
+
+		map = strtok_r(NULL, ":", &s2);
+		if (map != NULL) {
+			value = p_strdup(query->pool, map);
 			str_trim_whitespace(value);
 		} else {
 			value = NULL;
@@ -305,7 +319,7 @@ static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const 
 		bson_append_int(query->fields, key, 1);
 		hash_table_insert(query->fieldmap, (const char *)key,
 				  (const char *)((value == NULL) ? key : value));
-		a = strtok_r(NULL, ",", &b);
+		field = strtok_r(NULL, ",", &s1);
 	}
 
 	if (ret == 0) {
@@ -321,27 +335,63 @@ static const char *bson_to_string(bson_iterator *iter)
 {
 	bson_type type = bson_iterator_type(iter);
 	switch (type) {
-	case BSON_BOOL:
-		return bson_iterator_bool(iter) ? "y" : "n";
-	case BSON_DOUBLE:
-		return t_strdup_printf("%f", bson_iterator_double(iter));
-	case BSON_STRING:
-		return bson_iterator_string(iter);
-	case BSON_INT:
-		return t_strdup_printf("%d", bson_iterator_int(iter));
-	case BSON_LONG:
-		return t_strdup_printf("%ld", bson_iterator_long(iter));
-	default:
-		return NULL;
+		case BSON_BOOL:
+			return bson_iterator_bool(iter) ? "y" : "n";
+		case BSON_DOUBLE:
+			return t_strdup_printf("%f", bson_iterator_double(iter));
+		case BSON_STRING:
+			return bson_iterator_string(iter);
+		case BSON_INT:
+			return t_strdup_printf("%d", bson_iterator_int(iter));
+		case BSON_LONG:
+			return t_strdup_printf("%ld", bson_iterator_long(iter));
+		default:
+			return NULL;
 	}
+}
+
+static inline int
+mongodb_driver_query_result_nested(mongodb_query_t query, bson_iterator *iter,
+				   const char *parent_key, mongodb_result_t result)
+{
+	bson_iterator subiter[1];
+	const char *key, *value, *doc_key;
+	string_t *value_dup;
+	int ret = 0;
+
+	while (bson_iterator_next(iter) != BSON_EOO) {
+		if (parent_key == NULL) {
+			doc_key = bson_iterator_key(iter);
+		} else {
+			doc_key = t_strdup_printf("%s.%s", parent_key, bson_iterator_key(iter));
+		}
+		key = (const char *)hash_table_lookup(query->fieldmap, doc_key);
+		mongodb_debug("result doc key=%s; map key=%s", doc_key, key);
+		if (key == NULL)
+			continue; /* most likely the _id field, but still ignore any unknown fields */
+
+		if (*key == '\0') {
+			mongodb_debug("result is nested");
+			bson_iterator_subiterator(iter, subiter);
+			mongodb_driver_query_result_nested(query, subiter, doc_key, result);
+		} else {
+			value = bson_to_string(iter);
+			if (value == NULL)
+				continue;
+
+			value_dup = str_new(query->pool, MAX_FIELD_LENGTH);
+			str_append_n(value_dup, value, MAX_FIELD_LENGTH);
+			hash_table_update(result->fields, key, value_dup);
+		}
+	}
+
+	return ret;
 }
 
 static int mongodb_driver_query_result(mongodb_query_t query, bson *_result, mongodb_result_t *result_r)
 {
 	mongodb_result_t result;
 	bson_iterator iter[1];
-	string_t *value_dup;
-	const char *key, *value;
 	int ret = 0;
 
 	/* create the result struct */
@@ -351,21 +401,9 @@ static int mongodb_driver_query_result(mongodb_query_t query, bson *_result, mon
 	hash_table_copy(result->fields, query->defaults);
 	*result_r = result;
 
+	/* grab the parts of the BSON result we are interested in */
 	bson_iterator_init(iter, _result);
-	while (bson_iterator_next(iter) != BSON_EOO) {
-		key = (const char *)hash_table_lookup(query->fieldmap, bson_iterator_key(iter));
-		mongodb_debug("result doc key=%s; map key=%s", bson_iterator_key(iter), key);
-		if (key == NULL)
-			continue; /* most likely the _id field, but still ignore any unknown fields */
-
-		value = bson_to_string(iter);
-		if (value == NULL)
-			continue;
-
-		value_dup = str_new(query->pool, MAX_FIELD_LENGTH);
-		str_append_n(value_dup, value, MAX_FIELD_LENGTH);
-		hash_table_update(result->fields, key, value_dup);
-	}
+	ret = mongodb_driver_query_result_nested(query, iter, NULL, result);
 	mongodb_driver_result_debug(result);
 
 	return ret;
@@ -512,13 +550,25 @@ static void mongodb_driver_result_debug(mongodb_result_t result)
 	const char *key;
 	string_t *value;
 
-	mongodb_debug("printing result structure");
-
+	mongodb_debug("result=0x%x, fields=0x%x", result, result->fields);
 	iter = hash_table_iterate_init(result->fields);
 	while (hash_table_iterate(iter, result->fields, &key, &value)) {
 		mongodb_debug("query-result; key=%s, value=%s", key, str_c(value));
 	}
 	hash_table_iterate_deinit(&iter);
+}
+
+static void mongodb_driver_result_field(mongodb_result_t result, const char *key,
+				       const char **value_r)
+{
+	string_t *val;
+	val = hash_table_lookup(result->fields, key);
+	if (val == NULL) {
+		*value_r = NULL;
+	} else {
+		mongodb_debug("field: key=%s, value=%s", key, str_c(val));
+		*value_r = str_c(val);
+	}
 }
 
 static struct mongodb_result_iterate_context *
@@ -570,6 +620,7 @@ const struct mongodb_driver_vfuncs mongodb_vfuncs = {
 	/* result api */
 	mongodb_driver_result_var_expand,
 	mongodb_driver_result_debug,
+	mongodb_driver_result_field,
 	mongodb_driver_result_iterate_init,
 	mongodb_driver_result_iterate,
 	mongodb_driver_result_iterate_deinit,

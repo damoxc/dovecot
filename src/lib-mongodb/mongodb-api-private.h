@@ -5,7 +5,7 @@
 #include <mongo.h>
 #include <hash.h>
 
-//#define MONGODB_DEBUG
+#define MONGODB_DEBUG
 
 struct mongodb_conn {
 	pool_t pool;
@@ -55,6 +55,7 @@ struct mongodb_driver_vfuncs {
 	/* result api */
 	int (*result_var_expand)(mongodb_result_t result, struct var_expand_table *_table);
 	void (*result_debug)(mongodb_result_t result);
+	void (*result_field)(mongodb_result_t result, const char *key, const char **value_r);
 	struct mongodb_result_iterate_context *(*result_iterate_init)(mongodb_result_t result);
 	int (*result_iterate)(struct mongodb_result_iterate_context *ctx, const char **key_r, string_t **value_r);
 	void (*result_iterate_deinit)(struct mongodb_result_iterate_context **_ctx);
