@@ -50,6 +50,7 @@ int mongodb_query_find_one(mongodb_query_t query, const char *collection, mongod
 int mongodb_query_find(mongodb_query_t query, const char *collection);
 int mongodb_query_find_next(mongodb_query_t query, mongodb_result_t *result_r);
 
+void mongodb_result_field(mongodb_result_t result, const char *key, const char **value_r);
 void mongodb_result_debug(mongodb_result_t result);
 int mongodb_result_var_expand(mongodb_result_t result, struct var_expand_table *_table);
 void mongodb_result_deinit(mongodb_result_t *_result);
