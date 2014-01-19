@@ -171,7 +171,7 @@ static mongodb_query_t mongodb_driver_query_init(mongodb_conn_t conn)
 	query->pool = pool;
 	query->conn = conn;
 	query->cursor = NULL;
-	query->fields = NULL;
+	query->other = NULL;
 
 	hash_table_create(&query->fieldmap, conn->pool, 0, str_hash, strcmp);
 	hash_table_create(&query->defaults, conn->pool, 0, str_hash, strcmp);
@@ -190,8 +190,8 @@ static void mongodb_driver_query_deinit(mongodb_query_t *_query) {
 
 	p_free(query->pool, query->query);
 
-	bson_destroy(query->fields);
-	p_free(query->pool, query->fields);
+	bson_destroy(query->other);
+	p_free(query->pool, query->other);
 
 	hash_table_destroy(&query->defaults);
 	hash_table_destroy(&query->fieldmap);
@@ -223,21 +223,20 @@ static int mongodb_driver_query_parse_defaults(struct mongodb_query *query, cons
 	return 0;
 }
 
-static int mongodb_driver_query_parse_query(struct mongodb_query *query, const char *json)
+static int mongodb_json_to_bson(bson *b, const char *json)
 {
 	struct mongodb_json_iter *iter;
 	const char *key, *value, *error;
 	int ret = 0;
 
-	query->query = p_new(query->pool, bson, 1);
-	bson_init(query->query);
+	bson_init(b);
 
 	iter = mongodb_json_iter_init(json);
 	while (mongodb_json_iter_next(iter, &key, &value)) {
 		mongodb_debug("type=%d, key=%s, value=%s", iter->type, key, value);
 		switch (iter->type) {
 			case JSON_TYPE_STRING:
-				ret = bson_append_string(query->query, key, value);
+				ret = bson_append_string(b, key, value);
 				break;
 			default:
 				break;
@@ -248,13 +247,41 @@ static int mongodb_driver_query_parse_query(struct mongodb_query *query, const c
 	}
 
 	if (mongodb_json_iter_deinit(&iter, &error) < 0) {
-		query->error = "failed to parse query";
 		ret = -1;
 	}
 
-	if (ret == 0 && bson_finish(query->query) != BSON_OK) {
-		query->error = "failed create bson query";
+	if (ret == 0 && bson_finish(b) != BSON_OK) {
+		ret = -2;
+	}
+
+	return ret;
+}
+
+static int mongodb_driver_query_parse_query(struct mongodb_query *query, const char *json)
+{
+	int ret;
+
+	query->query = p_new(query->pool, bson, 1);
+
+	ret = mongodb_json_to_bson(query->query, json);
+	if (ret < 0) {
 		ret = -1;
+		query->error = (ret == -1) ? "failed to parse query" : "failed create query bson";
+	}
+
+	return ret;
+}
+
+static int mongodb_driver_query_parse_update(struct mongodb_query *query, const char *json)
+{
+	int ret;
+
+	query->other = p_new(query->pool, bson, 1);
+
+	ret = mongodb_json_to_bson(query->other, json);
+	if (ret < 0) {
+		ret = -1;
+		query->error = (ret == -1) ? "failed to parse update" : "failed create update bson";
 	}
 
 	return ret;
@@ -285,8 +312,8 @@ static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const 
 	int ret = 0;
 
 	/* initialize the fields bson */
-	query->fields = p_new(query->pool, bson, 1);
-	bson_init(query->fields);
+	query->other = p_new(query->pool, bson, 1);
+	bson_init(query->other);
 
 	mongodb_debug("parsing fields '%s'", fields);
 	key_parts = str_new(query->pool, 128);
@@ -316,22 +343,22 @@ static int mongodb_driver_query_parse_fields(struct mongodb_query *query, const 
 		}
 
 		mongodb_debug("fieldmap: '%s' = '%s'", key, (value == NULL) ? key : value);
-		bson_append_int(query->fields, key, 1);
+		bson_append_int(query->other, key, 1);
 		hash_table_insert(query->fieldmap, (const char *)key,
 				  (const char *)((value == NULL) ? key : value));
 		field = strtok_r(NULL, ",", &s1);
 	}
 
 	if (ret == 0) {
-		ret = bson_finish(query->fields);
+		ret = bson_finish(query->other);
 	} else {
-		bson_init_zero(query->fields);
+		bson_init_zero(query->other);
 	}
 
 	return ret;
 }
 
-static const char *bson_to_string(bson_iterator *iter)
+static inline const char *bson_to_string(bson_iterator *iter)
 {
 	bson_type type = bson_iterator_type(iter);
 	switch (type) {
@@ -425,8 +452,8 @@ static int mongodb_driver_query_find_one(mongodb_query_t query, const char *coll
 	_result = p_new(conn->pool, bson, 1);
 
 	bson_debug(conn, query->query, 0);
-	bson_debug(conn, query->fields, 0);
-	ret = mongo_find_one(conn->conn, ns, query->query, query->fields, _result);
+	bson_debug(conn, query->other, 0);
+	ret = mongo_find_one(conn->conn, ns, query->query, query->other, _result);
 
 	/* if we have a matching document, convert the fields as-per the field map */
 	if (ret != MONGO_OK) {
@@ -452,10 +479,10 @@ static int mongodb_driver_query_find(mongodb_query_t query, const char *collecti
 			     collection);
 	mongodb_debug("ns=%s", ns);
 	bson_debug(conn, query->query, 0);
-	bson_debug(conn, query->fields, 0);
+	bson_debug(conn, query->other, 0);
 
 	/* execute the query on the mongo database */
-	query->cursor = mongo_find(conn->conn, ns, query->query, query->fields, 0, 0, 0);
+	query->cursor = mongo_find(conn->conn, ns, query->query, query->other, 0, 0, 0);
 
 	if (query->cursor == NULL) {
 		return MONGODB_QUERY_ERROR;
@@ -484,6 +511,31 @@ static int mongodb_driver_query_find_next(mongodb_query_t query, mongodb_result_
 	}
 
 	return ret;
+}
+
+static int mongodb_driver_query_update(mongodb_query_t query, const char *collection, bool multi)
+{
+	struct mongodb_conn *conn = query->conn;
+	const char *ns;
+	int flags = 0, ret;
+
+	ns = t_strdup_printf("%s.%s", conn->uri.database,
+			     collection);
+	mongodb_debug("ns=%s", ns);
+	bson_debug(conn, query->query, 0);
+	bson_debug(conn, query->other, 0);
+
+	/* execute the query on the mongo database */
+	if (mongo_update(conn->conn, ns, query->query, query->other, flags, 0) != MONGO_OK)
+		ret = MONGODB_QUERY_ERROR;
+	else
+		ret = MONGODB_QUERY_OK;
+
+	if (query->cursor == NULL) {
+		return MONGODB_QUERY_ERROR;
+	}
+
+	return MONGO_OK;
 }
 
 static void mongodb_driver_query_debug(mongodb_query_t query)
@@ -550,7 +602,7 @@ static void mongodb_driver_result_debug(mongodb_result_t result)
 	const char *key;
 	string_t *value;
 
-	mongodb_debug("result=0x%x, fields=0x%x", result, result->fields);
+	mongodb_debug("result=0x%p, fields=0x%p", result, result->fields);
 	iter = hash_table_iterate_init(result->fields);
 	while (hash_table_iterate(iter, result->fields, &key, &value)) {
 		mongodb_debug("query-result; key=%s, value=%s", key, str_c(value));
@@ -612,10 +664,12 @@ const struct mongodb_driver_vfuncs mongodb_vfuncs = {
 	mongodb_driver_query_parse_defaults,
 	mongodb_driver_query_parse_query,
 	mongodb_driver_query_parse_fields,
+	mongodb_driver_query_parse_update,
 	mongodb_driver_query_debug,
 	mongodb_driver_query_find_one,
 	mongodb_driver_query_find,
 	mongodb_driver_query_find_next,
+	mongodb_driver_query_update,
 
 	/* result api */
 	mongodb_driver_result_var_expand,

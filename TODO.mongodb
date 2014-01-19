@@ -1,0 +1,5 @@
+Still to do:
+# Use split_str instead of strtok in our field parsing
+
+Would be nice:
+# Support dotted notation for referencing sub-fields

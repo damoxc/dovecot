@@ -7,6 +7,7 @@
 #include "array.h"
 #include "dict-private.h"
 #include "dict-transaction-memory.h"
+#include "hash.h"
 #include "mongodb-api.h"
 #include "dict-mongodb-settings.h"
 
@@ -34,30 +35,19 @@ struct mongodb_dict_iterate_context {
 	unsigned int key_prefix_len, pattern_prefix_len, next_map_idx;
 };
 
-typedef enum mongodb_dict_transaction_op_t {
-	MONGODB_DICT_TRANSACTION_SET,
-	MONGODB_DICT_TRANSACTION_UNSET,
-	MONGODB_DICT_TRANSACTION_APPEND,
-	MONGODB_DICT_TRANSACTION_INC
-} mongodb_dict_transaction_op_t;
+struct dict_mongodb_commit_ctx {
+	struct mongodb_dict *dict;
+	struct dict_transaction_memory_context *memctx;
+	string_t *str;
 
-struct mongodb_dict_transaction_op {
-	mongodb_dict_transaction_op_t op;
-	const struct dict_mongodb_map *map;
-
-	const char *key;
-	const char *value;
-	long long diff;
-
-	struct mongodb_dict_transaction_op *next;
+	dict_transaction_commit_callback_t *callback;
+	void *context;
 };
 
-struct mongodb_dict_transaction_context {
-	struct dict_transaction_context ctx;
-	pool_t pool;
-
-	struct mongodb_dict_transaction_op *ops;
-	unsigned int failed:1;
+struct dict_mongodb_commit_query {
+	struct mongodb_dict *dict;
+	char *query;
+	ARRAY(struct dict_transaction_memory_change) changes;
 };
 
 static bool
@@ -200,7 +190,6 @@ static int mongodb_dict_init(struct dict *driver, const char *uri,
 static void mongodb_dict_deinit(struct dict *_dict)
 {
 	struct mongodb_dict *dict = (struct mongodb_dict *)_dict;
-	i_debug("dict/mongodb: deinit");
 
 	mongodb_dict_free(&dict);
 }
@@ -262,9 +251,87 @@ mongodb_dict_transaction_init(struct dict *_dict)
 	return &ctx->ctx;
 }
 
-static void mongodb_dict_transaction_rollback(struct dict_transaction_context *_ctx)
+static void mongodb_dict_run_change_query(struct dict_mongodb_commit_ctx *ctx,
+					  const struct dict_transaction_memory_change *change)
 {
-	i_debug("dict/mongodb: transaction_rollback");
+	struct mongodb_dict *dict = ctx->dict;
+	const struct dict_mongodb_map *map;
+	ARRAY_TYPE(const_string) values;
+	mongodb_query_t query;
+	string_t *json;
+
+	map = mongodb_dict_find_map(dict, change->key, &values);
+	if (map == NULL) {
+		i_error("mongodb dict lookup: Invalid/unmapped key: %s", change->key);
+		return;
+	}
+
+	switch (change->type) {
+	case DICT_CHANGE_TYPE_SET:
+		json = t_strdup_printf("{\"$set\":{\"%s\": %s}}", map->value_field, change->value.str);
+		break;
+	case DICT_CHANGE_TYPE_UNSET:
+		json = t_strdup_printf("{\"$unset\":{\"%s\": 1}}", map->value_field);
+		break;
+	}
+	i_debug("DICT OP: %s", json);
+}
+
+static int mongodb_dict_commit_changes(struct dict_mongodb_commit_ctx *ctx)
+{
+	struct mongodb_dict *dict = ctx->dict;
+	HASH_TABLE(const char *, const struct dict_transaction_memory_change *) queries;
+	const struct dict_transaction_memory_change *changes, *change;
+	const struct dict_mongodb_map *map;
+	ARRAY_TYPE(const_string) values;
+	unsigned int i, count;
+	const char *json;
+	
+	/*
+	 * We need to perform two sweeps of the stored changes in an effort to make
+	 * the changes atomic. We can $set, $unset, $inc and $push in an update
+	 * query however we can only do one at a time. An $unset prior to a $set is
+	 * pointless so we want to drop the $unset.
+	 */
+	hash_table_create(&queries, ctx->dict->pool, 0, str_hash, strcmp);
+	changes = array_get(&ctx->memctx->changes, &count);
+	i_assert(count > 0);
+
+	for (i = 0; i < count; i++) {
+		const struct dict_transaction_memory_change *change = &changes[i], *tmp;
+
+		map = mongodb_dict_find_map(dict, change->key, &values);
+		if (map == NULL) {
+			i_error("mongodb dict lookup: Invalid/unmapped key: %s", change->key);
+			return -1;
+		}
+
+		json = t_strdup_printf("{\"%s\": \"%s\"}", map->username_field, dict->username);
+		tmp = hash_table_lookup(queries, json);
+		if (tmp == NULL) {
+			hash_table_update(queries, (const char *)change->key, change);
+		} else {
+			switch (change->type) {
+			case DICT_CHANGE_TYPE_SET:
+				if (tmp->type == DICT_CHANGE_TYPE_UNSET)
+					hash_table_update(queries, (const char *)change->key, change);
+				break;
+			}
+		}
+	};
+
+	T_BEGIN {
+		struct hash_iterate_context *iter = hash_table_iterate_init(queries);
+		const struct dict_transaction_memory_change *change;
+		const char *key;
+
+		while (hash_table_iterate(iter, queries, &key, &change)) {
+			mongodb_dict_run_change_query(ctx, change);
+		}
+
+	} T_END;
+
+	hash_table_destroy(&queries);
 }
 
 static int
@@ -276,65 +343,31 @@ mongodb_dict_transaction_commit(struct dict_transaction_context *_ctx,
 	struct dict_transaction_memory_context *ctx =
 		(struct dict_transaction_memory_context *)_ctx;
 	struct mongodb_dict *dict = (struct mongodb_dict *)_ctx->dict;
+	struct dict_mongodb_commit_ctx commit_ctx;
+	
 	int ret = 1;
+
 	i_debug("dict/mongodb: transaction_commit");
+
+	if (_ctx->changed) {
+		memset(&commit_ctx, 0, sizeof(commit_ctx));
+		commit_ctx.dict = dict;
+		commit_ctx.memctx = ctx;
+		commit_ctx.callback = callback;
+		commit_ctx.context = context;
+		commit_ctx.str = str_new(default_pool, 256);
+
+		ret = mongodb_dict_commit_changes(&commit_ctx);
+		if (ret >= 0) {
+
+		}
+	}
 
 	if (callback != NULL)
 		callback(ret, context);
 	pool_unref(&ctx->pool);
 	return ret;
 }
-
-static void mongodb_dict_set(struct dict_transaction_context *_ctx,
-			     const char *key, const char *value)
-{
-	struct mongodb_dict_transaction_context *ctx =
-		(struct mongodb_dict_transaction_context *)_ctx;
-	struct mongodb_dict *dict = (struct mongodb_dict *)_ctx->dict;
-	const struct dict_mongodb_map *map;
-	ARRAY_TYPE(const_string) values;
-
-	i_debug("dict/mongodb: set '%s' = '%s'", key, value);
-}
-
-static void mongodb_dict_unset(struct dict_transaction_context *_ctx,
-			       const char *key)
-{
-	struct mongodb_dict_transaction_context *ctx =
-		(struct mongodb_dict_transaction_context *)_ctx;
-	struct mongodb_dict *dict = (struct mongodb_dict *)_ctx->dict;
-	const struct dict_mongodb_map *map;
-	ARRAY_TYPE(const_string) values;
-
-	map = mongodb_dict_find_map(dict, key, &values);
-	if (map == NULL) {
-		i_error("mongodb dict unset: Invalid/unmapped key: %s", key);
-		ctx->failed = TRUE;
-		return;
-	}
-
-	T_BEGIN {
-		mongodb_query_t query;
-		const char *json;
-
-		json = t_strdup_printf("{\"%s\": \"%s\"}", map->username_field, dict->username);
-		i_debug("dict/mongodb: query = %s", json);
-	} T_END;
-
-}
-
-static void mongodb_dict_append(struct dict_transaction_context *_ctx,
-				const char *key, const char *value)
-{
-	i_debug("dict/mongodb: append '%s' = '%s'", key, value);
-}
-
-static void mongodb_dict_atomic_inc(struct dict_transaction_context *_ctx,
-				    const char *key, long long diff)
-{
-	i_debug("dict/mongodb: atomic_inc '%s' by %lld", key, diff);
-}
-
 
 struct dict dict_driver_mongodb = {
 	.name = "mongodb",
@@ -348,19 +381,11 @@ struct dict dict_driver_mongodb = {
 		NULL,
 		mongodb_dict_transaction_init,
 		mongodb_dict_transaction_commit,
-#if 1
-		mongodb_dict_transaction_rollback,
-		mongodb_dict_set,
-		mongodb_dict_unset,
-		mongodb_dict_append,
-		mongodb_dict_atomic_inc
-#else
 		dict_transaction_memory_rollback,
 		dict_transaction_memory_set,
 		dict_transaction_memory_unset,
 		dict_transaction_memory_append,
 		dict_transaction_memory_atomic_inc
-#endif
 	}
 };
 #endif

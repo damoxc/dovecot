@@ -21,7 +21,7 @@ struct mongodb_query {
 	char *error;
 
 	bson *query;
-	bson *fields;
+	bson *other;
 
 	HASH_TABLE(const char *, const char *) fieldmap;
 	HASH_TABLE(const char *, string_t *) defaults;
@@ -45,12 +45,14 @@ struct mongodb_driver_vfuncs {
 
 	int (*query_parse_defaults)(mongodb_query_t query, const char *json);
 	int (*query_parse_query)(mongodb_query_t query, const char *json);
-	int (*query_parse_fields)(mongodb_query_t query, const char *json);
+	int (*query_parse_fields)(mongodb_query_t query, const char *fields);
+	int (*query_parse_update)(mongodb_query_t query, const char *json);
 	void (*query_debug)(mongodb_query_t query);
 
 	int (*query_find_one)(mongodb_query_t query, const char *collection, mongodb_result_t *result_r);
 	int (*query_find)(mongodb_query_t query, const char *collection);
 	int (*query_find_next)(mongodb_query_t query, mongodb_result_t *result);
+	int (*query_update)(mongodb_query_t query, const char *collection, bool multi);
 
 	/* result api */
 	int (*result_var_expand)(mongodb_result_t result, struct var_expand_table *_table);
@@ -99,77 +101,77 @@ static inline void bson_debug(mongodb_conn_t conn, bson *b, int depth) {
 
     str_printfa(out, "{");
     while (bson_iterator_next(i)) {
-        bson_type t = bson_iterator_type(i);
-        if (t == 0)
-            break;
+	bson_type t = bson_iterator_type(i);
+	if (t == 0)
+	    break;
 	if (!first)
 		str_printfa(out, ", ");
-        key = bson_iterator_key(i);
+	key = bson_iterator_key(i);
 
-        str_printfa(out, "\"%s\": ", key);
-        switch (t) {
-        case BSON_DOUBLE:
-            str_printfa(out, "%f", bson_iterator_double(i));
-            break;
-        case BSON_STRING:
-            str_printfa(out, "\"%s\"", bson_iterator_string(i));
-            break;
-        case BSON_SYMBOL:
-            str_printfa(out, "SYMBOL: %s", bson_iterator_string(i));
-            break;
-        case BSON_OID:
-            bson_oid_to_string(bson_iterator_oid(i), oidhex);
-            str_printfa(out, "%s", oidhex);
-            break;
-        case BSON_BOOL:
-            str_printfa(out, "%s", bson_iterator_bool(i) ? "true" : "false");
-            break;
-        case BSON_DATE:
-            str_printfa(out, "%ld", (long int)bson_iterator_date(i));
-            break;
-        case BSON_BINDATA:
-            str_printfa(out, "BSON_BINDATA");
-            break;
-        case BSON_UNDEFINED:
-            str_printfa(out, "BSON_UNDEFINED");
-            break;
-        case BSON_NULL:
-            str_printfa(out, "BSON_NULL");
-            break;
-        case BSON_REGEX:
-            str_printfa(out, "BSON_REGEX: %s", bson_iterator_regex(i));
-            break;
-        case BSON_CODE:
-            str_printfa(out, "BSON_CODE: %s", bson_iterator_code(i));
-            break;
-        case BSON_CODEWSCOPE:
-            str_printfa(out, "BSON_CODE_W_SCOPE: %s", bson_iterator_code(i));
-            bson_iterator_code_scope_init(i, &scope, 0);
-            str_printfa(out, "\n\t SCOPE: ");
-            bson_print(&scope);
-            bson_destroy(&scope);
-            break;
-        case BSON_INT:
-            str_printfa(out, "%d", bson_iterator_int(i));
-            break;
-        case BSON_LONG:
-            str_printfa(out, "%lu", (uint64_t)bson_iterator_long(i));
-            break;
-        case BSON_TIMESTAMP:
-            ts = bson_iterator_timestamp(i);
-            str_printfa(out, "i: %d, t: %d", ts.i, ts.t);
-            break;
-        case BSON_OBJECT:
-        case BSON_ARRAY:
-            str_printfa(out, "\n");
-            bson_print_raw(bson_iterator_value(i) , depth + 1);
-            break;
-        default:
-            bson_errprintf("can't print type : %d\n", t);
-        }
+	str_printfa(out, "\"%s\": ", key);
+	switch (t) {
+	case BSON_DOUBLE:
+	    str_printfa(out, "%f", bson_iterator_double(i));
+	    break;
+	case BSON_STRING:
+	    str_printfa(out, "\"%s\"", bson_iterator_string(i));
+	    break;
+	case BSON_SYMBOL:
+	    str_printfa(out, "SYMBOL: %s", bson_iterator_string(i));
+	    break;
+	case BSON_OID:
+	    bson_oid_to_string(bson_iterator_oid(i), oidhex);
+	    str_printfa(out, "%s", oidhex);
+	    break;
+	case BSON_BOOL:
+	    str_printfa(out, "%s", bson_iterator_bool(i) ? "true" : "false");
+	    break;
+	case BSON_DATE:
+	    str_printfa(out, "%ld", (long int)bson_iterator_date(i));
+	    break;
+	case BSON_BINDATA:
+	    str_printfa(out, "BSON_BINDATA");
+	    break;
+	case BSON_UNDEFINED:
+	    str_printfa(out, "BSON_UNDEFINED");
+	    break;
+	case BSON_NULL:
+	    str_printfa(out, "BSON_NULL");
+	    break;
+	case BSON_REGEX:
+	    str_printfa(out, "BSON_REGEX: %s", bson_iterator_regex(i));
+	    break;
+	case BSON_CODE:
+	    str_printfa(out, "BSON_CODE: %s", bson_iterator_code(i));
+	    break;
+	case BSON_CODEWSCOPE:
+	    str_printfa(out, "BSON_CODE_W_SCOPE: %s", bson_iterator_code(i));
+	    bson_iterator_code_scope_init(i, &scope, 0);
+	    str_printfa(out, "\n\t SCOPE: ");
+	    bson_print(&scope);
+	    bson_destroy(&scope);
+	    break;
+	case BSON_INT:
+	    str_printfa(out, "%d", bson_iterator_int(i));
+	    break;
+	case BSON_LONG:
+	    str_printfa(out, "%lu", (uint64_t)bson_iterator_long(i));
+	    break;
+	case BSON_TIMESTAMP:
+	    ts = bson_iterator_timestamp(i);
+	    str_printfa(out, "i: %d, t: %d", ts.i, ts.t);
+	    break;
+	case BSON_OBJECT:
+	case BSON_ARRAY:
+	    str_printfa(out, "\n");
+	    bson_print_raw(bson_iterator_value(i) , depth + 1);
+	    break;
+	default:
+	    bson_errprintf("can't print type : %d\n", t);
+	}
 
-        if (first)
-        	first = FALSE;
+	if (first)
+		first = FALSE;
     }
     str_printfa(out, "}");
 

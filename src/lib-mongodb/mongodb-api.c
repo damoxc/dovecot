@@ -83,6 +83,11 @@ int mongodb_query_parse_fields(mongodb_query_t query, const char *json)
 	return mongodb_vfuncs->query_parse_fields(query, json);
 }
 
+int mongodb_query_parse_update(mongodb_query_t query, const char *json)
+{
+	return mongodb_vfuncs->query_parse_update(query, json);
+}
+
 void mongodb_query_debug(mongodb_query_t query)
 {
 	return mongodb_vfuncs->query_debug(query);
@@ -102,6 +107,11 @@ int mongodb_query_find(mongodb_query_t query, const char *collection)
 int mongodb_query_find_next(mongodb_query_t query, mongodb_result_t *result_r)
 {
 	return mongodb_vfuncs->query_find_next(query, result_r);
+}
+
+int mongodb_query_update(mongodb_query_t query, const char *collection, bool multi)
+{
+	return mongodb_vfuncs->query_update(query, collection, multi);
 }
 
 int mongodb_result_var_expand(mongodb_result_t result, struct var_expand_table *_table)

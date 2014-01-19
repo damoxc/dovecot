@@ -43,12 +43,14 @@ void mongodb_query_deinit(mongodb_query_t *_query);
 
 int mongodb_query_parse_defaults(mongodb_query_t query, const char *json);
 int mongodb_query_parse_query(mongodb_query_t query, const char *json);
-int mongodb_query_parse_fields(mongodb_query_t query, const char *json);
+int mongodb_query_parse_fields(mongodb_query_t query, const char *_fields);
+int mongodb_query_parse_update(mongodb_query_t query, const char *json);
 void mongodb_query_debug(mongodb_query_t query);
 
 int mongodb_query_find_one(mongodb_query_t query, const char *collection, mongodb_result_t *result_r);
 int mongodb_query_find(mongodb_query_t query, const char *collection);
 int mongodb_query_find_next(mongodb_query_t query, mongodb_result_t *result_r);
+int mongodb_query_update(mongodb_query_t query, const char *collection, bool multi);
 
 void mongodb_result_field(mongodb_result_t result, const char *key, const char **value_r);
 void mongodb_result_debug(mongodb_result_t result);
